@@ -85,14 +85,17 @@ crates/web/static/budding/
 | --- | --- |
 | 删除等不可逆操作 | `confirm` → `request` → `invoke`（目标组件 `reload`） |
 | 详情页写后整页重取 | `request` → `skiffReload`（页面骨架与数据都由服务端重算） |
-| 表单提交 | `form.props.api` 自带提交，`props.successMessage` 给成功提示，`props.onSuccess` 放刷新 |
-| 校验 | 字段 `required` / `rules`；服务端字段错误走 `invoke setErrors` |
-| 表单字段错误（可选） | `form.props.onError: [{ "type": "skiffFormErrors", "props": { "form": "<表单 id>" } }]`；不声明时保持框架默认提示，声明后把服务端 `error.field` 贴回对应表单并聚焦 |
+| 表单提交（宿主自管链） | `form.props.submitMode: "event"` + `onEvent.submit` 的宿主动作；组件不发请求、不弹成功提示 |
+| 表单提交（服务端直接收） | `form.props.api` 自带提交，`props.successMessage` 给成功提示，`props.onSuccess` 放刷新（仅限资产页里「提交即入库」的简单表单） |
+| 校验 | 字段 `required` / `rules`；服务端字段错误走 `setErrors`（动作或 `invoke`） |
+| 失败原地回填 | 宿主动作用 `ctx.extras.form.setErrors({ __form__: 文案 })`；页面级表单无控制器时退回 `toast`。**不关图层、不重建 DOM、不丢输入** |
 | 请求失败提示 | `request.props.messages.error`；SDK 会调用 `markFailurePrompted`，节点级兜底提示不再叠加 |
 
-`request` 的失败提示是「本操作失败」级别的保真（服务端明细只在 `form` 的 `errorMessage` 缺省值里透出）；需要更强保真时走 `onError` 动作组。
+`request` 的失败提示是「本操作失败」级别的保真（服务端明细只在 `form` 的 `errorMessage` 缺省值里透出）；需要更强保真时走 `onError` 动作组，或宿主动作自己把失败原因写回表单。
 
 **CSRF**：壳脚本的平台请求适配器（`apiRequest`）对所有非 `GET/HEAD` 请求统一补 `x-csrf-token`。页面 JSON 不写 header，写操作才能保持声明式。
+
+**弹窗标记**：服务端下发的 `dialog` 动作由壳脚本 `prepareServerSchema` 递归找出正文里的表单，给 `onEvent.submit[0].props` 打一个 `inLayer: true`（资产页的 `_file-row.json` 手写同一字段）。宿主动作用它区分「成功后关层」与「整页刷新」——不再有 dialog 注册表，也不靠运行时猜层级。
 
 ## 9.4 壳脚本保留什么
 

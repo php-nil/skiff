@@ -377,7 +377,6 @@ fn build_config(data: &Value, body: &mut Vec<Value>) {
         "主配置",
         "保存前执行 nginx -t；失败会拒绝写入并保留当前配置。",
         kit::form(
-            &format!("{API_BASE}/web/config"),
             json!({ "type": "skiffWebConfig" }),
             vec![kit::textarea(
                 "content",
@@ -410,7 +409,6 @@ fn build_config(data: &Value, body: &mut Vec<Value>) {
         "性能参数",
         "数字字段非法会被拒绝，不会静默存成默认值。",
         kit::form(
-            &format!("{API_BASE}/web/params"),
             json!({ "type": "skiffWebParams" }),
             vec![
                 kit::text_input("worker_processes", "worker_processes"),
@@ -469,7 +467,6 @@ fn build_config(data: &Value, body: &mut Vec<Value>) {
 
 fn build_logs(query: &Value, logs: Option<&Value>, body: &mut Vec<Value>) {
     let log_form = kit::form(
-        &format!("{API_BASE}/web/logs"),
         json!({ "type": "skiffWebLogs" }),
         vec![
             kit::select(

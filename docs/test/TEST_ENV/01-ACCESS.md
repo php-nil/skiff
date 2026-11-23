@@ -34,7 +34,7 @@
 | 二：反代终止 TLS（`trusted_proxies`） | `listen="0.0.0.0:18080"`、`allow_insecure_http=true`、`trusted_proxies=["127.0.0.1/32"]`、`tls_enabled=false` | `https://10.10.15.4:18443`（需自备 `skiff-tls-proxy.service`，当前未部署） | 同上；停 `skiff-http-fwd`、起 TLS 代理、重启 `skiff` |
 | 三：直接明文（当前） | `listen="0.0.0.0:18080"`、`allow_insecure_http=true`、`tls_enabled=false` | `http://10.10.15.4:18080`（直连，无转发层） | `/etc/skiff/config.toml`（当前生效；`allow_insecure_http` 为安装后人工追加） |
 
-- **机器还原后，上一轮的配置备份、TLS 证书与 `skiff-tls-proxy` 均已不存在**；上表只描述切换方法，形态一/二需要先重新生成证书/代理。当前没有任何配置备份，基线就是 `/etc/skiff/config.toml`（2026-11-21 23:10 首装生成 + 人工追加两行）。
+- **机器还原后，上一轮的配置备份、TLS 证书与 `skiff-tls-proxy` 均已不存在**；上表只描述切换方法，形态一/二需要先重新生成证书/代理。当前没有任何配置备份，基线就是 `/etc/skiff/config.toml`（2026-11-22 22:47 首装生成 + 人工追加两行）。
 - 三形态切换均只需覆盖配置 + 重启 `skiff`；历史三形态实测结论（3→1→3 恢复 `/healthz` 200、无残留监听）仍然有效。
 - Cookie 断言：形态一/二为 `__Host-skiff_session`（`Secure; HttpOnly; SameSite=Lax`）；形态三为 `skiff_dev_session`（`HttpOnly; SameSite=Lax`，无 `Secure`）。
 - 形态二下直连 `:18080` 明文端口：`GET /<prefix>/login` 仍 200 但不写会话，`POST /<prefix>/login` 返回 403「跨站登录请求被拒绝」；`curl -k https://<host>:18080/healthz` 返回 000（该端口无 TLS）。

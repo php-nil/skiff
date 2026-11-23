@@ -1,5 +1,8 @@
 //! 壳主题（全局）：主色、菜单底色、页面底色持久化在 `settings` 表，按全站生效。
 //!
+//! 缺省为「深潜」——深墨绿导航 + 暖白内容 + 青绿主色；界面设置里另有「石墨」
+//! 「灯塔」两套预设可一键切换（预设表在 `web::handlers::ui::settings_page`）。
+//!
 //! 颜色统一存 `#rrggbb` 小写；读取时对存量值再做一次校验，非法值回落到缺省，
 //! 避免手改数据库把整站样式带坏。主色与菜单底色的对比度不足 4.5:1 时，
 //! 按亮度方向逐步混白/混黑校正，保证激活色在菜单上可读。
@@ -15,11 +18,13 @@ pub const THEME_PAGE_KEY: &str = "ui.theme.page";
 /// 菜单底色是否启用自定义值（否则按页面底色自动取深/浅）。
 pub const THEME_MENU_CUSTOM_KEY: &str = "ui.theme.menu_custom";
 
-/// 缺省主色：与 budding/Vuetify 的 `primary` 缺省值一致。
-pub const DEFAULT_PRIMARY: &str = "#1867c0";
-/// 缺省页面底色。
-pub const DEFAULT_PAGE: &str = "#f5f5f5";
-/// 自动菜单底色：浅色页用白，深色页用近黑。
+/// 缺省主色：方案「深潜」的青绿。
+pub const DEFAULT_PRIMARY: &str = "#17a98e";
+/// 缺省页面底色：暖白，避免纯白的冷感。
+pub const DEFAULT_PAGE: &str = "#f4f6f5";
+/// 缺省菜单底色：深墨绿导航（浅色内容下仍是深色导航，这是「深潜」的基准形态）。
+pub const DEFAULT_MENU: &str = "#0c2422";
+/// 自动菜单底色：浅色页用白，深色页用近黑。仅在关闭「自定义菜单底色」时使用。
 pub const AUTO_MENU_LIGHT: &str = "#ffffff";
 pub const AUTO_MENU_DARK: &str = "#121212";
 /// 可读性下限（WCAG AA 正文）。
@@ -152,10 +157,12 @@ fn read_color(state: &AppState, key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
+/// 缺省启用自定义菜单底色：默认主题是「深墨绿导航 + 浅色内容」，与页面亮度无关。
+/// 只有显式存下 `"0"`（用户关掉开关）才回到按页面亮度自动推导。
 fn read_menu_custom(state: &AppState) -> bool {
-    matches!(
+    !matches!(
         read_setting(state, THEME_MENU_CUSTOM_KEY).as_deref(),
-        Some("1") | Some("true")
+        Some("0") | Some("false")
     )
 }
 
@@ -168,9 +175,35 @@ pub fn auto_menu(page: &str) -> String {
     }
 }
 
+/// 页面底色是否按深色处理（决定卡片取白面还是深面）。
+pub fn is_dark_page(page: &str) -> bool {
+    luminance(page) <= 0.5
+}
+
+/// 卡片/面板的表面色：浅色页用纯白；深色页在页面底色上抬一档，
+/// 否则整页连成一块死黑，卡片边界完全看不出来。
+pub fn surface(page: &str) -> String {
+    if is_dark_page(page) {
+        mix(page, "#ffffff", 0.07)
+    } else {
+        "#ffffff".to_string()
+    }
+}
+
+/// 深色页上的次级面（表格头、斑马纹、内嵌块）：比 [`surface`] 再亮一档。
+/// 浅色页不注入这个覆盖（Vuetify 自带的浅灰更合适），因此这里退化为表面色。
+pub fn surface_raised(page: &str) -> String {
+    if is_dark_page(page) {
+        mix(page, "#ffffff", 0.13)
+    } else {
+        surface(page)
+    }
+}
+
 fn build(primary: &str, page: &str, menu_custom: bool, menu_raw: Option<String>) -> Theme {
     let menu = if menu_custom {
-        menu_raw.unwrap_or_else(|| auto_menu(page))
+        // 开了自定义却没存过值（首启、或保存时留空）：落到缺省的深色导航。
+        menu_raw.unwrap_or_else(|| DEFAULT_MENU.to_string())
     } else {
         auto_menu(page)
     };
@@ -282,6 +315,46 @@ mod tests {
     fn auto_menu_follows_page_luminance() {
         assert_eq!(auto_menu("#ffffff"), AUTO_MENU_LIGHT);
         assert_eq!(auto_menu("#000000"), AUTO_MENU_DARK);
+    }
+
+    /// 缺省主题：浅色页 + 深色导航（「深潜」基准形态），主色不被校正。
+    #[test]
+    fn default_theme_is_dark_chrome_over_light_page() {
+        let theme = build(DEFAULT_PRIMARY, DEFAULT_PAGE, true, None);
+        assert_eq!(theme.menu, DEFAULT_MENU);
+        assert_eq!(theme.menu_text, "#ffffff", "深色导航上必须用白字");
+        assert_eq!(theme.page_text, "#000000");
+        assert!(
+            !theme.adjusted,
+            "缺省主色在缺省菜单上必须已达 4.5:1，不应触发校正：{}",
+            contrast(DEFAULT_PRIMARY, DEFAULT_MENU)
+        );
+    }
+
+    /// 关掉「自定义菜单底色」才回到按页面亮度自动推导。
+    #[test]
+    fn custom_menu_off_falls_back_to_auto() {
+        let auto = build(DEFAULT_PRIMARY, DEFAULT_PAGE, false, Some("#123456".into()));
+        assert_eq!(auto.menu, AUTO_MENU_LIGHT);
+    }
+
+    /// 卡片表面色随页面明暗切换：浅色页白，深色页比页面更亮一档。
+    #[test]
+    fn surface_follows_page_darkness() {
+        assert_eq!(surface("#f4f6f5"), "#ffffff");
+        assert_eq!(surface_raised("#f4f6f5"), "#ffffff");
+
+        let card = surface("#080a09");
+        let raised = surface_raised("#080a09");
+        assert!(
+            luminance(&card) > luminance("#080a09"),
+            "深色页的卡片必须比页面亮：{card}"
+        );
+        assert!(
+            luminance(&raised) > luminance(&card),
+            "次级面（表格头）要比卡片再亮一档：{raised} vs {card}"
+        );
+        assert!(is_dark_page("#080a09") && !is_dark_page("#f4f6f5"));
     }
 
     #[test]

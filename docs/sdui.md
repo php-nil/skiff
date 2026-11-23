@@ -13,6 +13,6 @@
 | 子文档 | 管什么 |
 | --- | --- |
 | [SDUI_HANDBOOK.md](sdui/SDUI_HANDBOOK.md) | SDUI 资源 / 动作 / 迁移阶段（设计稿，P0/P1 已落地；分 3 册） |
-| [SDUI_BUDDING_INTEGRATION.md](sdui/SDUI_BUDDING_INTEGRATION.md) | 接入边界、DTO 字段与错误码（分 8 册） |
+| [SDUI_BUDDING_INTEGRATION.md](sdui/SDUI_BUDDING_INTEGRATION.md) | 接入边界、DTO 字段与错误码（分 9 册） |
 | [BUDDING_INTERACTION_CAPABILITIES.md](sdui/BUDDING_INTERACTION_CAPABILITIES.md) | 组件 / 动作用法与宿主采用约定 |
 | [BUDDING_UPSTREAM_BACKLOG.md](sdui/BUDDING_UPSTREAM_BACKLOG.md) | 向上游提能力缺口的台账（只记未关闭项） |

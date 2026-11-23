@@ -180,39 +180,6 @@ pub fn validate_schema(value: &Value) -> Result<()> {
     Ok(())
 }
 
-/// 渲染前补全：给未声明 `api` 的 form 注入内核 no-op 提交配置。
-///
-/// 插件 schema 禁止出现 `api`（防自带请求），但 1.8.5 起图层页脚的 `submit`
-/// 会走表单提交链，没有 `api` 时会额外弹「表单未配置 api」。这里注入的是内核
-/// 固定值 `sendOn: false`，不会发出任何请求，也不把 URL 控制权交给插件。
-pub fn inject_form_submit_stub(value: &mut Value) {
-    let Some(obj) = value.as_object_mut() else {
-        if let Some(arr) = value.as_array_mut() {
-            for item in arr {
-                inject_form_submit_stub(item);
-            }
-        }
-        return;
-    };
-    if obj.get("type").and_then(Value::as_str) == Some("form") {
-        let props = obj
-            .entry("props".to_string())
-            .or_insert_with(|| Value::Object(serde_json::Map::new()));
-        if let Some(props) = props.as_object_mut() {
-            props.entry("api".to_string()).or_insert_with(|| {
-                serde_json::json!({
-                    "method": "POST",
-                    "url": "/ui/v1/_noop",
-                    "sendOn": false
-                })
-            });
-        }
-    }
-    for child in obj.values_mut() {
-        inject_form_submit_stub(child);
-    }
-}
-
 fn validate_data_source(name: &str, decl: &Value) -> Result<()> {
     if !is_token(name, 32) {
         return Err(invalid(format!("data 源名称非法: {name:?}")));
@@ -303,6 +270,20 @@ fn validate_node(node: &Value, depth: usize, budget: &mut usize, ctx: Ctx) -> Re
     }
     if let Some(events) = obj.get("onEvent") {
         validate_events(events, ty, ctx)?;
+        // 插件表单不允许自带 `api`，所以提交只能走 `onEvent.submit` 的动作链：
+        // 没写 `submitMode: "event"` 时组件按缺省 `api` 模式收尾，提交静默空转
+        // （只弹一条「表单未配置 api」）。这里直接拒装，避免装出一个点了没反应的页面。
+        if ty == "form" && events.get("submit").is_some() {
+            let mode = obj
+                .get("props")
+                .and_then(|p| p.get("submitMode"))
+                .and_then(Value::as_str);
+            if mode != Some("event") {
+                return Err(invalid(
+                    "form 的 onEvent.submit 需要 props.submitMode = \"event\"（插件 schema 不允许 api，缺省 api 模式会让提交空转）",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -768,7 +749,7 @@ mod tests {
                             "type": "skiffPluginRpc",
                             "props": { "method": "create", "params": { "name": "${name}" } }
                         } ] },
-                        "props": {},
+                        "props": { "submitMode": "event" },
                         "body": [ {
                             "type": "input-text",
                             "props": { "name": "name", "label": "名称" }
@@ -818,18 +799,33 @@ mod tests {
     }
 
     #[test]
-    fn injects_submit_stub_into_forms_only() {
-        let mut v = sample();
-        v["page"]["body"].as_array_mut().unwrap().push(json!({
+    fn submit_forms_must_declare_event_mode() {
+        // 插件 schema 不允许 `api`，提交只能由 `onEvent.submit` 的动作链完成；
+        // 缺 `submitMode: "event"` 时组件按缺省 api 模式收尾，提交静默空转。
+        let form = json!({
             "type": "form",
             "props": {},
+            "onEvent": { "submit": [ { "type": "skiffPluginRpc", "props": { "method": "create" } } ] },
             "body": [ { "type": "input-text", "props": { "name": "name" } } ]
-        }));
-        inject_form_submit_stub(&mut v);
-        let form = &v["page"]["body"][1];
-        assert_eq!(form["props"]["api"]["sendOn"], false);
-        assert!(v["page"]["body"][0]
-            .get("props")
-            .is_some_and(|p| p.get("api").is_none()));
+        });
+        let v = json!({ "version": 1, "page": { "type": "page", "body": [form] } });
+        let e = validate_schema(&v).unwrap_err().to_string();
+        assert!(e.contains("submitMode"), "{e}");
+
+        let ok = json!({ "version": 1, "page": { "type": "page", "body": [{
+            "type": "form",
+            "props": { "submitMode": "event" },
+            "onEvent": { "submit": [ { "type": "skiffPluginRpc", "props": { "method": "create" } } ] },
+            "body": [ { "type": "input-text", "props": { "name": "name" } } ]
+        }] } });
+        validate_schema(&ok).unwrap();
+
+        // 只是布局容器、靠按钮点触发动作的表单不受此约束（没有 submit 事件）。
+        let layout_only = json!({ "version": 1, "page": { "type": "page", "body": [{
+            "type": "form",
+            "props": {},
+            "body": [ { "type": "input-text", "props": { "name": "q" } } ]
+        }] } });
+        validate_schema(&layout_only).unwrap();
     }
 }

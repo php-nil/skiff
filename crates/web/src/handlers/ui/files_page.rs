@@ -184,9 +184,7 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
                     "onEvent": { "submit": [
                         { "type": "skiffFileMkdir", "props": { "dir": path } }
                     ] },
-                    "props": {
-                        "api": { "method": "POST", "url": format!("{API_BASE}/files/mkdir"), "sendOn": false }
-                    },
+                    "props": { "submitMode": "event" },
                     "body": [{
                         "type": "input-text",
                         "props": {
@@ -254,9 +252,7 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
                     "onEvent": { "submit": [
                         { "type": "skiffFileWrite", "props": { "dir": path } }
                     ] },
-                    "props": {
-                        "api": { "method": "POST", "url": format!("{API_BASE}/files/write"), "sendOn": false }
-                    },
+                    "props": { "submitMode": "event" },
                     "body": [
                         {
                             "type": "input-text",
@@ -358,7 +354,6 @@ pub fn file_view_schema(data: &Value) -> Value {
             "编辑内容",
             "保存会覆盖原文件；权限与路径约束仍在服务端执行。",
             kit::form(
-                &format!("{API_BASE}/files/write"),
                 json!({ "type": "skiffFileWrite", "props": { "path": path } }),
                 vec![content],
                 "保存文件",
@@ -564,8 +559,6 @@ pub fn quotas_schema(data: &Value) -> Value {
             "设置配额",
             "容量上限与文件数上限至少填一项；留空表示不限。重复保存同一路径会覆盖原配额。",
             kit::form(
-                // 配额端点挂在入口前缀下（与文件 API 同一命名空间）。
-                "${prefix}/files/quotas/set",
                 json!({ "type": "skiffQuotaWrite", "props": { "op": "set" } }),
                 vec![
                     kit::required_input("path", "目录树（绝对路径）", "请输入绝对路径"),

@@ -58,9 +58,7 @@ pub fn site_new_schema(runtimes: &[Value], type_query: &str) -> Value {
                 "",
                 "运行环境站点需选择已运行的实例；静态站点只需目录；反向代理需填目标地址。别名每行一个。",
             ),
-            kit::form(
-                &format!("{API_BASE}/sites"),
-                json!({ "type": "skiffSiteWrite", "props": { "op": "create" } }),
+            kit::form(json!({ "type": "skiffSiteWrite", "props": { "op": "create" } }),
                 fields,
                 "创建站点",
                 Some(initial),
@@ -105,7 +103,7 @@ pub fn site_logs_schema(
               "props": { "id": site_id, "domain": domain, "part": part, "tail": tail } }
         ] },
         "props": {
-            "api": { "method": "POST", "url": format!("{API_BASE}/sites/logs"), "sendOn": false },
+            "submitMode": "event",
             "actionsAlign": "end"
         },
         "body": [

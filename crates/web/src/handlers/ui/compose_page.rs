@@ -91,7 +91,6 @@ pub fn compose_schema(
                 variant: "tonal",
                 title: "新建 / 编辑编排",
                 width: 780,
-                url: format!("{API_BASE}/compose/validate"),
                 submit: json!({ "type": "skiffComposeEdit" }),
                 fields,
                 initial: None,

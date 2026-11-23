@@ -82,7 +82,7 @@
       node.props.modelValue = buddySafeString(node.props.modelValue);
     }
     if (node.type === 'button' && node.action && node.action.type === 'dialog') {
-      registerServerDialog(node);
+      markLayerSubmit(node);
     }
     Object.keys(node).forEach(function (key) {
       prepareServerSchema(node[key]);
@@ -91,31 +91,38 @@
   }
 
 
-  // 服务端弹窗按钮同样要进弹窗注册表：提交失败时 dialogError 按 key 重开同一张
-  // 表单并保留用户输入，行为与前端 dialogFormButton 一致。
+  // 弹窗里的表单提交要区分「弹窗」与「页面表单」：成功后前者关层、后者整页刷新。
+  // 1.8.6 起提交失败不会关闭图层、字段值原样保留，壳层也不再需要保存弹窗正文副本
+  // ——只给提交动作打一个 `inLayer` 标记，取代此前的 dialogRegistry + 克隆重开。
   //
   // 插槽位置：budding 1.8.3 起 dialog 的正文/底部在动作顶层 `content`
-  // （写进 `props.body` 会整页 CompileError），故只认 `content.body`。
-  // 1.8.5 起「保存」可以写在 `content.footer`（本层唯一表单），这里只登记
-  // 原始 content，重开时原样复用，不假定按钮在表单内还是页脚。
-  function registerServerDialog(button) {
-    var layer = button.action.props || {};
+  // （写进 `props.body` 会整页 CompileError），故只认 `content`。
+  function markLayerSubmit(button) {
     var slot = button.action.content || {};
-    var body = slot.body || [];
-    if (!Array.isArray(body) || body.length === 0) return;
-    var form = null;
-    for (var i = 0; i < body.length; i += 1) {
-      if (body[i] && body[i].type === 'form') {
-        form = body[i];
-        break;
-      }
+    collectForms(slot.body).forEach(function (form) {
+      var submit = form.onEvent && form.onEvent.submit && form.onEvent.submit[0];
+      if (!submit) return;
+      submit.props = submit.props || {};
+      submit.props.inLayer = true;
+    });
+  }
+
+  /// 递归收集节点树里的表单：弹窗正文可能被 card / flex 包着，只在顶层找会漏。
+  function collectForms(node, out) {
+    out = out || [];
+    if (!node) return out;
+    if (Array.isArray(node)) {
+      node.forEach(function (item) {
+        collectForms(item, out);
+      });
+      return out;
     }
-    if (!form || !form.props || !form.props.api) return;
-    var submit = form.onEvent && form.onEvent.submit && form.onEvent.submit[0];
-    if (!submit || !submit.props) return;
-    var key = submit.props.dialog || newDialogKey();
-    submit.props.dialog = key;
-    dialogRegistry[key] = { props: layer, content: slot };
+    if (typeof node !== 'object') return out;
+    if (node.type === 'form') out.push(node);
+    Object.keys(node).forEach(function (key) {
+      if (node[key] && typeof node[key] === 'object') collectForms(node[key], out);
+    });
+    return out;
   }
 
 
@@ -221,8 +228,9 @@
     if (runtime && typeof runtime.confirm === 'function') {
       var payload = { title: title };
       if (content) payload.content = content;
-      if (args && args.level) payload.level = args.level;
-      else if (args && args.danger) payload.level = 'error';
+      // budding 的确认层只认 color（info / warning / error），没有 level 别名。
+      if (args && args.color) payload.color = args.color;
+      else if (args && args.danger) payload.color = 'error';
       if (args && args.confirmText) payload.confirmText = args.confirmText;
       if (args && args.cancelText) payload.cancelText = args.cancelText;
       if (args && args.requireText) payload.requireText = args.requireText;
@@ -460,11 +468,11 @@
             return;
           }
           // 独立页 `/sites/new` 仍保留「创建后进入详情」；列表弹窗则关闭并刷新列表。
-          if (op === 'create' && data.id && !args.dialog) {
+          if (op === 'create' && data.id && !args.inLayer) {
             location.href = prefix + '/sites/' + encodeURIComponent(data.id);
             return;
           }
-          if (args.dialog) closeTopLayer();
+          if (args.inLayer) closeTopLayer();
           toast(
             (data && data.message) || (op === 'create' ? '站点已创建' : '操作已完成'),
             'success'
@@ -473,9 +481,8 @@
         })
         .catch(function (error) {
           formError(
-            args,
-            '操作失败：' + (error && error.message ? error.message : String(error)),
-            values
+            ctx,
+            '操作失败：' + (error && error.message ? error.message : String(error))
           );
         });
     }
@@ -1093,10 +1100,9 @@
       })
       .catch(function (error) {
         formError(
-          args,
+          ctx,
           (op === 'up' ? '部署失败：' : '校验失败：') +
-            (error && error.message ? error.message : String(error)),
-          values
+            (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -1173,7 +1179,7 @@
     else if (!hex.test(page)) invalid = '页面底色';
     else if (menuCustom && !hex.test(menu)) invalid = '菜单底色';
     if (invalid) {
-      formError(args, invalid + '必须是 #rrggbb 格式，例如 #1867c0', values);
+      formError(ctx, invalid + '必须是 #rrggbb 格式，例如 #17a98e');
       return Promise.resolve();
     }
     return submitJson('/settings/ui', {
@@ -1189,9 +1195,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '保存失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '保存失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -1245,14 +1250,13 @@
       apk_mirror: kind === 'php' ? formText(v.apk_mirror).trim() : null
     })
       .then(function (data) {
-        if (args && args.dialog) closeTopLayer();
+        if (args && args.inLayer) closeTopLayer();
         runtimeDone(data, '安装任务已提交');
       })
       .catch(function (error) {
         formError(
-          args,
-          '操作失败：' + (error && error.message ? error.message : String(error)),
-          v
+          ctx,
+          '操作失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2006,7 +2010,7 @@
     var values = formValues(ctx);
     var name = String(values.name || '').trim();
     if (!validEntryName(name)) {
-      formError(args, '目录名不能为空，也不能包含 / 或 \\', values);
+      formError(ctx, '目录名不能为空，也不能包含 / 或 \\', 'name');
       return Promise.resolve();
     }
     var base = String(args.dir || '').replace(/\/+$/, '');
@@ -2017,9 +2021,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '新建目录失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '新建目录失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2031,7 +2034,7 @@
     if (!target) {
       var name = String(values.name || '').trim();
       if (!validEntryName(name)) {
-        formError(args, '文件名不能为空，也不能包含 / 或 \\', values);
+        formError(ctx, '文件名不能为空，也不能包含 / 或 \\', 'name');
         return Promise.resolve();
       }
       var base = String(args.dir || '').replace(/\/+$/, '');
@@ -2045,9 +2048,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '保存失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '保存失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2058,7 +2060,7 @@
     var name = String(args.name || '');
     var next = String(values.name || '').trim();
     if (!validEntryName(next)) {
-      formError(args, '新名称不能为空，也不能包含 / 或 \\', values);
+      formError(ctx, '新名称不能为空，也不能包含 / 或 \\', 'name');
       return Promise.resolve();
     }
     if (next === name) {
@@ -2074,9 +2076,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '重命名失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '重命名失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2086,11 +2087,11 @@
     var from = String(args.path || '').trim();
     var to = String(values.to || '').trim();
     if (!from || !to) {
-      formError(args, '请填写目标路径', values);
+      formError(ctx, '请填写目标路径', 'path');
       return Promise.resolve();
     }
     if (to.charAt(0) !== '/') {
-      formError(args, '目标路径必须是绝对路径（以 / 开头）', values);
+      formError(ctx, '目标路径必须是绝对路径（以 / 开头）', 'path');
       return Promise.resolve();
     }
     return submitJson('/files/copy', { from: from, to: to, overwrite: !!values.overwrite })
@@ -2101,9 +2102,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '复制失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '复制失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2113,11 +2113,11 @@
     var path = String(args.path || '');
     var mode = String(values.mode || '').trim();
     if (!mode) {
-      formError(args, '请填写八进制权限（如 755）', values);
+      formError(ctx, '请填写八进制权限（如 755）', 'mode');
       return Promise.resolve();
     }
     if (!MODE_RULE.pattern || !new RegExp(MODE_RULE.pattern).test(mode)) {
-      formError(args, '权限必须是八进制（如 755 或 0755）', values);
+      formError(ctx, '权限必须是八进制（如 755 或 0755）', 'mode');
       return Promise.resolve();
     }
     return submitJson('/files/chmod', { path: path, mode: mode })
@@ -2128,9 +2128,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '修改权限失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '修改权限失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2141,17 +2140,17 @@
     var uidRaw = String(values.uid === undefined || values.uid === null ? '' : values.uid).trim();
     var gidRaw = String(values.gid === undefined || values.gid === null ? '' : values.gid).trim();
     if (!uidRaw || !gidRaw) {
-      formError(args, '请同时填写 uid 与 gid', values);
+      formError(ctx, '请同时填写 uid 与 gid', 'uid');
       return Promise.resolve();
     }
     if (!/^[0-9]+$/.test(uidRaw) || !/^[0-9]+$/.test(gidRaw)) {
-      formError(args, 'uid 与 gid 必须是非负整数', values);
+      formError(ctx, 'uid 与 gid 必须是非负整数', 'uid');
       return Promise.resolve();
     }
     var uid = Number(uidRaw);
     var gid = Number(gidRaw);
     if (uid > 4294967295 || gid > 4294967295) {
-      formError(args, 'uid 与 gid 不能超过 4294967295', values);
+      formError(ctx, 'uid 与 gid 不能超过 4294967295', 'uid');
       return Promise.resolve();
     }
     // 后端 DTO 是 u32；这里必须发数字，字符串会 422。
@@ -2163,9 +2162,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '修改属主失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '修改属主失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2176,11 +2174,11 @@
     var dest = String(values.dest || '').trim();
     var format = String(values.format || 'tar.gz').trim();
     if (!dest) {
-      formError(args, '请填写压缩包路径', values);
+      formError(ctx, '请填写压缩包路径', 'path');
       return Promise.resolve();
     }
     if (dest.charAt(0) !== '/') {
-      formError(args, '压缩包路径必须是绝对路径（以 / 开头）', values);
+      formError(ctx, '压缩包路径必须是绝对路径（以 / 开头）', 'path');
       return Promise.resolve();
     }
     return submitJson('/files/archive', {
@@ -2196,9 +2194,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '压缩失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '压缩失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2208,11 +2205,11 @@
     var archive = String(args.path || '').trim();
     var dest = String(values.dest || '').trim();
     if (!dest) {
-      formError(args, '请填写解压目标目录', values);
+      formError(ctx, '请填写解压目标目录', 'to');
       return Promise.resolve();
     }
     if (dest.charAt(0) !== '/') {
-      formError(args, '目标目录必须是绝对路径（以 / 开头）', values);
+      formError(ctx, '目标目录必须是绝对路径（以 / 开头）', 'to');
       return Promise.resolve();
     }
     return submitJson('/files/extract', {
@@ -2231,9 +2228,8 @@
       })
       .catch(function (error) {
         formError(
-          args,
-          '解压失败：' + (error && error.message ? error.message : String(error)),
-          values
+          ctx,
+          '解压失败：' + (error && error.message ? error.message : String(error))
         );
       });
   }
@@ -2299,70 +2295,24 @@
     window.location.reload();
   }
 
-  /// 弹窗表单注册表：提交失败或本地校验不通过时，按 key 还原同一张表单。
-  var dialogRegistry = {};
-  var dialogSeq = 0;
-
-  function newDialogKey() {
-    dialogSeq += 1;
-    return 'skiff-dialog-' + dialogSeq;
-  }
-
-  /// 弹窗内联错误：关掉当前图层后重开一张「错误摘要 + 同样字段」的弹窗。
+  /// 提交失败就地回填：1.8.6 起失败不关图层、字段值原样保留，所以只需要把错误
+  /// 写回表单——不再「关掉再重开一张带错误摘要的弹窗」（那会重建 DOM、丢滚动位置，
+  /// 还得自己保存一份正文副本）。
   ///
-  /// 为什么不用 toast：toast 一闪而过且关掉后用户看不到原因。这里保留用户
-  /// 已填的值（`initialValues`），只在顶部追加 `alert`，字段级错误回填仍等 U3。
-  function dialogError(key, message, values) {
+  /// 表单实例从动作上下文取（`ctx.extras.form`，表单族 provide，内核不感知）；
+  /// 取不到说明动作不在表单里（列表行按钮等），退回 toast。
+  /// `field` 给定时写成字段错误：本地校验类失败指到具体字段，比表单级摘要更好定位。
+  function formError(ctx, message, field) {
     var text = String(message === undefined || message === null ? '' : message);
-    var def = key ? dialogRegistry[key] : null;
-    var runtime = buddingRuntime();
-    if (
-      !def ||
-      !runtime ||
-      typeof runtime.openLayer !== 'function' ||
-      typeof runtime.closeLayer !== 'function' ||
-      typeof runtime.deriveScope !== 'function'
-    ) {
-      toast('操作失败：' + text, 'error');
+    var form = ctx && ctx.extras && ctx.extras.form;
+    if (form && typeof form.setErrors === 'function') {
+      var errors = {};
+      errors[field || '__form__'] = text;
+      form.setErrors(errors);
+      if (typeof form.focusFirstError === 'function') form.focusFirstError();
       return;
     }
-    // 复用原始 content：字段与页脚按钮（保存 / 重置 / 取消）保持与首次打开一致；
-    // 只把已填值写回 initialValues，并在正文顶部补错误摘要。
-    var content = JSON.parse(JSON.stringify(def.content || {}));
-    var body = Array.isArray(content.body) ? content.body : [];
-    for (var i = 0; i < body.length; i += 1) {
-      var node = body[i];
-      if (!node || node.type !== 'form') continue;
-      node.props = node.props || {};
-      node.props.initialValues = Object.assign(
-        {},
-        node.props.initialValues || {},
-        values || {}
-      );
-      var submit = node.onEvent && node.onEvent.submit && node.onEvent.submit[0];
-      if (submit) {
-        submit.props = submit.props || {};
-        submit.props.dialog = key;
-      }
-      break;
-    }
-    body.unshift({
-      type: 'alert',
-      props: { type: 'error', title: '提交未完成', text: text }
-    });
-    var layer = Object.assign({}, def.props || {});
-    // 行作用域派生的 data 在重开时已经失效，留着只会渲染成字面量。
-    delete layer.data;
-    layer.body = body;
-    layer.footer = Array.isArray(content.footer) ? content.footer : [];
-    runtime.closeLayer();
-    runtime.openLayer(layer, { scope: runtime.deriveScope({}, null) });
-  }
-
-  /// 弹窗内错误优先就地展示；页面级表单没有 `dialog` 上下文时退回 toast。
-  function formError(args, message, values) {
-    if (args && args.dialog) dialogError(args.dialog, message, values);
-    else toast(message, 'error');
+    toast(text, 'error');
   }
 
   var MODE_RULE = { pattern: '^0?[0-7]{3,4}$', messages: { pattern: '请输入八进制权限，如 755' } };

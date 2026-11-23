@@ -45,7 +45,7 @@
                         "body": [
                           {
                             "type": "form",
-                            "props": {},
+                            "props": { "submitMode": "event" },
                             "onEvent": {
                               "submit": [
                                 {

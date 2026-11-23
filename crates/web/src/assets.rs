@@ -24,14 +24,14 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-22 打包（commit `a3a3c8d`）版本号升到 **1.8.5**（根 `package.json` 1.8.5）。
-/// 本次同步从 `C:\dev\budding\dist\package` / `dist\packs` 取完整 bundle，icons 也升到 1.8.5。
+/// 上游 2026-11-23 打包（commit `570a00a`）版本号升到 **1.8.6**（根 `package.json` 1.8.6）。
+/// 本次同步从 `C:\dev\budding\dist\package` / `dist\packs` 取完整 bundle，icons 也升到 1.8.6。
 /// 分包从 `dist/packs/*.mjs` 复制并改名为 `.min.js`（ESM 模块格式，由 `registerPack` 动态 import 加载）。
-pub const BUDDING_VERSION: &str = "1.8.5";
+pub const BUDDING_VERSION: &str = "1.8.6";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
-/// 随上游主包版本同步升到 1.8.5。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.5";
+/// 随上游主包版本同步升到 1.8.6（`woff2` 字节未变，`css` 随 catalog 重生成）。
+pub const BUDDING_ICONS_VERSION: &str = "1.8.6";
 
 /// 壳页自有资产（`skiff-shell.css` / `budding-boot.js` / `form-enter-submit.js`）的缓存版本。
 ///
@@ -83,7 +83,13 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.5";
 ///   移除 `mount()` 旧入口与 `snackbar` 关闭参数）；壳侧弹窗注册表改读 `content.footer`
 ///   的 `submit`，提交失败重开弹窗复用原始 `content`，不再依赖表单 `content.actions`。
 /// v42：新建目录与编排失败改走 `formError`，错误留在弹窗内并保留输入，不再只弹 toast。
-pub const SHELL_VERSION: &str = "42";
+/// v43：默认主题换为「深潜」（青绿主色 + 深墨绿导航），登录页品牌面板与 `skiff.css`
+///   的 accent / 登录底色同步改色；`budding-boot.js` 的颜色示例改指新主色。
+/// v44：上游升 1.8.6（`submitMode: "event"` 事件提交、`setErrors` 一等动作、
+///   `confirm` 统一 `color`、`inspectLayers()`、`@budding/schema-lint`）；壳侧删掉
+///   弹窗注册表与「失败重开弹窗」，失败改为 `setErrors` 原地回填，`args.dialog`
+///   收敛为一个 `inLayer` 标记，`hostConfirm` 的 `level` 改为 `color`。
+pub const SHELL_VERSION: &str = "44";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

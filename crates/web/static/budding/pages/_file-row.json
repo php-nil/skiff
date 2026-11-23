@@ -85,11 +85,7 @@
               {
                 "type": "form",
                 "props": {
-                  "api": {
-                    "method": "POST",
-                    "url": "/ui/v1/files/rename",
-                    "sendOn": false
-                  },
+                  "submitMode": "event",
                   "actionsAlign": "end"
                 },
                 "onEvent": {
@@ -99,7 +95,7 @@
                       "props": {
                         "path": "${item.path}",
                         "name": "${item.name}",
-                        "dialog": "skiff-dialog-1"
+                        "inLayer": true
                       }
                     }
                   ]
@@ -177,11 +173,7 @@
               {
                 "type": "form",
                 "props": {
-                  "api": {
-                    "method": "POST",
-                    "url": "/ui/v1/files/copy",
-                    "sendOn": false
-                  },
+                  "submitMode": "event",
                   "actionsAlign": "end"
                 },
                 "onEvent": {
@@ -190,7 +182,7 @@
                       "type": "skiffFileCopy",
                       "props": {
                         "path": "${item.path}",
-                        "dialog": "skiff-dialog-2"
+                        "inLayer": true
                       }
                     }
                   ]
@@ -275,11 +267,7 @@
               {
                 "type": "form",
                 "props": {
-                  "api": {
-                    "method": "POST",
-                    "url": "/ui/v1/files/chmod",
-                    "sendOn": false
-                  },
+                  "submitMode": "event",
                   "actionsAlign": "end"
                 },
                 "onEvent": {
@@ -288,7 +276,7 @@
                       "type": "skiffFileChmod",
                       "props": {
                         "path": "${item.path}",
-                        "dialog": "skiff-dialog-3"
+                        "inLayer": true
                       }
                     }
                   ]
@@ -366,11 +354,7 @@
               {
                 "type": "form",
                 "props": {
-                  "api": {
-                    "method": "POST",
-                    "url": "/ui/v1/files/chown",
-                    "sendOn": false
-                  },
+                  "submitMode": "event",
                   "actionsAlign": "end"
                 },
                 "onEvent": {
@@ -379,7 +363,7 @@
                       "type": "skiffFileChown",
                       "props": {
                         "path": "${item.path}",
-                        "dialog": "skiff-dialog-4"
+                        "inLayer": true
                       }
                     }
                   ]
@@ -472,11 +456,7 @@
               {
                 "type": "form",
                 "props": {
-                  "api": {
-                    "method": "POST",
-                    "url": "/ui/v1/files/archive",
-                    "sendOn": false
-                  },
+                  "submitMode": "event",
                   "actionsAlign": "end"
                 },
                 "onEvent": {
@@ -485,7 +465,7 @@
                       "type": "skiffFileArchive",
                       "props": {
                         "path": "${item.path}",
-                        "dialog": "skiff-dialog-5"
+                        "inLayer": true
                       }
                     }
                   ]
@@ -587,11 +567,7 @@
               {
                 "type": "form",
                 "props": {
-                  "api": {
-                    "method": "POST",
-                    "url": "/ui/v1/files/extract",
-                    "sendOn": false
-                  },
+                  "submitMode": "event",
                   "actionsAlign": "end"
                 },
                 "onEvent": {
@@ -600,7 +576,7 @@
                       "type": "skiffFileExtract",
                       "props": {
                         "path": "${item.path}",
-                        "dialog": "skiff-dialog-6"
+                        "inLayer": true
                       }
                     }
                   ]

@@ -1,9 +1,9 @@
 # budding 交互能力速查
 
-> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），`catalogVersion=1.8.0`、`contentHash=sha256:b7a41ab5…feaaad`（组件目录），共 58 个组件、20 个动作、320 条示例、55 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.5`，2026-11-22 同步上游 `a3a3c8d`；图层页脚可直接 `submit` / `reset` 本层唯一表单）。
+> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），2026-11-23 按上游 `570a00a` 复拉：`catalogVersion=1.8.6`、`contentHash=sha256:6e9b7890…89317`（组件目录），共 62 个组件、21 个动作、381 条示例、57 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.6`，2026-11-23 同步上游 `570a00a`；表单 `submitMode: "event"`、`setErrors` 动作、`confirm` 统一 `color`、`testId` / `data-bud-role` 锚点与 `inspectLayers()`）。
 > 分工：接入边界、版本事实与 JSON 契约只在 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) 维护；上游缺口与宿主待补契约见 [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md)；本文只做「怎么用」的摘录，不复述契约全文。
 > 校验：文中 dialog+form、confirm+request+invoke、table 游标分页、virtual-list 四段完整 Schema 已用 MCP `validateSchema` 校验通过（`ok: true`，非 strict）。
-> 更名（2026-11-22 核对）：写请求动作 `ajax` 已由上游改名 **`request`**（提交 `1120d2`，2026-11-20），旧名无别名，写 `ajax` 运行时按「未知动作类型」拒绝；本仓自带 bundle（`budding-1.8.4.min.js`，同步 `1121d5`）与上游现行 `catalog.json` 均以 `request` 为准，`C:/dev/budding/dist/mcp/` 下的归档副本是改名前的过期产物，勿再引用。
+> 更名（2026-11-22 核对）：写请求动作 `ajax` 已由上游改名 **`request`**（提交 `1120d2`，2026-11-20），旧名无别名，写 `ajax` 运行时按「未知动作类型」拒绝；本仓自带 bundle（`budding-1.8.6.min.js`，同步 `570a00a`）与上游现行 `catalog.json` 均以 `request` 为准，`C:/dev/budding/dist/mcp/` 下的归档副本是改名前的过期产物，勿再引用。
 
 ## 0. MCP 接入方式
 
@@ -86,7 +86,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 | --- | --- | --- |
 | `title` | string | 标题 |
 | `content` | string | 正文，支持 `${}` |
-| `level` | string | 语义级别，危险操作用 `error` / `warning` |
+| `color` | string | 语义色 `info` / `warning` / `error`，危险操作用 `error`。**没有 `level` 别名**，运行时从未支持，写了会被忽略 |
 | `confirmText` / `cancelText` | string | 按钮文案 |
 | `requireText` | string | 要求输入指定文本才能确认（删除高危资源） |
 
@@ -142,13 +142,16 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 | 异步校验 | 字段 `validateApi`（请求体 `{ name, value, values }`，返回 `{ valid, message }` 或字符串）；表单级 `validateApi`（请求体 `{ values }`） |
 | 时机 | `validateOn`: `blur`（默认）/ `change` / `submit` / `manual`；`validateDebounce`、`validateTimeout`、`validateApiFailMode` |
 | 联动 | `disabledOn`、`visibleOn` / `hiddenOn`；`autoFill` 在字段变化后写其它字段 |
-| 提交 | `api`（缺省只做本地校验）、`submitData`、`successMessage` / `errorMessage`、`resetOnSuccess`、`onSuccess` / `onError` |
+| 提交 | `submitMode`：`api`（缺省，提交到 `api`）/ `event`（只本地校验 + 触发 `onEvent.submit`，不请求、不弹成功）；`submitData`、`successMessage`（`false` 关闭）、`errorMessage`、`resetOnSuccess`、`onSuccess` / `onError` |
 | 错误定位 | `submitErrorFocus`: `none` / `focus` / `scroll` |
 | 布局 | `layout`: `vertical` / `inline` / `grid`；`columns` 配 `col` 的 `span`；操作区可置顶、吸底、主次分离、窄屏纵排 |
 
 要点：
 
-- 服务端字段错误用表单指令 `invoke setErrors` 回填：`args.errors` 按字段 `name` 写入，`__form__` 落表单级；值变更或提交启动时先到先清，`focus` 可聚焦首个错误。不要给字段加 `error` 入参。
+- **宿主自管提交链一律用 `submitMode: "event"`**：保存逻辑在 `onEvent.submit` 里（字段归一化、CSRF、错误回填），不再伪造一个 `api` 骗过组件。
+- 服务端字段错误回填有两条路，都落到同一套 `setErrors`：**动作** `{"type":"setErrors","props":{"errors":{"email":"已被注册"},"focus":true}}`（目标三档：`props.form` → 最近祖先表单 / `crud` 查询表单 → 本层唯一表单），**指令** `invoke` 精确寻址表单 id。`errors` 按键合并、`null` 清除该键，`__form__` 为表单级；不要给字段加 `error` 入参。
+- 提交失败不关图层、字段值原样保留（1.8.6 起），所以「失败重开弹窗」的补丁一律删除：在 `onError` 里 `setErrors` 即可，弹窗和输入都在原地。
+- `onError` 链可读错误快照 `${error.message}` / `${error.code}` / `${error.payload...}`（业务信封 `code != 0` 时 `payload` 原样携带响应 `data`；网络错误 / HTTP 非 2xx 不填充）。`actions` / `then` 里没有 `error`，且它会遮蔽数据域同名键（数据域写 `${data.error...}`）。
 - `errorMessage` 缺省取异常 `message`，服务端错误信封的文案因此可直接透传到表单提示。
 - 字段级回填是**可选项**：不声明 `onError` 时保持上面的默认提示；需要时给表单声明稳定 `id`，并加 `onError: [{ "type": "skiffFormErrors", "props": { "form": "<id>" } }]`，壳会把最近一次失败的 `error.field` 经 `setErrors` 贴回表单并聚焦（`props.focus: false` 可关聚焦）。
 - `submit` / `reset` 在表单子树内有效；1.8.5 起也可放在图层页脚，目标是本层唯一表单。字段值实时同步，动作里可用 `${字段名}` 读取。
@@ -293,10 +296,12 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 2. 弹窗里只有一张表单时，保存 / 重置优先放 `footer`（1.8.5 起支持）；页脚按钮拿不到字段值，需按值分支的动作仍写表单 `content.actions`。
 3. 表格 / 虚拟列表的删除、编辑成功后不会自动刷新，需要 `invoke` 对应组件的 `reload`。
 4. `confirm` 的 `requireText` 用于输入型确认；按钮文案、危险语义由 `confirmText` / `cancelText` / `color`（`info` / `warning` / `error`）控制。
-5. 表单字段错误用 `invoke setErrors` 回填；`submitErrorFocus` 只负责提交失败后的焦点/滚动定位。
+5. 表单字段错误用 `setErrors`（动作或 `invoke` 指令）回填；`submitErrorFocus` 只负责提交失败后的焦点/滚动定位。提交失败**不会**关图层、值不丢，别再加「失败重开弹窗」的补丁。
 6. 只读详情用 `property` 组件，不再手工拼 `card` + `flex` + `text`。
 7. 页面 Schema 交付前跑一次 MCP `validateSchema`；`strict: true` 可把未声明字段升级为错误。
 8. 弹窗内浮层（`select` / `autocomplete` / 列菜单 / `tooltip`）靠官方默认 `attach: '[data-bud-layer-root]'` 落到图层根；自己传 `uiDefaults` 覆盖同名键会重新引入「被弹窗压住、点不动」。
+9. 条件字段只能写 `${...}`：本框架**没有** `{{...}}` 双花括号语法，写成 `{{x}}` 会被当成非空字符串恒真（`validateSchema` 给 `CONDITION_NOT_EXPRESSION` 提示）。`&&` / `||` / `!` / `==` / `!=` / `??` 直接写在 `${}` 里。
+10. E2E 选择器用稳定锚点，不靠文案：`data-bud-role`（`dialog` / `drawer` / `confirm` / `footer` / `form` / `field`）与节点 `testId`（渲染为 `data-testid`）；当前开了几层、哪层在顶用 `budding.inspectLayers()`（只读快照，不含正文与字段值）。
 
 ## 10. 本项目的采用约定
 

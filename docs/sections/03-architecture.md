@@ -75,7 +75,7 @@ skiff-core (单进程 · systemd · 宿主机)
 > 「内核自己直接 syscall / spawn」——这样行为天然有记录（文件写进 `audit`、执行进 `jobs`），
 > 不必为每个功能逐条设计权限。`firewall` / `ftp` 两条专用能力面保留但冻结，新功能一律走 `exec`。
 >
-> **内核之外一律插件**（唯一例外是已内核化的「网站」）。文件管理器/防火墙管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs`/`exec` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置。网站（站点列表 / 运行环境 / 设置）已于 2026-11-04 从 `com.skiff.nginx` 插件迁入内核，内核直接编排 nginx + PHP-FPM 容器；站点备份由内核 `scheduler` 内置任务驱动。官方 5 个插件已落地：`guard` 走 `docker`，`files` / `monitor` 走 `fs`，`cron` 走 `interop`，`ftp` 走新增的 `ftp` 能力面（见 [PLUGIN_CATALOG.md](../plugin/PLUGIN_CATALOG.md)）。
+> **内核之外一律插件**（唯一例外是已内核化的「网站」）。文件管理器/防火墙管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs`/`exec` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置。网站（站点列表 / 运行环境 / 设置）已于 2026-11-04 从 `com.skiff.nginx` 插件迁入内核，内核直接编排 nginx + PHP-FPM 容器；站点备份由内核 `scheduler` 内置任务驱动。官方 7 个插件已落地：`guard` 走 `docker` 与 `fs`，`files` / `monitor` 走 `fs`，`cron` 走 `interop` 与 `scheduler`，`firewall` 走 `exec`，`ftp` 走冻结的 `ftp` 能力面（另需 `exec` / `interop`），`sources` 走 `fs` 与 `exec`（见 [PLUGIN_CATALOG.md](../plugin/PLUGIN_CATALOG.md)）。
 
 ## 3.4 Web UI 导航结构与信息架构（最终版）
 

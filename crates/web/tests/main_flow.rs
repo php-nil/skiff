@@ -1461,7 +1461,7 @@ async fn favicon_is_served_with_reasonable_cache() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/static/favicon.svg?v=1")
+                .uri("/p/static/favicon.svg?v=2")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -6462,18 +6462,20 @@ fn budding_boot_docker_actions_map_to_resource_endpoints() {
     }
 }
 
-/// 服务端下发的弹窗必须能进注册表：`dialogError` 靠它重开同一张表单。
+/// 服务端下发的弹窗只需给提交动作打一个 `inLayer` 标记：宿主动作据此决定成功后
+/// 关层还是整页刷新。budding 1.8.6 起提交失败不关图层、字段值保留，所以壳层
+/// **不再**保存弹窗正文副本、也不再「关掉重开」——那套注册表必须彻底消失。
 ///
 /// budding 1.8.3 起 dialog 的正文/底部在动作顶层 `content`，读 `props.body`
-/// 会永远拿不到 body、静默不注册（提交失败只能退化成一闪而过的 toast）。
+/// 会永远拿不到 body、静默漏标。
 #[test]
-fn budding_boot_registers_server_dialogs_from_content_slot() {
+fn budding_boot_marks_layer_submits_from_content_slot() {
     let js = include_str!("../static/budding/budding-boot.js");
     let fn_body = js
-        .split("function registerServerDialog(button)")
+        .split("function markLayerSubmit(button)")
         .nth(1)
         .and_then(|s| s.split("\n  function ").next())
-        .expect("registerServerDialog 必须存在");
+        .expect("markLayerSubmit 必须存在");
     assert!(
         fn_body.contains("button.action.content"),
         "服务端弹窗必须从 action.content 取插槽"
@@ -6482,7 +6484,20 @@ fn budding_boot_registers_server_dialogs_from_content_slot() {
         !fn_body.contains("layer.body"),
         "不得再从 props.body（layer.body）取 body：该位置在 1.8.3+ 是空的"
     );
-    // 资产里每个 dialog 的提交动作都要带 dialog 键，否则失败时找不到注册项。
+    assert!(
+        fn_body.contains("inLayer = true"),
+        "弹窗内表单的提交动作必须打上 inLayer 标记"
+    );
+    for gone in [
+        "dialogRegistry",
+        "function dialogError(",
+        "function registerServerDialog(",
+        "JSON.parse(JSON.stringify(def.content",
+    ] {
+        assert!(!js.contains(gone), "克隆重开弹窗的旧机制应已删除：{gone}");
+    }
+
+    // 资产里每个 dialog 的提交动作都要带 inLayer，否则成功后不关层。
     let row: serde_json::Value =
         serde_json::from_str(include_str!("../static/budding/pages/_file-row.json")).unwrap();
     fn walk_forms(node: &serde_json::Value, seen: &mut usize) {
@@ -6499,9 +6514,9 @@ fn budding_boot_registers_server_dialogs_from_content_slot() {
                         assert!(
                             submit
                                 .get("props")
-                                .and_then(|p| p.get("dialog"))
-                                .is_some_and(|d| d.as_str().is_some_and(|s| !s.is_empty())),
-                            "弹窗表单的提交动作必须带 props.dialog：{submit}"
+                                .and_then(|p| p.get("inLayer"))
+                                .is_some_and(|d| d.as_bool() == Some(true)),
+                            "弹窗表单的提交动作必须带 props.inLayer：{submit}"
                         );
                         *seen += 1;
                     }
@@ -6555,7 +6570,7 @@ fn budding_boot_job_logs_page_comes_from_server() {
     }
 }
 
-/// 文件弹窗表单：数值字段必须发数字，弹窗必须能展示服务端错误摘要。
+/// 文件弹窗表单：数值字段必须发数字，失败必须原地回填到表单。
 #[test]
 fn budding_boot_file_forms_send_typed_values_and_show_errors() {
     let js = include_str!("../static/budding/budding-boot.js");
@@ -6574,12 +6589,20 @@ fn budding_boot_file_forms_send_typed_values_and_show_errors() {
     assert!(js.contains("var gid = Number(gidRaw);"));
     assert!(js.contains("'uid 与 gid 必须是非负整数'"));
 
-    assert!(js.contains("function dialogError("), "弹窗错误摘要函数缺失");
-    assert!(
-        js.contains("props: { type: 'error', title: '提交未完成', text: text }"),
-        "弹窗顶部必须渲染 error alert"
-    );
-    assert!(js.contains("function formError("), "formError 分发函数缺失");
+    // 失败就地回填：写表单错误 + 聚焦首个错误字段，不再关掉重开弹窗。
+    let err = js
+        .split("function formError(ctx, message, field)")
+        .nth(1)
+        .and_then(|s| s.split("\n  function ").next())
+        .expect("formError 必须存在");
+    for needle in [
+        "ctx.extras.form",
+        "setErrors",
+        "focusFirstError",
+        "__form__",
+    ] {
+        assert!(err.contains(needle), "formError 必须原地回填表单：{needle}");
+    }
 
     for name in [
         "fileWrite",
@@ -6727,7 +6750,7 @@ fn budding_boot_ui_theme_presets_and_color_fields() {
     let js = include_str!("../static/budding/budding-boot.js");
     // 预设与配色表单随「设置 → 界面」页迁到服务端 schema。
     let settings_page = include_str!("../src/handlers/ui/settings_page.rs");
-    for name in ["\"星蓝\"", "\"翡翠\"", "\"石墨\"", "\"暖岩\"", "\"玫瑰\""] {
+    for name in ["\"深潜\"", "\"石墨\"", "\"灯塔\""] {
         assert!(settings_page.contains(name), "预设方案缺少名称：{name}");
     }
     assert!(
@@ -7576,15 +7599,17 @@ async fn ui_theme_requires_admin_validates_and_persists() {
     let csrf = h.state.csrf_token(&admin);
     let viewer_csrf = h.state.csrf_token(&viewer);
 
-    // 缺省主色随会话下发，壳页首屏即按全站主题渲染。
+    // 缺省主色随会话下发，壳页首屏即按全站主题渲染（缺省 = 预设「深潜」）。
     let (_, _, body) = get_ui(&h.app, "/ui/v1/session", Some(&viewer), None).await;
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["data"]["theme"]["primary"], "#1867c0", "{body}");
+    assert_eq!(v["data"]["theme"]["primary"], "#17a98e", "{body}");
+    assert_eq!(v["data"]["theme"]["menu"], "#0c2422", "{body}");
+    assert_eq!(v["data"]["theme"]["menu_custom"], true, "{body}");
 
     let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&viewer), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["data"]["primary"], "#1867c0", "{body}");
+    assert_eq!(v["data"]["primary"], "#17a98e", "{body}");
     assert_eq!(v["data"]["can_admin"], false, "{body}");
 
     // viewer 即使带 CSRF 也不能改全局主题。
@@ -7613,7 +7638,7 @@ async fn ui_theme_requires_admin_validates_and_persists() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {text}");
     }
     let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&admin), None).await;
-    assert!(body.contains("#1867c0"), "{body}");
+    assert!(body.contains("#17a98e"), "{body}");
 
     // 合法写入规范化为小写并持久化；session 立即下发新主色。
     let (status, text) = post_ui_json(
@@ -7653,7 +7678,7 @@ async fn ui_theme_requires_admin_validates_and_persists() {
     .await;
     assert_eq!(status, StatusCode::OK, "{text}");
     let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&admin), None).await;
-    assert!(body.contains("#1867c0"), "{body}");
+    assert!(body.contains("#17a98e"), "{body}");
 }
 
 /// 配色扩展：菜单底色随页面自动推导、自定义菜单、主色对比度校正，

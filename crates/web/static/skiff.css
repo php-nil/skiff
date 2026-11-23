@@ -18,10 +18,10 @@
   --text: #101828;
   --text-2: #344054;
   --muted: #667085;
-  --accent: #0f766e;
-  --accent-hover: #0b5f59;
-  --accent-soft: #e7f4f1;
-  --accent-line: #9fd3ca;
+  --accent: #17a98e;
+  --accent-hover: #128a74;
+  --accent-soft: #e4f5f0;
+  --accent-line: #a9ded2;
   --danger: #b42318;
   --danger-soft: #fef3f2;
   --danger-line: #f3b4ae;
@@ -31,7 +31,7 @@
   --info: #175cd3;
   --info-soft: #eff6ff;
   --info-line: #b2ccf7;
-  --focus: #0f766e;
+  --focus: #17a98e;
 
   /* 间距阶梯 */
   --sp-1: 4px;
@@ -73,8 +73,8 @@
   --nav-strong: #101828;
   --nav-muted: #7a8798;
   --nav-caption: #98a2b3;
-  --nav-accent: #0f766e;
-  --nav-active-soft: #e9f4f1;
+  --nav-accent: #17a98e;
+  --nav-active-soft: #e6f4f0;
   --nav-hover: #f4f6f8;
   --nav-row-h: 44px;
   --nav-l2-h: 32px;
@@ -97,10 +97,10 @@ html[data-theme="dark"] {
   --text: #e4e9f0;
   --text-2: #c3ccd9;
   --muted: #8d99a8;
-  --accent: #5fd4b5;
-  --accent-hover: #82e6ca;
-  --accent-soft: rgba(95, 212, 181, .12);
-  --accent-line: rgba(95, 212, 181, .38);
+  --accent: #3fd3b4;
+  --accent-hover: #63ddc1;
+  --accent-soft: rgba(63, 211, 180, .12);
+  --accent-line: rgba(63, 211, 180, .38);
   --danger: #ff8f87;
   --danger-soft: rgba(255, 107, 107, .10);
   --danger-line: rgba(255, 107, 107, .36);
@@ -110,7 +110,7 @@ html[data-theme="dark"] {
   --info: #8db8ff;
   --info-soft: rgba(99, 164, 255, .12);
   --info-line: rgba(99, 164, 255, .36);
-  --focus: #7ee0c2;
+  --focus: #6fe3c9;
   --nav-bg: #151a21;
   --nav-panel: #12171d;
   --nav-line: #232b35;
@@ -118,8 +118,8 @@ html[data-theme="dark"] {
   --nav-strong: #eef2f6;
   --nav-muted: #8d99a8;
   --nav-caption: #6f7c8c;
-  --nav-accent: #5fd4b5;
-  --nav-active-soft: rgba(95, 212, 181, .10);
+  --nav-accent: #3fd3b4;
+  --nav-active-soft: rgba(63, 211, 180, .10);
   --nav-hover: #1a2028;
   --plugin-frame: #0b0d11;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .35);
@@ -1568,19 +1568,19 @@ body.skiff-login-shell::after {
 /* 主题变量 */
 :root {
   --login-bg:
-    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(15, 118, 110, .08) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 90% 85%, rgba(15, 118, 110, .06) 0%, transparent 60%),
-    linear-gradient(135deg, #f4f5f7 0%, #eef1f4 100%);
-  --login-grid-line: rgba(15, 118, 110, .06);
-  --login-glow: rgba(15, 118, 110, .12);
+    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(23, 169, 142, .08) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 90% 85%, rgba(23, 169, 142, .06) 0%, transparent 60%),
+    linear-gradient(135deg, #f4f6f5 0%, #eaeff0 100%);
+  --login-grid-line: rgba(23, 169, 142, .06);
+  --login-glow: rgba(23, 169, 142, .12);
 }
 html[data-theme="dark"] {
   --login-bg:
-    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(95, 212, 181, .10) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 90% 85%, rgba(95, 212, 181, .06) 0%, transparent 60%),
-    linear-gradient(135deg, #0e1116 0%, #151a21 100%);
-  --login-grid-line: rgba(95, 212, 181, .07);
-  --login-glow: rgba(95, 212, 181, .15);
+    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(63, 211, 180, .10) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 90% 85%, rgba(63, 211, 180, .06) 0%, transparent 60%),
+    linear-gradient(135deg, #0a100f 0%, #101a18 100%);
+  --login-grid-line: rgba(63, 211, 180, .07);
+  --login-glow: rgba(63, 211, 180, .15);
 }
 
 /* 左：品牌面板 */
@@ -1594,9 +1594,9 @@ html[data-theme="dark"] {
   padding: clamp(32px, 4.5vw, 56px);
   overflow: hidden;
   background:
-    radial-gradient(120% 120% at 100% 0%, rgba(94, 234, 212, .26) 0%, transparent 55%),
-    linear-gradient(158deg, #0f766e 0%, #115e59 52%, #0b3d3a 100%);
-  color: #ecfdf9;
+    radial-gradient(120% 120% at 100% 0%, rgba(63, 211, 180, .22) 0%, transparent 55%),
+    linear-gradient(158deg, #0c2422 0%, #103f39 52%, #071b18 100%);
+  color: #e6f4f0;
 }
 .login-brand-col::before {
   content: "";
@@ -1628,7 +1628,7 @@ html[data-theme="dark"] {
   color: #fff;
   box-shadow: 0 14px 30px -14px rgba(0, 0, 0, .5);
 }
-.login-brand-col .brand-logo svg { width: 30px; height: 30px; }
+.login-brand-col .brand-logo svg { width: 34px; height: 34px; }
 .login-brand-col .brand-title {
   margin: 8px 0 0;
   font-size: clamp(28px, 3.2vw, 36px);

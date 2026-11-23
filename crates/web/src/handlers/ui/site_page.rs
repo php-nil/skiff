@@ -26,12 +26,11 @@ const API_BASE: &str = "/ui/v1";
 pub fn site_page_schema(data: &SiteDetailData, tab: &str, prefix: &str) -> Value {
     let view = if TABS.contains(&tab) { tab } else { "overview" };
     let site = &data.site;
-    let api_sites = format!("{API_BASE}/sites/{}", site.id);
     let body = match view {
-        "domains" => domains_section(data, &api_sites),
-        "config" => config_section(data, &api_sites),
-        "ssl" => ssl_section(data, &api_sites),
-        "backup" => backup_section(data, &api_sites),
+        "domains" => domains_section(data),
+        "config" => config_section(data),
+        "ssl" => ssl_section(data),
+        "backup" => backup_section(data),
         _ => overview_section(data, prefix),
     };
     let subtitle = match view {
@@ -200,7 +199,7 @@ fn overview_actions(data: &SiteDetailData) -> Vec<Value> {
     })]
 }
 
-fn config_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
+fn config_section(data: &SiteDetailData) -> Vec<Value> {
     let site = &data.site;
     let is_php = site.site_type == "runtime"
         && data.runtime.as_ref().map(|r| r.kind.code.as_str()) == Some("php");
@@ -246,7 +245,6 @@ fn config_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                 "nginx limit_rate；保存后重生成 vhost"
             },
             kit::form(
-                &format!("{api_sites}/policy"),
                 site_write_action(json!({ "op": "policy", "id": site.id, "domain": site.domain })),
                 fields,
                 "保存策略",
@@ -311,7 +309,6 @@ fn config_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                     }
                 ),
                 kit::form(
-                    &format!("{api_sites}/config"),
                     site_write_action(
                         json!({ "op": "config", "id": site.id, "domain": site.domain }),
                     ),
@@ -339,7 +336,7 @@ fn config_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
     out
 }
 
-fn domains_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
+fn domains_section(data: &SiteDetailData) -> Vec<Value> {
     let site = &data.site;
     let mut body = Vec::new();
     if site.aliases.is_empty() {
@@ -372,7 +369,6 @@ fn domains_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                 variant: "flat",
                 title: "新增附加域名",
                 width: 520,
-                url: format!("{api_sites}/domains"),
                 submit: site_write_action(json!({
                     "op": "domains",
                     "action": "add",
@@ -401,7 +397,7 @@ fn domains_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
     })]
 }
 
-fn ssl_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
+fn ssl_section(data: &SiteDetailData) -> Vec<Value> {
     let site = &data.site;
     let ssl = &data.ssl;
     let mut body = vec![
@@ -468,9 +464,7 @@ fn ssl_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                                         "text": "上传后将替换现有证书并自动启用 HTTPS；格式错误的 PEM 会被拒绝。"
                                     }
                                 },
-                                kit::form_body(
-                                    &format!("{api_sites}/ssl"),
-                                    upload_action,
+                                kit::form_body(upload_action,
                                     vec![
                                         json!({
                                             "type": "textarea",
@@ -519,7 +513,7 @@ fn ssl_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
     })]
 }
 
-fn backup_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
+fn backup_section(data: &SiteDetailData) -> Vec<Value> {
     let site = &data.site;
     let backup = &data.backup;
     let mut body = Vec::new();
@@ -578,7 +572,6 @@ fn backup_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                 None,
             ));
             body.push(kit::form(
-                &format!("{api_sites}/backup"),
                 site_write_action(json!({
                     "op": "backup",
                     "id": site.id,
@@ -772,7 +765,6 @@ pub fn sites_page_schema(
             variant: "text",
             title: "批量启停站点",
             width: 520,
-            url: format!("{API_BASE}/sites/batch"),
             submit: site_write_action(json!({ "op": "batch" })),
             fields: vec![
                 json!({
@@ -807,7 +799,6 @@ pub fn sites_page_schema(
             variant: "flat",
             title: "新建站点",
             width: 640,
-            url: format!("{API_BASE}/sites"),
             submit: site_write_action(json!({ "op": "create" })),
             fields: site_create_fields(runtime_items),
             initial: Some(json!({ "site_type": "static" })),

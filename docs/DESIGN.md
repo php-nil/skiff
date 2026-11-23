@@ -1,7 +1,7 @@
 # 设计方案：Skiff（轻舟）· Rust 极简 Linux 服务器管理面板
 
 > 版本：**v1.0（MVP 实施稿）** ｜ 产品名：**Skiff（轻舟）** ｜ 交付形态：**宿主机 systemd 直装（主）**；1Panel 商店 Docker 包为可选受限形态
-> 本方案 = **MVP 方案**，只覆盖三核心：**Web 管理服务 / Docker 管理 / 插件体系**。文件管理由内核持有管理员客户端（「工具 → 文件管理」，IO 全部经 `skiff-fs`）；防火墙、主机监控等其余宿主功能由插件层在宿主能力面（docker/identity/fs/net/ftp）实现（§1.4、§3.3）。
+> 本方案 = **MVP 方案**，只覆盖三核心：**Web 管理服务 / Docker 管理 / 插件体系**。文件管理由内核持有管理员客户端（「工具 → 文件管理」，IO 全部经 `skiff-fs`）；防火墙、主机监控等其余宿主功能由插件层在宿主能力面（docker/identity/fs/net/exec）实现，`ftp` / `firewall` 专用能力面保留但冻结（§1.4、§3.3）。
 > 状态：**MVP 代码已落地**（M0–M4 主体完成；`landlock` / `cgroups` / `nftables` 与 `net` 收口尚未实现）。结构为 **18 个 crate + `xtask`**（`skiff-app` 承载 `AppState`；能力面实现在 `crates/plugin`，判定规则唯一来源在 `skiff-model`）。架构审查 P0–P2 与第六轮复审结论见 [ARCH_REVIEW.md](archive/ARCH_REVIEW.md)（该轮基线为 14 crate；当前 18）；本地门禁命令（`fmt` / `clippy`）与 CI 口径见 [CI.md](ops/CI.md)，测试用例与实测数字见 [TEST_MATRIX.md](test/TEST_MATRIX.md)，测试机部署与验收结论见 [TEST_ENV.md](test/TEST_ENV.md)。**Linux 专属能力中，setuid 降权 / Unix socket 已在 Linux CI 跑过单测，docker.sock 与 systemd 安装已在测试机验证；landlock / cgroups / nftables 尚未实现。** 目标读者：决策者。
 > **文档结构**：本文件是索引与一页结论；正文按章节拆在 `docs/sections/` 下（13 个文件覆盖 §1–§12，§4 分两册）。**文件名前缀 = 章号**，章节号 `§x.y` 全局唯一、拆分不重编号，跨文件引用直接按编号跳转（见下方文档地图）。
 
@@ -21,7 +21,7 @@
 | 基础镜像 | **alpine:3.23**（仅可选 Docker 形态；3.20 已 EOL，禁用） | 排障（docker exec 进面板）需要 shell；跟随受支持分支（3.23 支持到 2027-11） |
 | 资源目标 | 空闲 RSS ≤ 25MB，CPU < 0.3%，二进制 ≤ 14MB | **设计目标，待 M5 实测回填**（口径见 §7） |
 
-**主结论**：MVP = 三核心跑通——**能登录、能管容器、能装插件且崩不了内核**。产品定位 = **极简服务器面板**：内核只做 Web 管理服务 / Docker 管理 / 插件体系，文件管理、防火墙、网站管理等宿主能力以插件形式开放（能力面 docker/identity/fs/net）。插件落宿主机（全家 native）——插件体系因此是真核心而非 docker 附庸；Docker 包降级为可选受限形态（§5.4）。
+**主结论**：MVP = 三核心跑通——**能登录、能管容器、能装插件且崩不了内核**。产品定位 = **极简服务器面板**：内核只做 Web 管理服务 / Docker 管理 / 插件体系，文件管理、防火墙、网站管理等宿主能力以插件形式开放（能力面 docker/identity/fs/net/exec）。插件落宿主机（全家 native）——插件体系因此是真核心而非 docker 附庸；Docker 包降级为可选受限形态（§5.4）。
 
 ---
 

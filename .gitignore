@@ -10,6 +10,8 @@
 /tmp-run
 /skiff-data
 /skiff-run
+/tests/*
+!/tests/BUDDING_UPSTREAM_BACKLOG_UP.md
 skiff-config.toml
 
 # 签名私钥：绝不入库（发布私钥应离线保存）

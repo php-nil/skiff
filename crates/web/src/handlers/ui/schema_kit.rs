@@ -98,18 +98,14 @@ pub fn write_card(title: &str, notice: &str, form: Value) -> Value {
     card(title, body)
 }
 
-/// 表单：内置提交只触发 `onEvent.submit`（`sendOn: false`），真正请求由动作链发出。
+/// 表单：提交只触发 `onEvent.submit` 的动作链，组件自身不发请求、不弹成功提示。
 ///
-/// `api` 必须存在——缺了组件会弹「表单未配置 api」的警告；`sendOn: false` 保证
-/// 它永远不会自己发请求。
-pub fn form(
-    api_url: &str,
-    submit: Value,
-    fields: Vec<Value>,
-    submit_text: &str,
-    initial: Option<Value>,
-) -> Value {
-    let mut node = form_body(api_url, submit, fields, initial);
+/// `submitMode: "event"`（budding 1.8.6 起）是这条链的**声明方式**：只做本地校验并
+/// 触发 `onEvent.submit`，不请求 `api`、不执行 `onSuccess` / `onError`。此前靠
+/// `api: { sendOn: false }` 假装有 api 来避开「未配置 api」警告，1.8.6 后那套
+/// 注入（含插件 schema 的 no-op api）全部删除。
+pub fn form(submit: Value, fields: Vec<Value>, submit_text: &str, initial: Option<Value>) -> Value {
+    let mut node = form_body(submit, fields, initial);
     node["content"] = json!({
         "actions": [
             {
@@ -124,14 +120,9 @@ pub fn form(
 
 /// 不带自身动作区的表单：提交 / 重置按钮交给弹窗页脚（budding 1.8.5 起，
 /// 页脚的 `submit` / `reset` 解析本图层唯一表单）。
-pub fn form_body(
-    api_url: &str,
-    submit: Value,
-    fields: Vec<Value>,
-    initial: Option<Value>,
-) -> Value {
+pub fn form_body(submit: Value, fields: Vec<Value>, initial: Option<Value>) -> Value {
     let mut props = json!({
-        "api": { "method": "POST", "url": api_url, "sendOn": false },
+        "submitMode": "event",
         "actionsAlign": "end"
     });
     if let Some(initial) = initial {
@@ -151,7 +142,6 @@ pub struct DialogForm<'a> {
     pub variant: &'a str,
     pub title: &'a str,
     pub width: u32,
-    pub url: String,
     pub submit: Value,
     pub fields: Vec<Value>,
     pub initial: Option<Value>,
@@ -168,7 +158,7 @@ pub fn dialog_form_button(spec: DialogForm<'_>) -> Value {
     if !spec.notice.is_empty() {
         body.push(alert("info", "", spec.notice));
     }
-    body.push(form_body(&spec.url, spec.submit, spec.fields, spec.initial));
+    body.push(form_body(spec.submit, spec.fields, spec.initial));
     json!({
         "type": "button",
         "props": { "text": spec.text, "variant": spec.variant, "color": "primary" },
@@ -342,9 +332,9 @@ pub fn search_form(label: &str, value: &str, base: &str, with_reset: bool) -> Va
         "onEvent": { "submit": [ { "type": "skiffSearch", "props": { "base": base } } ] },
         "props": {
             "actionsAlign": "end",
-            // 只在本页触发 `onEvent.submit`：`sendOn: false` 让内置提交永不发送。
-            // 但 `api` 必须存在——缺了组件会弹「表单未配置 api」的警告。
-            "api": { "method": "POST", "url": format!("{API_BASE}/_noop"), "sendOn": false }
+            // 提交只跑 `onEvent.submit` 的动作链（跳转由 `skiffSearch` 完成），
+            // 组件自身不发请求——1.8.6 的 `submitMode: "event"` 就是这件事。
+            "submitMode": "event"
         },
         "body": [
             {
@@ -368,7 +358,6 @@ mod tests {
             variant: "tonal",
             title: "新建",
             width: 560,
-            url: "/ui/v1/things".to_string(),
             submit: json!({ "type": "skiffThingWrite" }),
             fields: vec![required_input("name", "名称", "请输入名称")],
             initial: None,

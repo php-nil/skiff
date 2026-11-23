@@ -104,8 +104,7 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
         "type": "form",
         "onEvent": { "submit": [ { "type": "skiffPasswordChange" } ] },
         "props": {
-            "api": { "method": "POST", "url": format!("{API_BASE}/settings/password"), "sendOn": false },
-            "successMessage": "口令已修改",
+            "submitMode": "event",
             "actionsAlign": "end"
         },
         "body": [
@@ -136,7 +135,7 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
             "type": "form",
             "onEvent": { "submit": [ { "type": "skiffTotpEnable" } ] },
             "props": {
-                "api": { "method": "POST", "url": format!("{API_BASE}/settings/totp/enable"), "sendOn": false },
+                "submitMode": "event",
                 "actionsAlign": "end"
             },
             "body": [
@@ -202,7 +201,6 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
             "tls_key": text(data, "/panel/tls_key")
         });
         let mut form = kit::form(
-            &format!("{API_BASE}/settings/panel"),
             json!({ "type": "skiffSettingsSave" }),
             vec![
                 kit::text_input("listen_addr", "监听地址（IPv4 / IPv6 字面量）"),
@@ -283,7 +281,6 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
                 variant: "tonal",
                 title: "导入信任公钥",
                 width: 560,
-                url: format!("{API_BASE}/settings/keys"),
                 submit: json!({ "type": "skiffKeyImport" }),
                 fields: vec![
                     kit::required_input("public_key", "公钥（64 位十六进制）", "请输入公钥"),
@@ -389,35 +386,38 @@ pub fn menu_schema(data: &Value) -> Value {
 
 /// 壳主题预设：整套配色（主色 / 页面底色 / 菜单底色）一次套用。
 ///
-/// 选色口径：主色与菜单底色对比度 ≥ 4.5（服务端仍会校正），页面底色只做极轻
-/// 的色相偏移，避免整页发黄/发灰；深色菜单只给需要的两套，其余走自动白。
-const UI_THEME_PRESETS: [(&str, &str, &str, &str, &str, bool); 5] = [
-    ("星蓝", "清爽白底 + 明亮蓝", "#2563eb", "#f6f8fb", "", false),
+/// 三套配色对应品牌定稿的三个方向，第一套与 `skiff_app::theme` 的缺省值一致：
+/// - 深潜：深墨绿导航 + 暖白内容 + 青绿主色（缺省）；
+/// - 石墨：纯白导航 + 中性底 + 靛紫主色；
+/// - 灯塔：近黑底 + 青柠主色（整体暗色）。
+///
+/// 主色与菜单底色的对比度必须 ≥ 4.5（服务端仍会校正，这里先卡住预设本身），
+/// 页面底色只做极轻的色相偏移，避免整页发灰或发黄。
+const UI_THEME_PRESETS: [(&str, &str, &str, &str, &str, bool); 3] = [
     (
-        "翡翠",
-        "墨绿侧栏 + 薄荷底",
-        "#10b981",
-        "#f4faf7",
-        "#0f2e26",
+        "深潜",
+        "深墨绿导航 + 青绿主色（默认）",
+        "#17a98e",
+        "#f4f6f5",
+        "#0c2422",
         true,
     ),
     (
         "石墨",
-        "深灰侧栏 + 靛蓝主色",
-        "#818cf8",
-        "#f4f5f7",
-        "#1e2330",
+        "纯白导航 + 靛紫主色",
+        "#5a4ae3",
+        "#f5f5f7",
+        "#ffffff",
         true,
     ),
     (
-        "暖岩",
-        "奶油底 + 焦糖主色",
-        "#b45309",
-        "#fbf7f0",
-        "#fffaf2",
+        "灯塔",
+        "近黑底 + 青柠主色",
+        "#b8f04b",
+        "#080a09",
+        "#0b0e0c",
         true,
     ),
-    ("玫瑰", "浅粉底 + 酒红主色", "#be123c", "#fdf4f6", "", false),
 ];
 
 /// 界面设置：预设 + 当前生效色板 + 自定义配色表单。
@@ -536,7 +536,6 @@ pub fn ui_schema(data: &Value) -> Value {
         "自定义配色",
         "保存后当前页自动刷新；其他已登录会话在下次加载页面时使用新配色。",
         kit::form(
-            &format!("{API_BASE}/settings/ui"),
             json!({ "type": "skiffUiThemeWrite" }),
             vec![
                 color_field("primary", "主色（#rrggbb）", "", "请输入主色"),
@@ -687,7 +686,6 @@ pub fn docker_schema(data: &Value, images: &Value) -> Value {
         "镜像拉取参数",
         "只写宿主配置，不改动已有容器。",
         kit::form(
-            &format!("{API_BASE}/settings/docker"),
             json!({ "type": "skiffDockerSettingsWrite" }),
             vec![mirror, prefix],
             "保存",
@@ -707,7 +705,6 @@ pub fn docker_schema(data: &Value, images: &Value) -> Value {
         "运行环境镜像标签",
         "与上方「镜像前缀」共同决定拉取的完整镜像名；留空使用内置默认值。",
         kit::form(
-            &format!("{API_BASE}/runtimes/images"),
             json!({ "type": "skiffRuntimeImages" }),
             vec![nginx, php],
             "保存镜像参数",
@@ -719,4 +716,34 @@ pub fn docker_schema(data: &Value, images: &Value) -> Value {
     ));
 
     kit::page("Docker 设置", "镜像拉取参数", body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 预设必须自身达标：主色在菜单底色上 ≥ 4.5:1，页面底色与菜单底色不能同色，
+    /// 否则「套用预设」会被服务端静默校正成另一个颜色，色卡与结果对不上。
+    #[test]
+    fn theme_presets_hit_contrast_and_are_named() {
+        for (name, desc, primary, page, menu, menu_custom) in UI_THEME_PRESETS {
+            assert!(!name.is_empty() && !desc.is_empty(), "预设必须有名称与说明");
+            assert!(menu_custom, "预设都要显式给菜单底色，不能靠自动推导");
+            let ratio = skiff_app::theme::contrast(primary, menu);
+            assert!(
+                ratio >= skiff_app::theme::MIN_CONTRAST,
+                "预设「{name}」主色 {primary} 在菜单 {menu} 上对比度不足：{ratio:.2}"
+            );
+            assert_ne!(page, menu, "预设「{name}」页面底色与菜单底色不能相同");
+        }
+    }
+
+    /// 第一套预设必须与缺省主题一致：否则用户点「恢复默认」与点「深潜」得到两种结果。
+    #[test]
+    fn first_preset_matches_default_theme() {
+        let (_, _, primary, page, menu, _) = UI_THEME_PRESETS[0];
+        assert_eq!(primary, skiff_app::theme::DEFAULT_PRIMARY);
+        assert_eq!(page, skiff_app::theme::DEFAULT_PAGE);
+        assert_eq!(menu, skiff_app::theme::DEFAULT_MENU);
+    }
 }

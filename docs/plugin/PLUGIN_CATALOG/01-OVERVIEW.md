@@ -16,7 +16,7 @@
 | 选型依据 | 竞品把面板做成「服务器操作系统」，Skiff 只做三核心，**官方插件集就是产品完整度的上限** |
 | 官方插件集 | **首批 6 个**（现为 7 个，追加 `sources`）：**容器守护**（零内核改动，链路验证）→ **主机监控**（含进程/网络只读视图）→ **站点文件**（站点级浏览/编辑）→ **计划任务** → **FTP 管理** → **防火墙**（Nginx 站点已内核化，按落地难度排序） |
 | 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级（已完成） |
-| 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 已支持 `containers.exec`，仍缺 create/remove/pull/compose；`net` 一律 501 |
+| 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 的通用分发已覆盖容器 create/remove/update/exec、镜像 pull、`compose.up/down`；`net` 一律 501 |
 | 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/www/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
 | 能力面扩张 | 新增两个内核原语：`ftp`（FTP 管理）与 `firewall`（防火墙 / fail2ban），均涉及 `wire`/`pkgfmt`/SDK/插件 manifest 同步；契约见 [KERNEL_FTP_CONTRACT.md](../../contract/KERNEL_FTP_CONTRACT.md) 与 [KERNEL_FIREWALL_CONTRACT.md](../../contract/KERNEL_FIREWALL_CONTRACT.md)。2026-11-16 追加通用 `exec` 面（`bin:` 授权 + 全审计），此后新宿主功能不再新增专用面 |
 
@@ -27,9 +27,9 @@
 
 | 能力 | 代码现状 | 位置 | 对官方插件集的含义 |
 |---|---|---|---|
-| `docker` | 白名单动词；Broker 执行 `containers.list/inspect/logs/exec`、`images.list`、`networks.list`、`volumes.list`、`info`、`version`、`containers.start/stop/restart/kill`；create、remove、pull、compose 一律返回 Unsupported | `crates/docker/src/client.rs` 的 `Docker::execute` | 一键部署、数据库管理、备份导出仍卡在 create/remove/compose |
+| `docker` | 白名单动词；`Docker::execute` 通用分发覆盖 `containers.list/inspect/logs/start/stop/restart/kill/create/remove/update/exec`、`images.list/pull`、`networks.list`、`volumes.list`、`compose.up/down`、`info`、`version`；`images.remove` / `networks.create/remove` / `volumes.create/remove` 等走类型化接口或未开放 | `crates/docker/src/client.rs` 的 `Docker::execute` | 一键部署、数据库管理已具备能力前提；备份导出未做 |
 | `fs` | 两条分支：相对路径落插件自身 `data/`；**绝对路径**须命中安装时确认的 `path:` 对象授权根（`fsops::resolve` + `skiff_plugin::fsgrant`），动词 `read/write/list/mkdir/remove/rename`；单次读写 256KiB 分页 | `crates/plugin/src/{capability.rs,fsops.rs,fsgrant.rs}` | 文件管理器、主机监控、Nginx 站点已可做；大文件靠分页而非流式 |
-| `net` | 一律 501 + 审计 | `crates/core/src/kernel/capability.rs` 的 `net_unimplemented` | ACME 证书、出网告警仍不可做；防火墙改走新增的 `firewall` 能力面，不依赖 `net` |
+| `net` | 一律 501 + 审计 | `crates/core/src/kernel/capability.rs` 的 `net_unimplemented` | ACME 证书、出网告警仍不可做；防火墙插件现走 `exec`（`bin:` 授权），`firewall` 能力面保留但冻结 |
 | `firewall` | **新增能力面**（api 1.2）：`status/rules.list/rule.add/rule.remove/port.allow/fail2ban.status/fail2ban.install/fail2ban.jail.ensure/fail2ban.jail.remove/fail2ban.banned/fail2ban.ban/fail2ban.unban`；只动 `inet skiff` 表 / `SKIFF` 链与 `/etc/fail2ban/jail.d/skiff-*.conf`；仅 Native 形态，Linux-only；插件按 `perm:firewall:<verb>` 或 `firewall:*` 取授权 | `crates/plugin/src/firewall.rs`（判定与命令编排）、`crates/core/src/kernel/firewall.rs`（鉴权/审计/特权通道）、`crates/wire`（`CAP_FIREWALL_CALL`）、`crates/pkgfmt`（`Capability::Firewall`）、`crates/sdk`（`firewall_call`） | 防火墙插件只做 UI 与编排；规则与 jail 由能力面经 systemd-run 瞬态单元执行 |
 | `identity` | `capability/identity/self` 返回 `id/version/api/granted/permissions/objects`（插件拿到的权限与 `path:`/`container:` 授权根就在这里） | `crates/core/src/kernel/capability.rs` 的 `identity_self` | 插件可自检授权，不必把根目录写死在代码里 |
 | `ftp` | **新增能力面**（api 1.2）：`status/install/service.configure/uninstall/sites.list/accounts.list/account.create/account.password/account.delete/account.set_enabled/service.restart`；`status` 回传真实监听/连接数/fail2ban 细节，配置持久化到 `/etc/skiff/ftp-service.json`；仅 Native 形态，Linux-only；插件按 `perm:ftp:<verb>` 或 `ftp:*` 取授权 | `crates/plugin/src/ftp.rs`（判定与编排）、`crates/core/src/kernel/ftp.rs`（grants/审计/`systemd-run` 通道）、`crates/wire`（`CAP_FTP_CALL`）、`crates/pkgfmt`（`Capability::Ftp`）、`crates/sdk`（`ftp_call`） | FTP 管理插件只做 UI 与编排；能力面的特权动作（apt/systemd/pure-pw/chown）由插件编排、经内核的特权通道执行 |

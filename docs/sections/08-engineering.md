@@ -102,7 +102,7 @@ skiff/
 | scheduler | `crates/app/src/tasks.rs`（`sched` 为纯逻辑，不能反向依赖 `app`） | `crates/core/src/kernel/capability.rs` |
 | docker / identity / config | 判定复用 `policy` / `store` | `crates/core/src/kernel/capability.rs` |
 
-与 §3.3 的关系：内核原子能力是 `docker`/`identity`/`fs`/`net`/`interop` 五项（运行时能力面，`interop` 是插件间调用的转发面）；上面三块是**产品形态面**——Docker 管理 = 内置主业（白名单/路径安全/Compose 全在 `crates/docker`），Web 管理服务 = 管理面（承载 `identity` 与 api/ui），插件体系 = 开放能力面（宿主上的第三方扩展）。`crates/docker` 独立成包正因为它是主业，不是普通适配器。
+与 §3.3 的关系：内核原子能力是 `docker` / `identity` / `fs` / `net` / `exec` / `scheduler` 六项（`interop` 是插件间调用的转发面，`ftp` / `firewall` 保留但冻结）；上面三块是**产品形态面**——Docker 管理 = 内置主业（白名单/路径安全/Compose 全在 `crates/docker`），Web 管理服务 = 管理面（承载 `identity` 与 api/ui），插件体系 = 开放能力面（宿主上的第三方扩展）。`crates/docker` 独立成包正因为它是主业，不是普通适配器。
 
 **最小可用版本 = 三块核心跑通**：能登录、能管容器、能装插件且崩不了内核。支撑层跟着三块成形，不单独立项。
 

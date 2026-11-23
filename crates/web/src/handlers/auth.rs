@@ -99,7 +99,7 @@ pub fn login_shell_html(prefix: &str, username: &str, next: &str) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · Skiff</title>
-<link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
+<link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=2">
 <script src="/{prefix}/static/theme-init.js"></script>
 <link rel="stylesheet" href="/{prefix}/static/skiff.css?v={shell}">
 </head>
@@ -107,7 +107,7 @@ pub fn login_shell_html(prefix: &str, username: &str, next: &str) -> String {
 <div class="login-layout">
   <aside class="login-brand-col">
     <div class="brand-logo" aria-hidden="true">
-      <svg viewBox="0 0 28 28"><rect x="1.2" y="1.2" width="25.6" height="25.6" rx="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7 16.5h14l-2.8 4.5H9.8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M13.4 14V7l5.2 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 28 28" fill="currentColor"><path d="M3.5 17.8q10.5-6.6 21 0-10.5 6.6-21 0Z"/><circle cx="14" cy="10.4" r="2.6"/></svg>
     </div>
     <h1 class="brand-title">Skiff · 轻舟</h1>
     <p class="brand-subtitle">Web 服务、Docker 与插件收进同一个二进制，一条命令完成部署。</p>

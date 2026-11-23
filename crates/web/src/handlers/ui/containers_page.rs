@@ -169,7 +169,6 @@ pub fn containers_schema(
                 variant: "tonal",
                 title: "新建容器",
                 width: 720,
-                url: format!("{API_BASE}/containers"),
                 submit: json!({ "type": "skiffDockerWrite", "props": { "op": "create" } }),
                 fields: container_create_fields(),
                 initial: None,
@@ -218,7 +217,6 @@ pub fn container_new_schema() -> Value {
                 "端口、环境变量、绑定与卷均按每行一条；网络每行一个名称。留空表示不设置。",
             ),
             kit::form(
-                &format!("{API_BASE}/containers"),
                 json!({ "type": "skiffDockerWrite", "props": { "op": "create" } }),
                 container_create_fields(),
                 "创建容器",
@@ -393,7 +391,6 @@ fn limits_form(container_id: &str, data: &ContainerDetailData) -> Value {
         field("pids_limit", "PIDs 上限", &l.pids_limit),
     ];
     kit::form(
-        &format!("{API_BASE}/containers/{}/limits", enc(container_id)),
         json!({ "type": "skiffDockerWrite", "props": { "op": "limits", "id": container_id } }),
         fields,
         "保存限制",

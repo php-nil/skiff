@@ -145,7 +145,6 @@ fn create_dialog(catalog: &Value) -> Value {
         variant: "flat",
         title: "新建运行环境",
         width: 640,
-        url: format!("{API_BASE}/runtimes"),
         submit: json!({ "type": "skiffRuntimeCreate" }),
         fields,
         initial: Some(initial),
@@ -257,7 +256,6 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
             "PHP 运行参数",
             "保存后自动重载 FPM；非法值会被拒绝并保留原配置。",
             kit::form(
-                &format!("{API_BASE}/runtimes/{}/config", enc(runtime_id)),
                 json!({ "type": "skiffRuntimeConfig", "props": { "id": runtime_id } }),
                 fields,
                 "保存并重载 FPM",
@@ -317,7 +315,6 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
                     }
                 },
                 kit::form(
-                    &format!("{API_BASE}/runtimes/{}/config-file", enc(runtime_id)),
                     json!({ "type": "skiffRuntimeFile",
                            "props": { "id": runtime_id, "key": text(editor, "/key") } }),
                     vec![kit::textarea(
@@ -395,7 +392,6 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
             "按名字安装 PECL 扩展",
             "用于目录里没有的扩展；安装任务会编译并重启一次容器。",
             kit::form(
-                &format!("{API_BASE}/runtimes/{}/pecl", enc(runtime_id)),
                 json!({ "type": "skiffRuntimePecl", "props": { "id": runtime_id } }),
                 vec![
                     kit::text_input("name", "PECL 扩展名"),
@@ -426,7 +422,6 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
             "Node.js 配置",
             "配置变化会触发一次重建；未变化不重启。",
             kit::form(
-                &format!("{API_BASE}/runtimes/{}/node-config", enc(runtime_id)),
                 json!({ "type": "skiffRuntimeNode", "props": { "id": runtime_id } }),
                 vec![
                     command,
@@ -468,7 +463,6 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
                 "端口",
                 &port_notice,
                 kit::form(
-                    &format!("{API_BASE}/runtimes/{}/port", enc(runtime_id)),
                     json!({ "type": "skiffRuntimePort", "props": { "id": runtime_id } }),
                     vec![field],
                     "保存端口",
@@ -517,7 +511,6 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
         "克隆",
         "复制当前配置与新实例；端口由内核重新分配，名称可留空（默认追加 -copy）。",
         kit::form(
-            &format!("{API_BASE}/runtimes/{}/clone", enc(runtime_id)),
             json!({ "type": "skiffRuntimeClone", "props": { "id": runtime_id } }),
             vec![kit::text_input("name", "新实例名（可留空）")],
             "克隆并安装",

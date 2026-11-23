@@ -49,6 +49,7 @@ pub fn theme_css(theme: &skiff_app::theme::Theme) -> String {
     let page_text = triple(&theme.page_text);
     let menu = triple(&theme.menu);
     let menu_text = triple(&theme.menu_text);
+    let surface = triple(&skiff_app::theme::surface(&theme.page));
     let rgba = |rgb: &str, alpha: &str| format!("rgba({rgb}, {alpha})");
     let mut css = String::new();
     css.push_str(&format!(
@@ -94,8 +95,20 @@ pub fn theme_css(theme: &skiff_app::theme::Theme) -> String {
          --v-theme-primary:{primary} !important;\
          --v-theme-on-primary:{on_primary} !important;\
          --v-theme-background:{page} !important;\
-         --v-theme-on-background:{page_text} !important;}}"
+         --v-theme-on-background:{page_text} !important;\
+         --v-theme-surface:{surface} !important;\
+         --v-theme-on-surface:{page_text} !important;}}"
     ));
+    // 暗底页面（预设「灯塔」）：次级面也要压到同一色阶，否则表格头、斑马纹、
+    // 内嵌块仍是 Vuetify 浅色主题的浅灰，在黑底上比白卡片更刺眼。
+    if skiff_app::theme::is_dark_page(&theme.page) {
+        let raised = triple(&skiff_app::theme::surface_raised(&theme.page));
+        css.push_str(&format!(
+            ".v-theme--light,.v-theme--dark{{\
+             --v-theme-surface-variant:{raised} !important;\
+             --v-theme-on-surface-variant:{page_text} !important;}}"
+        ));
+    }
     css.push_str(&format!(
         ".v-application{{background:rgb({page}) !important}}"
     ));
@@ -272,7 +285,7 @@ pub fn shell_html(prefix: &str, theme_css: &str) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Skiff</title>
-<link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
+<link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=2">
 <link rel="stylesheet" href="/{prefix}/static/budding/budding-icons-{icons}.min.css?v={icons}">
 <link rel="stylesheet" href="/{prefix}/static/skiff-shell.css?v={shell}">
 <style id="skiff-shell-theme">{theme_css}</style>
@@ -372,9 +385,9 @@ mod tests {
         )));
         assert!(
             html.contains(
-                r#"<link rel="icon" type="image/svg+xml" href="/p/static/favicon.svg?v=1">"#
+                r#"<link rel="icon" type="image/svg+xml" href="/p/static/favicon.svg?v=2">"#
             ),
-            "壳页必须显式声明 favicon，避免浏览器回落探测 404"
+            "壳页必须显式声明 favicon（改图形要升 ?v=），避免浏览器继续用缓存图标"
         );
         // 壳页不引用稳定别名（D11），也不许出现内联脚本或外部加载器。
         assert!(!html.contains("budding.min.js"));
@@ -399,12 +412,37 @@ mod tests {
         assert!(css.contains("--v-theme-primary:24, 103, 192 !important"));
         assert!(css.contains("--v-theme-on-primary:255, 255, 255 !important"));
         assert!(css.contains("--v-theme-background:245, 245, 245 !important"));
+        assert!(css.contains("--v-theme-surface:255, 255, 255 !important"));
+        assert!(css.contains("--v-theme-on-surface:0, 0, 0 !important"));
+        assert!(
+            !css.contains("--v-theme-surface-variant"),
+            "浅色页不注入次级面，保留 Vuetify 自带的浅灰"
+        );
         assert!(css.contains("--bud-admin-chrome-bg:rgb(255, 255, 255) !important"));
         assert!(css.contains("--bud-admin-chrome-on-rgb:0, 0, 0 !important"));
         assert!(css.contains("--bud-admin-chrome-text:rgba(0, 0, 0, 0.82) !important"));
         // Vuetify 在主题类上重复声明，覆盖必须同时落在 `.v-theme--*` 上。
         assert!(css.contains(".v-theme--light,.v-theme--dark{"));
         assert!(css.contains(".v-application{background:rgb(245, 245, 245) !important}"));
+
+        // 暗底页面（预设「灯塔」）：卡片与次级面都要抬亮，不能留白卡片。
+        let dark = theme_css(&skiff_app::theme::Theme {
+            primary: "#b8f04b".into(),
+            menu: "#0b0e0c".into(),
+            page: "#080a09".into(),
+            menu_custom: true,
+            menu_text: "#ffffff".into(),
+            page_text: "#ffffff".into(),
+            on_primary: "#000000".into(),
+            adjusted: false,
+        });
+        assert!(!dark.contains("--v-theme-surface:255, 255, 255"), "{dark}");
+        assert!(dark.contains("--v-theme-surface-variant:"), "{dark}");
+        assert!(
+            dark.contains("--v-theme-on-surface-variant:255, 255, 255"),
+            "{dark}"
+        );
+
         // 非法值不许拼出坏 CSS。
         let broken = theme_css(&skiff_app::theme::Theme {
             primary: "oops".into(),

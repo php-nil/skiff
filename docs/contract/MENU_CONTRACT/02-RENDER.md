@@ -165,9 +165,11 @@ overview(0) → sites(100) → docker(200) → plugins(300) → tools(400) → s
 ### 4.7 界面设置页
 
 - 入口：`设置 → 界面`，稳定键 `core/settings/ui`，URL `/{p}/settings/ui`。
-- 最小集合只有「主色」一项，按**全站**生效（全局设置，非按用户）：写入仅管理员，读取对所有登录用户开放。
-- 主色存 `settings` 表 `ui.theme.primary`，`#rrggbb` 小写；空值恢复缺省 `#1867c0`。
+- 三个字段按**全站**生效（全局设置，非按用户）：主色 `ui.theme.primary`、菜单底色 `ui.theme.menu`、页面底色 `ui.theme.page`，均存 `#rrggbb` 小写；`ui.theme.menu_custom` 控制菜单底色是否自定义。写入仅管理员，读取对所有登录用户开放。
+- 缺省值（方案「深潜」）：主色 `#17a98e`、页面底色 `#f4f6f5`、菜单底色 `#0c2422`。`menu_custom` **缺省为真**——默认形态是深色导航 + 浅色内容；只有显式存 `"0"`（用户关掉开关）才按页面亮度自动取白/近黑。空值一律回落上述缺省。
+- 预设三套，点「套用」一次写入三个颜色：`深潜`（= 缺省）、`石墨`（`#5a4ae3` / 纯白导航）、`灯塔`（`#b8f04b` / 近黑底）。预设自身必须满足主色在菜单底色上 ≥ 4.5:1，否则会被服务端校正成另一个色，色卡与结果对不上（`settings_page` 用例拦这一条）。
 - 下发路径：`GET /ui/v1/session → theme.primary`；壳启动时**不写入 schema 树**（budding 1.8.0-r4 未注册根级 `theme`，写入会 `CompileError` 白屏），改为向文档注入 `--v-theme-primary` / `--v-theme-on-primary` / `--bud-admin-primary` 等 CSS 变量（对 `.v-theme--light/.v-theme--dark` 用 `!important` 覆盖 Vuetify 缺省主色）；保存后当前页刷新，其他会话下次加载页面生效。
 - 校验失败 400 且不落库；成功审计 `settings.ui.update`。
+
 
 ---

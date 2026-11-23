@@ -5,7 +5,7 @@
 ## 一、项目概述
 
 - **项目名称**：Skiff（轻舟）
-- **核心定位**：Rust 极简 Linux 服务器管理面板，只做三核心：**Web 管理服务 / Docker 管理 / 插件体系**。内核持 fs 能力面的管理员客户端（「工具 → 文件管理」，IO 全经 `skiff-fs`）；防火墙、主机监控等宿主功能由插件在能力面（docker/identity/fs/net/ftp/firewall）实现。
+- **核心定位**：Rust 极简 Linux 服务器管理面板，只做三核心：**Web 管理服务 / Docker 管理 / 插件体系**。内核持 fs 能力面的管理员客户端（「工具 → 文件管理」，IO 全经 `skiff-fs`）；防火墙、主机监控等宿主功能由插件在能力面（docker/identity/fs/net/exec）实现，`ftp` / `firewall` 专用能力面保留但冻结。
 - **技术栈**：Rust（根 workspace + 第二 workspace `plugins/`）、SQLite、Docker、UDS 插件协议；交付以宿主机 systemd 直装为主，1Panel 商店 Docker 包为受限形态（能力面收缩为 docker/identity）。
 
 ## 二、仓库结构
