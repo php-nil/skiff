@@ -6605,12 +6605,16 @@ fn budding_boot_file_forms_send_typed_values_and_show_errors() {
         .nth(1)
         .and_then(|s| s.split("\n  function ").next())
         .expect("formOf 必须存在");
-    for needle in ["extras.form", "budding:layer-forms", "registry.list()"] {
+    for needle in ["extras.form", "LAYER_FORMS_KEY", "registry.list()"] {
         assert!(
             form_of.contains(needle),
             "表单实例解析必须覆盖图层登记表：{needle}"
         );
     }
+    assert!(
+        js.contains("var LAYER_FORMS_KEY = 'budding:layer-forms';"),
+        "图层登记表的键必须与 budding 的图层数据袋约定一致"
+    );
     let err = js
         .split("function formError(ctx, message, field)")
         .nth(1)
