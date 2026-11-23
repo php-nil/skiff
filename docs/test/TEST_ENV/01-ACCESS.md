@@ -19,10 +19,10 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18080/dwkaf8si/login`（**形态三：直接明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `dwkaf8si`（2026-11-22 22:47 budding 1.8.5 轮最终升级后保持） |
+| URL | `http://10.10.15.4:18080/28bwmusa/login`（**形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `28bwmusa`（2026-11-23 budding 1.8.6 轮干净首装生成，两轮就地升级后不变） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
-| 明文通道（形态三，当前） | `listen="0.0.0.0:18080"` + `tls_enabled=false` + `allow_insecure_http=true`（**安装后人工追加**：install.sh 对非 loopback 不明文放行，§6.2 裸奔防护）；**无转发层**，直连 18080。Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
+| 明文通道（形态三，当前） | `listen="0.0.0.0:18080"` + `tls_enabled=false` + `allow_insecure_http=true`（**安装后人工追加**：安装脚本只写 `listen` + `tls_enabled`，`allow_insecure_http` 与插件安装要用的 `allow_reduced_sandbox` 均需人工补，见 §6.2 裸奔防护）；**无转发层**，直连 18080。Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
 | 证书 | 本轮全新安装未生成 TLS 证书（`tls_enabled=false`）；历史自签证书路径与 SAN 见 §2.1，需要 TLS 时按形态一/二重新生成或回切 |
 | 健康检查 | `GET /healthz` 200；裸 `GET /` 404，根路径只做前缀跳转 |
 
@@ -44,8 +44,8 @@
 | 项 | 值 / 读取方式 |
 | --- | --- |
 | 管理员账号 | `admin` |
-| 当前口令 | 见测试机 `/root/iter/admin-pw.txt`（2026-11-22 22:47 轮 `reset-password` 后改为已知口令；口令明文不落文档） |
-| 口令文件 | `/root/iter/admin-pw.txt`（`0600`）。**只存口令本身**（16 B，无换行），取自 `/www/skiff/initial-admin.txt` 第 3 行 `口令: …` |
+| 当前口令 | 见测试机 `/root/iter/admin-pw.txt`（2026-11-23 轮 `skiff admin reset-password --yes` 后用接口改为已知口令；口令明文不落文档） |
+| 口令文件 | `/root/iter/admin-pw.txt`（`0600`）。**只存口令本身**（无换行）。首装时取自 `/www/skiff/initial-admin.txt` 第 3 行 `口令: …`；`accept.sh` 的 B3 改密会把口令换回原值，重装/重置后必须同步更新本文件 |
 | 读取方式 | SSH 登录后 `cat /root/iter/admin-pw.txt`；重置/轮换口令后必须同步更新该文件 |
 | 首登改密 | 测试期默认 `must_change_password=0`，初始口令可直接登录；强制改密流程见 [ITERATION/01-ROUND.md](../ITERATION/01-ROUND.md) §5.2.1 |
 

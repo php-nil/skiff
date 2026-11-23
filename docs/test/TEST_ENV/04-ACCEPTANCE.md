@@ -4,8 +4,20 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-22 22:47 `76412df`：budding 1.8.5 同步 + 弹窗页脚提交 + 干净首装/三轮升级复验）
+## 8. 最近一次验收结论（截至 2026-11-23 20:30 `9c1be6c`：budding 1.8.6 事件提交 + 首轮两个缺陷修复 + 干净首装/两轮升级复验）
 
+**2026-11-23 20:30 干净首装 `9f43aee` → 修复 `5a48b83` → `fe4baa4` / 断言 `9c1be6c`：accept.sh 三轮 49 PASS / 0 FAIL / 3 SKIP，50 实路由 0 console error**
+
+- **前置**：测试机还原为 T1（无 `/etc/skiff`、无 `/www/skiff`、无 `/root/iter`，18080 空闲，Docker 29.7.2 在位，时钟已同步，磁盘 112 G 可用）。
+- **上游同步**：budding 1.8.5（`a3a3c8d`）→ 1.8.6。主包 1,027,351 B / CSS 574,157 B / icons 4,645 B + woff2 3,992 B / code pack 90,331 B / terminal pack 395,014 B（CSS、code、terminal、woff2 与 1.8.5 逐字节相同）；`BUDDING_VERSION` = `1.8.6`，`SHELL_VERSION` 43→44→45。
+- **适配**：表单全面改 `props.submitMode: "event"`（`schema_kit::form` / `form_body` / `search_form` 与 22 处调用点，`DialogForm.url` 字段删除）；`crates/pkgfmt` 删掉 `inject_form_submit_stub`、改为「带 `onEvent.submit` 的 form 必须声明 `submitMode: event`」；删除宿主 K3（dialogRegistry + 克隆重开）与 K4（插件 schema 注入 no-op `api`），改成提交动作打 `inLayer`；`confirm` 的 `level` 改为 `color`。
+- **首装（通过）**：`install.sh --listen 0.0.0.0:18080 --tls off` exit **0**；前缀 **`28bwmusa`**；库 `user_version=22`、`integrity_check=ok`；`/healthz` 200。人工追加 `allow_insecure_http`（让 accept 判 dev 档、跑通 B 组）与 `allow_reduced_sandbox`（插件沙箱降级开关）。
+- **缺陷 1（已修）**：插件拒装删源包——8 个官方插件因「要求完整沙箱」全拒，`/www/skiff/official/*.wbpkg` 同时被清空。`commands/plugin.rs::install` 改为「装成功 + 路径在 `plugins/.incoming` 内」才 `remove_kernel`；新增用例 `rejected_install_keeps_the_source_package`。复验：装完 8 个官方插件后官方目录仍 9 个文件；`/tmp/bad-0.1.0.wbpkg` 拒装后原样保留。
+- **缺陷 2（已修）**：弹窗提交失败静默——`formError` 只认 `ctx.extras.form`，而弹窗提交按钮在图层 `footer`（与正文是兄弟子树）恒取不到控制器，失败只剩 2 秒 toast。改为按 budding 目标解析规则再查 `extras['budding:layer-forms']` 登记表（`formOf(ctx)`）。复验：同名建目录弹窗内出现「新建目录失败：目标已存在」，输入值保留、层不关；新建站点在 Web 服务未就绪时就地显示 503 原因。
+- **accept.sh（通过）**：首装 `9f43aee` **50 PASS / 0 FAIL / 2 SKIP**；中间包 `5a48b83` 与最终包 `9c1be6c` 各 **49 PASS / 0 FAIL / 3 SKIP**（PF4 装后端口、A6h 已改密机无 `initial-admin.txt`、B4 未开限流）。权限位 711/711/700/600/644/711/660 全对；restart 自恢复、kill -9 后拉起；B 组完整 CSRF→登录→错误口令 401→改密 200→`initial-admin.txt` 删除→旧会话 303→新会话 200。
+- **浏览器（通过）**：`/ui/v1/routes` 展开 69 条（19 条为 `:id` 模板路由，命中「不存在」属预期），**实路由 50/50 全 200、0 CompileError、0 JS 异常**；关键交互 15 项全过（同名建目录失败原地回填、空提交字段级错误、新建站点成功关层并刷新列表、站点详情 6 子视图、6 个插件功能页、主题页 `--v-theme-primary=23,169,142`）。
+- **环境补充**：本轮装了 OpenResty 容器（`skiff-web-nginx`，安装作业 100% 完成），站点创建因此可跑通；8 个官方插件（cron / files 0.1.3 / firewall / ftp / guard / monitor / sources / testkit，API 1.3）全部 installed + enabled。
+- **未覆盖（限制）**：TLS 形态一/二、aarch64、PHP/Node 运行环境安装与扩展、FTP/fail2ban 实装、真实备份计划、≤880px 布局与浅/深主题逐页比对；镜像/网络/卷的实际创建删除未做浏览器实测。
 **2026-11-22 22:47 干净首装 `e3066e6` → 修复 `5fa12e2` → 补收口 `76412df`：accept.sh 三轮 49 PASS / 0 FAIL / 3 SKIP**
 
 - **前置**：测试机还原为 T1（Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff`，18080 空闲）。
@@ -34,15 +46,6 @@
   - SITE-21 从归档恢复：3 条作业（校验/快照/解包）全成功；`<时间戳>-pre-restore.tar` 生成；被删文件回来、`keep.txt` 回到归档版本、`extra.txt` 保留；审计 `sites.restore` 注明 nginx 已生效；`confirm` 不匹配 400、`archive=../x.tar` 400、损坏归档只失败「校验」作业且站点目录未改动。
   - SITE-07 站点目录：详情显示「站点目录 / 文档根」两行与「打开文件管理」链接（`?path=` 编码正确）；越界实测 **403 `auth.forbidden`（路径含非法片段）**，矩阵原写 400 已更正。
 - **未覆盖（限制）**：TLS 形态一/二、aarch64、镜像/网络/卷的创建与删除、PHP 运行环境安装与扩展、FTP/fail2ban 实装、真实备份计划（本轮用人工放入的归档）、≤880px 布局与浅/深主题切换后的逐页比对。
-
-**2026-11-21 11:45 登录页视觉重做 + 滚动条修复 `5221b4c`：960×571 深/浅双主题真实浏览器全 PASS**
-
-- **问题**：首版重做后右列出现内层滚动条——budding page 根把 `#skiff-login` 撑到 571px，叠加固定卡片高度，右列 `clientHeight 512 / scrollHeight 795`；滚动条为默认白条，在深色卡片上非常突兀。
-- **改动**：取消 `.login-layout` 固定高度，卡片由内容撑开并以 `margin:auto` 居中；右列 `overflow: visible`；强制 `#skiff-login` 与 budding page 根 `height:auto`；≤660px 矮视口压缩标题/字段/页脚留白；仅在极端矮视口保留单条页面滚动，并加细滚动条样式；`SHELL_VERSION` 29→30。
-- **验证（PASS）**：960×571 深、浅双主题真实浏览器——`#skiff-login=282px`，`.login-form-col` 与页面均 `clientHeight == scrollHeight`，无任何滚动条；「欢迎回来」、三字段、通栏实心按钮完整；0 console error；`admin` 登录后概览正常。先经 `SKIFF_EXTRA_STATIC_DIR` 热替换 CSS 实测，再随二进制发布复验（覆盖目录已删除）。
-- **复验资产**：Release run `207`（head `5221b4c`），amd64 **12,913,254 B** `sha256=37492742…75ac`；`install.sh` exit 0，前缀 `88qfm2s8`、8 插件、口令、库与配置保留；二进制 18,053,136 B `8af6592f…df28`。
-- **中间构建**：`abc7b0c`（标题仍被裁）、`b44aac8`（`form is not defined`）、`cb1b421`（内层滚动条）未通过浏览器验证，不计入验收。
-- **限制**：真实浏览器覆盖深/浅两主题的 960×571 视口；≤880px 单栏布局与 ≤660px 矮视口压缩规则仅静态推演，未做真机浏览器实测。
 
 **2026-11-21 09:55–10:22 还原后干净安装 `5bec69b` → 修复 `d5680b6` 升级复验：accept.sh 49 PASS / 0 FAIL / 2 SKIP，3 页 `CompileError` 修复后 3/3 PASS**
 

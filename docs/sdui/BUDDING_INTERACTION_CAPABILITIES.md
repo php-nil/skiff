@@ -293,7 +293,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 ## 9. 容易踩的约束
 
 1. `dialog` / `drawer` 不阻塞动作链；只有 `confirm` 会等待并在取消时中止后续。
-2. 弹窗里只有一张表单时，保存 / 重置优先放 `footer`（1.8.5 起支持）；页脚按钮拿不到字段值，需按值分支的动作仍写表单 `content.actions`。
+2. 弹窗里只有一张表单时，保存 / 重置优先放 `footer`（1.8.5 起支持）；页脚与正文是两棵兄弟子树，页脚按钮的**字段值**与**表单实例**都要靠图层登记表解析（见第 11 条），按值分支的宿主动作必须走 `formValues(ctx)` 一类的统一入口，不要在动作里自己找 DOM。
 3. 表格 / 虚拟列表的删除、编辑成功后不会自动刷新，需要 `invoke` 对应组件的 `reload`。
 4. `confirm` 的 `requireText` 用于输入型确认；按钮文案、危险语义由 `confirmText` / `cancelText` / `color`（`info` / `warning` / `error`）控制。
 5. 表单字段错误用 `setErrors`（动作或 `invoke` 指令）回填；`submitErrorFocus` 只负责提交失败后的焦点/滚动定位。提交失败**不会**关图层、值不丢，别再加「失败重开弹窗」的补丁。
@@ -302,6 +302,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 8. 弹窗内浮层（`select` / `autocomplete` / 列菜单 / `tooltip`）靠官方默认 `attach: '[data-bud-layer-root]'` 落到图层根；自己传 `uiDefaults` 覆盖同名键会重新引入「被弹窗压住、点不动」。
 9. 条件字段只能写 `${...}`：本框架**没有** `{{...}}` 双花括号语法，写成 `{{x}}` 会被当成非空字符串恒真（`validateSchema` 给 `CONDITION_NOT_EXPRESSION` 提示）。`&&` / `||` / `!` / `==` / `!=` / `??` 直接写在 `${}` 里。
 10. E2E 选择器用稳定锚点，不靠文案：`data-bud-role`（`dialog` / `drawer` / `confirm` / `footer` / `form` / `field`）与节点 `testId`（渲染为 `data-testid`）；当前开了几层、哪层在顶用 `budding.inspectLayers()`（只读快照，不含正文与字段值）。
+11. **宿主动作要回填表单错误，必须自己复刻 budding 的目标解析规则**：`ctx.extras.form` 只有「动作在表单子树里」时才存在；弹窗页脚的提交按钮不在祖先链上，只能从所属图层的数据袋取 `extras['budding:layer-forms']`（`list()` / `get(id)`），再调控制器的 `setErrors` / `focusFirstError`。只认 `extras.form` 的后果是**静默失败**——层不关、值不丢、也没有任何报错文案（2026-11-23 实测踩到）。
 
 ## 10. 本项目的采用约定
 
@@ -309,7 +310,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 
 1. **确认框**：Schema 一律用 `confirm` 动作；宿主已接管 `platform.confirm`（K2，落到实例 `openLayer`）。需要输入指定文本才能继续的，用 `requireText`；不新增 `window.confirm` / `window.prompt`。
 2. **反馈**：操作结果统一用 `toast`（成功 / 失败 / 警告），常驻说明用 `alert`，表单错误用 `errorMessage`；不新增 `window.alert`。
-3. **弹窗内表单**：字段校验交给 `form` / 字段组件的 `required` / `rules` / `validateApi`，不在按钮动作里手写；提交按钮写在表单 `content.actions`，成功后 `close`。
+3. **弹窗内表单**：字段校验交给 `form` / 字段组件的 `required` / `rules` / `validateApi`，不在按钮动作里手写；提交按钮按 1.8.5+ 的写法放图层 `footer`，表单声明 `props.submitMode: "event"`，宿主动作给提交动作打 `inLayer`（成功后关层、页面表单则整页刷新）；失败不要关层重开，用 `setErrors` 原地回填。
 4. **写操作后刷新**：表格 / `crud` / 虚拟列表的删除或编辑成功后，显式 `invoke` 对应组件的 `reload`；组件必须声明稳定 `id`，不依赖自动刷新。
 5. **查看详情**：统一用 `property` 键值栅格；旧的 `card` + `text` 组合只作为迁移期遗留，不再新增。
 6. **Vuetify 内部文案**：`embed` 接受扁平 `locale` / `theme` / `uiDefaults`，宿主可据此把 Vuetify locale 设为中文；当前壳仍保留自带主题 CSS，迁移到 `createUi({ theme })` 属宿主改造（backlog A5）。

@@ -88,7 +88,7 @@ crates/web/static/budding/
 | 表单提交（宿主自管链） | `form.props.submitMode: "event"` + `onEvent.submit` 的宿主动作；组件不发请求、不弹成功提示 |
 | 表单提交（服务端直接收） | `form.props.api` 自带提交，`props.successMessage` 给成功提示，`props.onSuccess` 放刷新（仅限资产页里「提交即入库」的简单表单） |
 | 校验 | 字段 `required` / `rules`；服务端字段错误走 `setErrors`（动作或 `invoke`） |
-| 失败原地回填 | 宿主动作用 `ctx.extras.form.setErrors({ __form__: 文案 })`；页面级表单无控制器时退回 `toast`。**不关图层、不重建 DOM、不丢输入** |
+| 失败原地回填 | 宿主动作按 budding 的目标解析规则取表单控制器：先 `ctx.extras.form`（动作在表单子树里），再 `ctx.extras['budding:layer-forms']`（**弹窗页脚的主路径**，页脚与正文是兄弟子树）；取到后 `setErrors({ __form__: 文案 })` + `focusFirstError()`，两张表单都取不到才退回 `toast`。**不关图层、不重建 DOM、不丢输入** |
 | 请求失败提示 | `request.props.messages.error`；SDK 会调用 `markFailurePrompted`，节点级兜底提示不再叠加 |
 
 `request` 的失败提示是「本操作失败」级别的保真（服务端明细只在 `form` 的 `errorMessage` 缺省值里透出）；需要更强保真时走 `onError` 动作组，或宿主动作自己把失败原因写回表单。
@@ -96,6 +96,8 @@ crates/web/static/budding/
 **CSRF**：壳脚本的平台请求适配器（`apiRequest`）对所有非 `GET/HEAD` 请求统一补 `x-csrf-token`。页面 JSON 不写 header，写操作才能保持声明式。
 
 **弹窗标记**：服务端下发的 `dialog` 动作由壳脚本 `prepareServerSchema` 递归找出正文里的表单，给 `onEvent.submit[0].props` 打一个 `inLayer: true`（资产页的 `_file-row.json` 手写同一字段）。宿主动作用它区分「成功后关层」与「整页刷新」——不再有 dialog 注册表，也不靠运行时猜层级。
+
+**表单控制器**：`ctx.extras.form` 只在动作位于表单子树内时存在。弹窗的提交按钮在图层 `footer`，与正文是两棵兄弟子树，宿主动作必须再查一次图层数据袋 `extras['budding:layer-forms']`（`list()` 唯一一张即用；多张按 budding 的规矩应改用 `props.form` 点名，壳层不猜）。只认 `extras.form` 会得到**静默失败**：层不关、值不丢、也没有任何错误文案。
 
 ## 9.4 壳脚本保留什么
 
