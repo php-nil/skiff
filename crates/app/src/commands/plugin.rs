@@ -46,10 +46,18 @@ pub fn uninstall_detail(delete_data: bool) -> String {
     format!("delete_data={delete_data}")
 }
 
-/// 安装包并清理 `.incoming` 暂存。同步版本供 CLI 使用（无任务服务）。
+/// 安装包并清理内核自己的 `.incoming` 暂存。同步版本供 CLI 使用（无任务服务）。
 ///
 /// 审计不在这里写：Web 走 `state.audit_or_log`、CLI 直写库，但 detail 用上面的
 /// 同一个函数生成。
+///
+/// **只删内核落下的暂存副本，且只在装成功之后**（两条都必要）：
+/// - 路径条件：`package` 可能是用户/发行包给的路径（CLI 常直接指
+///   `/www/skiff/official/com.skiff.<x>-<ver>.wbpkg`）。那是发行包自带的官方包，
+///   既是装失败后重试的唯一副本，也是启动时比对官方版本、做随包更新的来源。
+/// - 结果条件：装失败还删源包＝「拒装一次，源包就没了」，用户连改配置重试的机会都没有
+///   （2026-11-23 实测：开 `allow_reduced_sandbox` 之前连拒 8 次，
+///   `/www/skiff/official` 被清空）。
 pub fn install(
     db: &Db,
     data_dir: &Path,
@@ -57,10 +65,11 @@ pub fn install(
     opts: &InstallOptions,
     kfs: &crate::admin_fs::AdminFs,
 ) -> Result<InstalledInfo, PluginCommandError> {
+    let staged = package.starts_with(data_dir.join("plugins").join(".incoming"));
     let result = skiff_plugin::install_package(db, data_dir, package, opts)
         .map_err(|e| PluginCommandError::Rejected(e.to_string()));
-    // 暂存包是内核自己落下的中间产物：安装结束后经内核通道删除（留一条 `fs.remove`）。
-    if package.exists() {
+    // 暂存包是内核自己落下的中间产物：装成功后经内核通道删除（留一条 `fs.remove`）。
+    if result.is_ok() && staged && package.exists() {
         let _ = kfs.remove_kernel(package);
     }
     result
@@ -145,4 +154,65 @@ fn drop_plugin_tasks_db(db: &Db, id: &str) -> Result<usize, PluginCommandError> 
         }
     }
     Ok(dropped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn opts() -> InstallOptions {
+        InstallOptions {
+            trusted_public_key: None,
+            allow_unsigned: false,
+            granted_permissions: Vec::new(),
+            object_grants: Vec::new(),
+            available_capabilities: Vec::new(),
+            allow_reduced_sandbox: true,
+            arch: skiff_pkgfmt::host_arch(),
+            actor: "test".into(),
+        }
+    }
+
+    /// 拒装不得删源包：CLI 常直接把发行包自带的
+    /// `/www/skiff/official/com.skiff.<x>-<ver>.wbpkg` 交给安装器，那是装失败后
+    /// 重试的唯一副本、也是启动时比对官方版本的来源。装不上再删掉它，用户就只能
+    /// 重新上传（2026-11-23 实测：沙箱开关没开时连拒 8 次，官方包目录被清空）。
+    #[test]
+    fn rejected_install_keeps_the_source_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        fs::create_dir_all(data.join("plugins")).unwrap();
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let kfs =
+            crate::admin_fs::AdminFs::with_paths(data.clone(), tmp.path().join("www"), db.clone());
+
+        // 两种来路都要保住：发行包的官方目录、内核自己的上传暂存目录。
+        for (tag, pkg) in [
+            (
+                "官方包目录",
+                tmp.path()
+                    .join("official")
+                    .join("com.skiff.demo-0.1.0.wbpkg"),
+            ),
+            (
+                "上传暂存",
+                data.join("plugins").join(".incoming").join("tok24.wbpkg"),
+            ),
+        ] {
+            fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+            // 不是合法 wbpkg：安装必然在校验阶段被拒。
+            fs::write(&pkg, b"not a real wbpkg").unwrap();
+            let err = install(&db, &data, &pkg, &opts(), &kfs).unwrap_err();
+            assert!(
+                matches!(err, PluginCommandError::Rejected(_)),
+                "{tag}：应按「拒装」返回，实际 {err}"
+            );
+            assert!(
+                pkg.exists(),
+                "{tag}：装失败后源包必须还在 {}",
+                pkg.display()
+            );
+        }
+    }
 }
