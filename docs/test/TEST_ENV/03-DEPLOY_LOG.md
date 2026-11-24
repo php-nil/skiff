@@ -13,6 +13,7 @@
 
 | 日期 | 场景 | 版本 / 坐标 | 结论 |
 | --- | --- | --- | --- |
+| 2026-11-24 11:24 | **机器还原后干净首装**（budding 1.8.7 同步 + 页头主操作迁移 + SUBVIEWS 双源合一 + writePost 模板；形态三） | Release run `45317927914`（head `c841074`）amd64 12,923,388 B `c905859d…9451b2`，前缀 `gk5y33tq` | ✅ accept.sh **48 PASS / 0 FAIL / 4 SKIP**；权限位全对；B 组完整 CSRF→登录→改密链路通过；D0 Docker 29.7.2 |
 | 2026-11-22 22:47 | **还原后干净首装 + budding 1.8.5 同步 / 弹窗页脚提交 / 新建入口弹窗化**（首轮发现目录失败提示丢失输入 → 修复后三次升级复验） | 首装 Run `45028320777`（head `e3066e6`）`38eb2d64…096a`；中间 Run `45030832428`（head `5fa12e2`）`dec1254e…a42e`；最终 Run `45033701573`（head `76412df`）amd64 12,971,630 B `ddd297af…0e18`；前缀 `dwkaf8si` | ✅ accept.sh 三轮均 **49 PASS / 0 FAIL / 3 SKIP**；浏览器概览、新建站点、防火墙弹窗+提交（18081/tcp）、新建目录成功/失败复验、公钥导入弹窗 0 CompileError；插件 schema 页脚 reset/close/submit 与 no-op api 注入确认；仅 firewall 插件可装（cron 官方包缺失） |
 | 2026-11-22 16:09 | **还原后干净首装 + `row_button` CompileError 修复**（`json!({"actions":…})` 包装改为 `Vec<Value>`） | Run `45000648749`（head `946619d`）amd64 `eaaa57df…e3b`，前缀 `7kcyc858` | ✅ accept.sh **50 PASS / 0 FAIL / 2 SKIP**；8 插件全装；7 页面 0 CompileError / 0 console error |
 | 2026-11-21 23:10 | **还原后干净首装 + budding 1.8.4 同步**（`content.breadcrumbs` 移除适配、shared 组件基线瘦身、表单属性补全） | Run `44916947385`（head `a3722fb`）amd64 12,725,968 B `44d8081e…54f5`，前缀 `kfzehjpk` | ✅ accept.sh **46 PASS / 0 FAIL / 4 SKIP**；8 插件全装；43 路由 **42 PASS**（1 条为故意访问不存在环境的预期 400）、0 console error；容器终端 WS、code pack 高亮、备份恢复、口令重置均实测通过 |

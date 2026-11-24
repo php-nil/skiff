@@ -4,7 +4,26 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-23 20:30 `9c1be6c`：budding 1.8.6 事件提交 + 首轮两个缺陷修复 + 干净首装/两轮升级复验）
+## 8. 最近一次验收结论（截至 2026-11-24 11:30 `c841074`：budding 1.8.7 同步 + 页头主操作迁移 + SUBVIEWS 双源合一 + writePost 模板 + 干净首装）
+
+**2026-11-24 11:24 干净首装 `c841074`：accept.sh 48 PASS / 0 FAIL / 4 SKIP，权限位全对，B 组完整链路通过**
+
+- **前置**：测试机还原为干净 T0（uptime 5 min，无 `/etc/skiff`、无 `/www/skiff`、无 `/root/iter`，18080 空闲，Docker 29.7.2 在位，时钟 UTC 已同步，磁盘 114 GB 可用）。L1 门禁 `cargo fmt --all --check` + `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` 均 exit 0。
+- **上游同步**：budding 1.8.6 → 1.8.7；替换 `budding-1.8.6.min.{js,css}` / `budding-code-1.8.6.min.js` / `budding-terminal-1.8.6.min.js` / `budding-icons-1.8.6.min.css` / `.woff2` 为同名 1.8.7 版本。
+- **适配**：页面主操作从 `form.actions` 迁移到 `page.content.actions`（容器/镜像/网络/卷/文件/站点/作业/任务/插件/商店等 12+ 页面）；`SUBVIEWS` 从两套 `views`/`menu_entries` 合一为单一 `subviews` 字段（保留 `nav`/`entries`/`icon`/`badge`/`path`）；`writePost` 模板动作统一（POST 表单提交模板）。
+- **首装（通过）**：Release run `45317927914`（head `c841074`，`publish=true`），amd64 包 12,923,388 B `sha256=c905859d…9451b2`（侧车 + 包内 `checksums.txt` 双重校验）。`sh install.sh` exit **0**；前缀 **`gk5y33tq`**；`skiff.service` active；`/healthz` 200。
+- **形态三配置**（install.sh 只写 loopback + `allow_insecure_http`，以下人工追加）：
+  - `listen = "0.0.0.0:18080"`（默认 loopback → 外网直连）
+  - `tls_enabled = false`（直接明文监听必需；缺省启动会因非 loopback + 无 TLS 被拒）
+  - `allow_insecure_http = true`（让 accept 判 dev 档、跑通 B 组 Cookie 断言）
+  - `allow_reduced_sandbox = true`（插件沙箱降级开关）
+  - `entry_prefix = "gk5y33tq"`（硬编码）
+- **accept.sh（通过）**：`--group all --password W8UdMRcTHTCbgKVb --pkg-dir /root/iter/skiff-night/skiff-0.1.0-x86_64-unknown-linux-musl` → **48 PASS / 0 FAIL / 4 SKIP**（PF3 未传 `--now` 时钟偏差、PF4 装后端口、A3 未传 `--install-exit`、B4 未开限流）。
+- **权限位（A6 全对）**：`/www/skiff` 711 root:root、`plugins` 711、`backup` 700、`skiff.db` 600 root:skiff-plugins、`/etc/skiff/config.toml` 644、`/run/skiff` 711 root:skiff-plugins、`kernel.sock` 660 root:skiff-plugins、`initial-admin.txt` 600 root:skiff-plugins。
+- **B 组认证**：CSRF → 登录 200 + `redirect_to=/gk5y33tq`（默认不强制改密）→ 错误口令 401「用户名或口令不正确」→ 改密成功 + `initial-admin.txt` 删除 + 旧会话 303 → 新会话 200；改密后口令回写 `/root/iter/admin-pw.txt`（0600）。
+- **重启自恢复**（A9/A10）：`systemctl restart skiff` 后 3 s 内 healthz 200；`kill -9` PID 后 2 s systemd 拉起新进程。
+- **D0 Docker**：Docker 29.7.2 已装可用 → `--check-only` exit 0 且不改动 `daemon.json` → 已装不重装。
+- **未覆盖（限制）**：本轮跳过浏览器巡检（accept.sh 全绿 + 之前多轮已覆盖核心交互）；TLS 形态一/二、aarch64、PHP/Node 运行环境安装与扩展、FTP/fail2ban 实装、真实备份计划、8 个官方插件实装（本轮未调 install.sh `--yes`）、`--check-only --fix` / `--install` 未测。
 
 **2026-11-23 20:30 干净首装 `9f43aee` → 修复 `5a48b83` → `fe4baa4` / 断言 `9c1be6c`：accept.sh 三轮 49 PASS / 0 FAIL / 3 SKIP，50 实路由 0 console error**
 
