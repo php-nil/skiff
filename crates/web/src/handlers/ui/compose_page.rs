@@ -63,6 +63,7 @@ pub fn compose_schema(
     ]);
     body.push(table);
 
+    let mut actions = Vec::new();
     if can_admin {
         let fields = vec![
             kit::required_input(
@@ -84,20 +85,17 @@ pub fn compose_schema(
                 vec![("仅校验", "validate"), ("校验并部署", "up")],
             ),
         ];
-        body.push(kit::flex(
-            8,
-            vec![kit::dialog_form_button(kit::DialogForm {
-                text: "新建 / 编辑编排",
-                variant: "tonal",
-                title: "新建 / 编辑编排",
-                width: 780,
-                submit: json!({ "type": "skiffComposeEdit" }),
-                fields,
-                initial: None,
-                submit_text: "执行",
-                notice: "compose 源文件不持久化：校验只解析，不触达 Docker；部署会创建/更新项目。",
-            })],
-        ));
+        actions.push(kit::dialog_form_button(kit::DialogForm {
+            text: "新建 / 编辑编排",
+            variant: "tonal",
+            title: "新建 / 编辑编排",
+            width: 780,
+            submit: json!({ "type": "skiffComposeEdit" }),
+            fields,
+            initial: None,
+            submit_text: "执行",
+            notice: "compose 源文件不持久化：校验只解析，不触达 Docker；部署会创建/更新项目。",
+        }));
     } else {
         body.push(kit::alert(
             "info",
@@ -106,7 +104,12 @@ pub fn compose_schema(
         ));
     }
 
-    kit::page("编排", "项目列表、启停、校验与部署均在原生页面完成", body)
+    kit::page_with_actions(
+        "编排",
+        "项目列表、启停、校验与部署均在原生页面完成",
+        actions,
+        body,
+    )
 }
 
 fn compose_button(text: &str, action: &str) -> Value {

@@ -24,14 +24,14 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-23 打包（commit `570a00a`）版本号升到 **1.8.6**（根 `package.json` 1.8.6）。
-/// 本次同步从 `C:\dev\budding\dist\package` / `dist\packs` 取完整 bundle，icons 也升到 1.8.6。
+/// 上游 2026-11-24 打包（commit `8906804`）版本号升到 **1.8.7**（根 `package.json` 1.8.7）。
+/// 本次同步从 `C:\dev\budding\dist\package` / `dist\packs` 取完整 bundle，icons 也升到 1.8.7。
 /// 分包从 `dist/packs/*.mjs` 复制并改名为 `.min.js`（ESM 模块格式，由 `registerPack` 动态 import 加载）。
-pub const BUDDING_VERSION: &str = "1.8.6";
+pub const BUDDING_VERSION: &str = "1.8.7";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
-/// 随上游主包版本同步升到 1.8.6（`woff2` 字节未变，`css` 随 catalog 重生成）。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.6";
+/// 随上游主包版本同步升到 1.8.7（`woff2` 3,992 B → 3,996 B，`css` 随 catalog 重生成）。
+pub const BUDDING_ICONS_VERSION: &str = "1.8.7";
 
 /// 壳页自有资产（`skiff-shell.css` / `budding-boot.js` / `form-enter-submit.js`）的缓存版本。
 ///
@@ -92,7 +92,12 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.6";
 /// v45：`formError` 的表单实例改按 budding 的目标解析规则取——弹窗页脚的提交按钮
 ///   不在表单祖先链上，`ctx.extras.form` 恒为空，必须再查所属图层的登记表
 ///   （`budding:layer-forms`），否则弹窗提交失败既不关层也不显示原因（静默失败）。
-pub const SHELL_VERSION: &str = "45";
+/// v46：上游升 1.8.7（`page` 新增 `content.actions` 页头主操作区、表格新增 query-table
+///   与表头筛选）；壳侧三级菜单插入点优先认 `.bud-page-header`，避免页头容器存在时
+///   把菜单插进标题与主操作之间。
+/// v47：壳侧三级子视图表从 JS 硬编码迁到 Rust（`SUBVIEWS` 加 `blocked` 字段，随
+///   `/ui/v1/routes` 一起下发），前端改纯消费；改路径只动 `routes.rs`，JS 零成本同步。
+pub const SHELL_VERSION: &str = "47";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

@@ -3171,38 +3171,11 @@ async fn trash_is_files_l3_tab_not_standalone_menu_item() {
         assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
     }
 }
-/// URL 契约 §7：旧路径必须 308 到规范路径，保留方法与查询串，不留死链。
+/// 商店安装只认 JSON POST（带 CSRF）：GET 同一路径必须是 405，不能被当成页面。
 #[tokio::test]
-async fn legacy_paths_redirect_to_canonical_urls() {
+async fn store_install_get_returns_method_not_allowed() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-
-    for (old, status, new) in [(
-        "/p/files/api/list?path=%2Fwww",
-        StatusCode::PERMANENT_REDIRECT,
-        "/p/files/list?path=%2Fwww",
-    )] {
-        let resp = h
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(old)
-                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), status, "{old} 必须重定向");
-        assert_eq!(
-            resp.headers()
-                .get(header::LOCATION)
-                .and_then(|v| v.to_str().ok()),
-            Some(new),
-            "{old} 的目标路径"
-        );
-    }
 
     // 商店安装只认 JSON POST（带 CSRF）：GET 同一路径必须是 405，不能被当成页面。
     let resp = h
@@ -3525,9 +3498,9 @@ async fn shell_fallback_never_catches_unlisted_or_non_get() {
     assert!(!body.contains("该功能正在适配中"));
 }
 
-/// 未认证的 GET 页面请求：settings（只靠回落）与 files（有注册路由）必须一致 303 登录。
+/// 未认证的 GET 页面请求：settings 与 files 均靠壳页回落，必须一致 303 登录。
 ///
-/// 覆盖回落、尾部斜杠、注册路由与「路径存在但方法不匹配」四种入口；写请求仍不回落。
+/// 覆盖回落与尾部斜杠入口；写请求仍不回落。
 #[tokio::test]
 async fn shell_unauthenticated_get_redirects_consistently() {
     let h = harness();
@@ -3586,7 +3559,7 @@ async fn shell_unauthenticated_get_redirects_consistently() {
 
 /// 命中「路径存在但方法不匹配」时：GET 导航仍回落壳页，写请求仍 405。
 ///
-/// `/p/files` 只注册了 GET；POST 到同一路径必须 405，而不是被当成壳页回落。
+/// `/p/login` 只注册了 GET；POST 到同一路径必须 405，而不是被当成壳页回落。
 #[tokio::test]
 async fn shell_fallback_covers_method_not_allowed_paths() {
     let h = harness();
@@ -3603,14 +3576,14 @@ async fn shell_fallback_covers_method_not_allowed_paths() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!body.contains("该功能正在适配中"));
 
-    // 写请求不回落：`/p/files` 只注册 GET，POST 必须是 405。
+    // 写请求不回落：`/p/login` 只注册 GET，POST 必须是 405。
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/files")
+                .uri("/p/login")
                 .header(header::ACCEPT, "text/html")
                 .header(
                     header::COOKIE,
@@ -5887,12 +5860,12 @@ fn budding_boot_status_table_honors_caller_empty_text() {
         ),
         (
             include_str!("../src/handlers/ui/containers_page.rs"),
-            "还没有容器，可在下方新建",
+            "还没有容器，可在右上角新建",
         ),
         // 运行环境：真空列表引导创建；配置 / 扩展页签各自的空态。
         (
             include_str!("../src/handlers/ui/runtimes_page.rs"),
-            "还没有运行环境，点击下方「新建运行环境」安装后即可绑定站点",
+            "还没有运行环境，点击右上角「新建运行环境」安装后即可绑定站点",
         ),
         (
             include_str!("../src/handlers/ui/runtimes_page.rs"),
@@ -6330,7 +6303,7 @@ fn budding_boot_a_form_writes_are_declarative() {
 
     let files = include_str!("../src/handlers/ui/files_page.rs");
     for needle in [
-        "${{prefix}}/files/trash/{op}",
+        "${{api}}/files/trash/{op}",
         "\"overwrite\": true",
         "\"onError\"",
         "\"path\": \"${root}\"",
@@ -7433,13 +7406,77 @@ async fn files_canonical_path_serves_shell() {
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
     }
+    // 回收站 / 配额页面不再有独立 SSR handler：与主文件页一样走壳页回落，
+    // 已认证用户统一拿到壳页；权限改在 `/ui/v1` 数据端点判定。
     for uri in ["/p/files/trash", "/p/files/quotas"] {
         let (status, html) = get_page(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
         let (status, _) = get_page(&h.app, uri, &viewer).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} viewer 必须 403");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{uri} 壳页对已认证用户统一交付，权限在数据层判定"
+        );
     }
+    // 数据端点对 viewer 一律 403：回收站读 / 配额读都只对管理员开放。
+    for uri in ["/ui/v1/files/trash/list", "/ui/v1/files/quotas/list"] {
+        let (status, _, body) = get_ui(&h.app, uri, Some(&viewer), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} viewer 必须 403: {body}"
+        );
+    }
+}
+
+/// 形态门禁：`SKIFF_FORM=docker`（1Panel 受限形态）能力面收缩为 docker/identity，
+/// `/ui/v1/files/*` 一律 403（管理员也不例外），但其它 `/ui/v1` 资源不受影响。
+#[tokio::test]
+async fn files_routes_are_forbidden_in_docker_restricted_form() {
+    let h = harness_full(Form::DockerRestricted, Tier::Basic);
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    // 文件管理读端点：管理员也被形态门禁拒绝（先于 RBAC 与业务）。
+    for uri in [
+        "/ui/v1/files",
+        "/ui/v1/files/trash/list",
+        "/ui/v1/files/quotas/list",
+        "/ui/v1/files/download",
+    ] {
+        let (status, _, body) = get_ui(&h.app, uri, Some(&admin), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} 受限形态必须 403: {body}"
+        );
+    }
+    // 其它能力面（docker/identity）端点不受文件门禁影响。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "菜单不应被文件门禁拒绝: {body}");
+    // 菜单入口隐藏：受限形态下「工具 → 文件管理 / 回收站 / 配额」不下发，
+    // 与数据端点 403 同源（menu.rs 按 `form != DockerRestricted` 过滤）。
+    let menu: serde_json::Value = serde_json::from_str(&body).expect("menu 必须是 JSON");
+    let hrefs: Vec<&str> = menu["data"]["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|g| g["items"].as_array())
+        .flatten()
+        .filter_map(|i| i["href"].as_str())
+        .collect();
+    assert!(
+        !hrefs.iter().any(|h| h.starts_with("/p/files")),
+        "受限形态菜单不应含文件管理入口: {body}"
+    );
+    // 页面层不挂形态门禁（与全站壳页一致）：受限形态下直达 `/p/files` 壳页仍 200，
+    // 数据由 `/ui/v1/files*` 拒绝——C12 收口后的统一行为（壳页不鉴权，数据层判定）。
+    let (status, _, body) = get_ui(&h.app, "/p/files", Some(&admin), Some("text/html")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "受限形态下壳页仍应渲染，权限在数据层判定: {body}"
+    );
+    assert!(body.contains(r#"id="skiff-root""#));
 }
 
 /// 文件回收站/配额写接口：CSRF 先行、viewer 被权限矩阵拒绝；管理员过门禁后
@@ -7455,19 +7492,19 @@ async fn files_trash_and_quota_writes_require_csrf_and_permission() {
     std::fs::create_dir_all(&root).unwrap();
 
     let cases: Vec<(&str, serde_json::Value)> = vec![
-        ("/p/files/trash/restore", json!({ "id": "t-missing" })),
-        ("/p/files/trash/purge", json!({ "id": "t-missing" })),
-        ("/p/files/trash/clear", json!({})),
+        ("/ui/v1/files/trash/restore", json!({ "id": "t-missing" })),
+        ("/ui/v1/files/trash/purge", json!({ "id": "t-missing" })),
+        ("/ui/v1/files/trash/clear", json!({})),
         (
-            "/p/files/quotas/set",
+            "/ui/v1/files/quotas/set",
             json!({ "path": root.display().to_string(), "max_bytes": 1024 }),
         ),
         (
-            "/p/files/quotas/cancel",
+            "/ui/v1/files/quotas/cancel",
             json!({ "path": root.display().to_string() }),
         ),
         (
-            "/p/files/quotas/scan",
+            "/ui/v1/files/quotas/scan",
             json!({ "path": root.display().to_string() }),
         ),
     ];

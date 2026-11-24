@@ -72,12 +72,9 @@
 | `/{p}/sites/list` | `GET /ui/v1/sites`、`POST /ui/v1/sites` |
 | `/{p}/settings/security` | `GET /ui/v1/settings`、`POST /ui/v1/settings/panel` |
 
-**唯一例外是文件分组**：它由内核注册真实路由（形态门禁 `fs_capability`），页面与接口共用
-`/{p}/files` 前缀，接口为 `/{p}/files/list`、`/{p}/files/write`…，**没有** `/{p}/files/api/list`
-这类中缀（旧前缀 `/{p}/files/api/*` 只 308 兼容，见 §7）；回收站与配额同属该分组
-（`/{p}/files/trash/*`、`/{p}/files/quotas/*`），前端直接复用这些 JSON 接口，未另建 `/ui/v1` 写入口。
-
-同构的理由只有一个：前端拼 URL 时归属一眼可见，页面与接口不在两个前缀下分叉授权口径。
+文件分组现已与其它资源一致：页面 `/{p}/files`（含 `/{p}/files/trash`、`/{p}/files/quotas`）走
+壳页回落，全部 JSON 接口收口到 `/ui/v1/files/*`（列表/读写/上传/下载/回收站/配额）。形态门禁
+`fs_capability` 挂在 `/ui/v1/files` 子路由上：`SKIFF_FORM=docker` 受限形态下文件管理一律 403。
 
 长连接与轮询落在资源段下，不带 `/ui/v1`（它们要走会话 Cookie 与入口前缀）：
 
@@ -150,15 +147,13 @@
 
 ## 7. 兼容与下线
 
-旧路径只保留**可验证的兼容**，不复制业务实现：
-
-| 旧路径 | 方式 | 目标 / 行为 |
-| --- | --- | --- |
-| `/{p}/files/api/{*rest}` | 308 | `/{p}/files/{rest}`，保留方法与请求体 |
+旧路径只保留**可验证的兼容**，不复制业务实现。当前无活跃的旧路径兼容条目：
+`/{p}/files/api/*` → `/{p}/files/*` 的 308 已于 2026-11-23 随文件接口收口到 `/ui/v1/files/*`
+一并下线（见 `docs/changes/2026-11-23.md`）。
 
 - 301 只用于 **GET 页面**；带方法的请求一律 308，禁止让写请求落到 301。
 - 兼容清单只减不增。删除某条兼容前，先在 `docs/changes/` 记一次「已下线」并确认仓库内无引用。
-- 测试守门：`crates/web/tests/main_flow.rs::legacy_paths_redirect_to_canonical_urls` 覆盖跳转目标。
+- 新增兼容时必须在 `crates/web/tests/main_flow.rs` 补跳转目标用例。
 - **不在上表的一律 404**：页面与页面内表单已全部由 budding 壳页 + `/ui/v1/*` 承载，旧 SSR 路由删掉即删，
   不做 301/308。销毁清单（每次下线追加一行，便于回溯）：
   - 2026-11-18：`/{p}/sites/env[/{*rest}]`（运行环境旧路径 20+ 条）、`/{p}/m/core/{*rest}`。
@@ -166,6 +161,8 @@
   - 2026-11-19：`/{p}/m/{*rest}` 全量删除；页面级写路由（containers / sites / runtimes / images / networks / volumes /
     compose / tasks / jobs / store / plugins / settings / audit / docker-settings）、`/{p}/logout`、`/{p}/password`、
     `/{p}/totp*`、`POST /{p}/plugins/install`（multipart 上传）一并删除。
+  - 2026-11-23：`/{p}/files/*` 遗留文件处理器（22 路由，含 `page`/`trash_shell`/`quotas_shell` 壳页与 `tree`）、
+    `/{p}/files/api/*` 308 兼容；JSON 全收口到 `/ui/v1/files/*`，页面改壳页回落（C12 收口）。
 
 
 ## 8. 查询参数

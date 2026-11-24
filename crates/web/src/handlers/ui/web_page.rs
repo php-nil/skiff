@@ -314,15 +314,15 @@ fn install_text(install: &Value) -> String {
     }
     lines.push(format!(
         "发起人：{}（{}） · 来源 IP：{}",
-        or_dash(text(install, "/created_by")),
-        or_dash(text(install, "/created_by_role")),
-        or_dash(text(install, "/requester_ip"))
+        kit::or_dash(text(install, "/created_by")),
+        kit::or_dash(text(install, "/created_by_role")),
+        kit::or_dash(text(install, "/requester_ip"))
     ));
     lines.push(format!(
         "开始：{} · 结束：{} · 耗时：{}",
-        or_dash(text(install, "/started_at")),
-        or_dash(text(install, "/finished_at")),
-        or_dash(text(install, "/duration"))
+        kit::or_dash(text(install, "/started_at")),
+        kit::or_dash(text(install, "/finished_at")),
+        kit::or_dash(text(install, "/duration"))
     ));
     if let Some(steps) = install.get("steps").and_then(Value::as_array) {
         for step in steps {
@@ -514,7 +514,7 @@ fn build_logs(query: &Value, logs: Option<&Value>, body: &mut Vec<Value>) {
         log_body.push(kit::detail_lines(
             "读取范围",
             vec![
-                format!("文件：{}", or_dash(text(logs, "/path"))),
+                format!("文件：{}", kit::or_dash(text(logs, "/path"))),
                 format!(
                     "本次加载 {} 行；已扫描 {}（{} 行），文件共 {}",
                     rows.len(),
@@ -603,12 +603,4 @@ fn build_modules(data: &Value, body: &mut Vec<Value>) {
         "模块",
         vec![kit::detail_lines("nginx -V", lines)],
     ));
-}
-
-fn or_dash(value: &str) -> String {
-    if value.is_empty() {
-        "—".to_string()
-    } else {
-        value.to_string()
-    }
 }

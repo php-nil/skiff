@@ -63,110 +63,9 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::jobs::logs_sse),
         );
 
-    // ---- 内核「文件管理」：管理员侧 fs 服务 + 页面（第一步浏览/编辑）----
-    // 单独成组挂形态门禁：受限形态（`SKIFF_FORM=docker`）能力面只有 docker/identity，
-    // 没有 fs，页面与 API 直达一律 403（入口由 `skiff_app::menu::declarations` 按形态隐藏）。
-    let files = Router::new()
-        .route(&format!("/{p}/files"), get(handlers::files::page))
-        // 页面内 JSON 接口与页面路径同构，不额外插 `api` 段（URL 契约 §4）。
-        .route(&format!("/{p}/files/list"), get(handlers::files::api_list))
-        .route(&format!("/{p}/files/read"), get(handlers::files::api_read))
-        .route(
-            &format!("/{p}/files/write"),
-            post(handlers::files::api_write),
-        )
-        .route(
-            &format!("/{p}/files/mkdir"),
-            post(handlers::files::api_mkdir),
-        )
-        .route(
-            &format!("/{p}/files/rename"),
-            post(handlers::files::api_rename),
-        )
-        .route(
-            &format!("/{p}/files/remove"),
-            post(handlers::files::api_remove),
-        )
-        .route(&format!("/{p}/files/tree"), get(handlers::files::api_tree))
-        .route(
-            &format!("/{p}/files/upload"),
-            post(handlers::files::api_upload),
-        )
-        .route(
-            &format!("/{p}/files/download"),
-            get(handlers::files::api_download),
-        )
-        .route(&format!("/{p}/files/copy"), post(handlers::files::api_copy))
-        .route(
-            &format!("/{p}/files/chmod"),
-            post(handlers::files::api_chmod),
-        )
-        .route(
-            &format!("/{p}/files/chown"),
-            post(handlers::files::api_chown),
-        )
-        .route(
-            &format!("/{p}/files/archive"),
-            post(handlers::files::api_archive),
-        )
-        .route(
-            &format!("/{p}/files/extract"),
-            post(handlers::files::api_extract),
-        )
-        // ---- 回收站与配额（内核文件管理第二步）----
-        .route(
-            &format!("/{p}/files/trash"),
-            get(handlers::files::trash_shell),
-        )
-        .route(
-            &format!("/{p}/files/quotas"),
-            get(handlers::files::quotas_shell),
-        )
-        .route(
-            &format!("/{p}/files/trash/list"),
-            get(handlers::files::api_trash_list),
-        )
-        .route(
-            &format!("/{p}/files/trash/restore"),
-            post(handlers::files::api_trash_restore),
-        )
-        .route(
-            &format!("/{p}/files/trash/purge"),
-            post(handlers::files::api_trash_purge),
-        )
-        .route(
-            &format!("/{p}/files/trash/clear"),
-            post(handlers::files::api_trash_clear),
-        )
-        .route(
-            &format!("/{p}/files/quotas/list"),
-            get(handlers::files::api_quota_list),
-        )
-        .route(
-            &format!("/{p}/files/quotas/set"),
-            post(handlers::files::api_quota_set),
-        )
-        .route(
-            &format!("/{p}/files/quotas/cancel"),
-            post(handlers::files::api_quota_cancel),
-        )
-        .route(
-            &format!("/{p}/files/quotas/scan"),
-            post(handlers::files::api_quota_scan),
-        )
-        // 兼容旧前缀 `/{p}/files/api/*`：308 保留方法与请求体，语义不变（URL 契约 §7）。
-        .route(
-            &format!("/{p}/files/api/{{*rest}}"),
-            axum::routing::any(handlers::files::legacy_api_redirect),
-        )
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            middleware::fs_capability,
-        ));
-
     // ---- budding 前端 JSON 命名空间（/ui/v1）：无入口前缀、未认证 401、只返 JSON ----
     // 鉴权与语义口径见 URL 契约 §2/§6；路由清单按资源逐步登记（本批只有会话引导与登出）。
-    let ui_json = handlers::ui::router();
+    let ui_json = handlers::ui::router(state.clone());
 
     let ui = Router::new()
         .route(&format!("/{p}"), get(handlers::spa::root_shell))
@@ -214,8 +113,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/plugins", get(handlers::api::plugins))
         .route("/api/v1/plugins/ui", get(handlers::api::plugin_ui_index))
-        // 文件管理分组（自带形态门禁）也在超时层覆盖范围内。
-        .merge(files)
         .merge(ui_json)
         // 命中路径但方法不匹配时同样走壳页判定（GET 导航可能是 POST-only 路由的形态）。
         // 必须在 `.layer(...)` 之前：它会替换各 MethodRouter 的默认 405 兜底，

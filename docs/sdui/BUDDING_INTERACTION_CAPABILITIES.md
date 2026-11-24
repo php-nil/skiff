@@ -1,9 +1,9 @@
 # budding 交互能力速查
 
-> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），2026-11-23 按上游 `570a00a` 复拉：`catalogVersion=1.8.6`、`contentHash=sha256:6e9b7890…89317`（组件目录），共 62 个组件、21 个动作、381 条示例、57 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.6`，2026-11-23 同步上游 `570a00a`；表单 `submitMode: "event"`、`setErrors` 动作、`confirm` 统一 `color`、`testId` / `data-bud-role` 锚点与 `inspectLayers()`）。
+> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），2026-11-24 按上游 `8906804` 复拉：`catalogVersion=1.8.7`、`contentHash=sha256:a3b07ea7…e9e3`（组件目录），共 62 个组件、21 个动作、385 条示例、57 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.7`，2026-11-24 同步上游 `8906804`；`page` 新增 `content.actions` 页头主操作区、表格新增 query-table 与表头筛选、`submitMode: "event"`、`setErrors` 动作、`confirm` 统一 `color`、`testId` / `data-bud-role` 锚点与 `inspectLayers()`）。
 > 分工：接入边界、版本事实与 JSON 契约只在 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) 维护；上游缺口与宿主待补契约见 [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md)；本文只做「怎么用」的摘录，不复述契约全文。
 > 校验：文中 dialog+form、confirm+request+invoke、table 游标分页、virtual-list 四段完整 Schema 已用 MCP `validateSchema` 校验通过（`ok: true`，非 strict）。
-> 更名（2026-11-22 核对）：写请求动作 `ajax` 已由上游改名 **`request`**（提交 `1120d2`，2026-11-20），旧名无别名，写 `ajax` 运行时按「未知动作类型」拒绝；本仓自带 bundle（`budding-1.8.6.min.js`，同步 `570a00a`）与上游现行 `catalog.json` 均以 `request` 为准，`C:/dev/budding/dist/mcp/` 下的归档副本是改名前的过期产物，勿再引用。
+> 更名（2026-11-22 核对）：写请求动作 `ajax` 已由上游改名 **`request`**（提交 `1120d2`，2026-11-20），旧名无别名，写 `ajax` 运行时按「未知动作类型」拒绝；本仓自带 bundle（`budding-1.8.7.min.js`，同步 `8906804`）与上游现行 `catalog.json` 均以 `request` 为准，`C:/dev/budding/dist/mcp/` 下的归档副本是改名前的过期产物，勿再引用。
 
 ## 0. MCP 接入方式
 
@@ -149,7 +149,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 要点：
 
 - **宿主自管提交链一律用 `submitMode: "event"`**：保存逻辑在 `onEvent.submit` 里（字段归一化、CSRF、错误回填），不再伪造一个 `api` 骗过组件。
-- 服务端字段错误回填有两条路，都落到同一套 `setErrors`：**动作** `{"type":"setErrors","props":{"errors":{"email":"已被注册"},"focus":true}}`（目标三档：`props.form` → 最近祖先表单 / `crud` 查询表单 → 本层唯一表单），**指令** `invoke` 精确寻址表单 id。`errors` 按键合并、`null` 清除该键，`__form__` 为表单级；不要给字段加 `error` 入参。
+- 服务端字段错误回填有两条路，都落到同一套 `setErrors`：**动作** `{"type":"setErrors","props":{"errors":{"email":"已被注册"},"focus":true}}`（目标三档：`props.form` → 最近祖先表单 / `query-table` 查询表单 → 本层唯一表单），**指令** `invoke` 精确寻址表单 id。`errors` 按键合并、`null` 清除该键，`__form__` 为表单级；不要给字段加 `error` 入参。
 - 提交失败不关图层、字段值原样保留（1.8.6 起），所以「失败重开弹窗」的补丁一律删除：在 `onError` 里 `setErrors` 即可，弹窗和输入都在原地。
 - `onError` 链可读错误快照 `${error.message}` / `${error.code}` / `${error.payload...}`（业务信封 `code != 0` 时 `payload` 原样携带响应 `data`；网络错误 / HTTP 非 2xx 不填充）。`actions` / `then` 里没有 `error`，且它会遮蔽数据域同名键（数据域写 `${data.error...}`）。
 - `errorMessage` 缺省取异常 `message`，服务端错误信封的文案因此可直接透传到表单提示。
@@ -160,12 +160,19 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 - 条件表达式异常语义（budding 1.8.0）：`visibleOn` / `hiddenOn` 求值抛错时**隐藏节点**（fail-closed），`disabledOn` 抛错时保持可用；dev 下三类条件走同一诊断入口，同一节点实例按 `path + 属性 + 表达式` 只报一次，payload 含 `id` / `path` / `type` / `region` / `attribute` / `expression` / `cause`。不提供 fail-open，也不提供运行时开关。
 - 字面量 `${`：写 `\${`。只识别紧邻 `${` 的反斜杠，连续 `n` 个输出 `floor(n/2)` 个反斜杠、`n` 为奇数时按字面 `${` 处理；`C:\logs` 这类路径不受影响。JSON 中写 `"\\${amount}"`，YAML 单引号可直接写 `'\${amount}'`；只作用于模板/值字段，条件字段不做字面量转义。
 
+## 3.5 页面骨架与页头主操作
+
+- 页面根节点 `page`：`props.title` / `subtitle` 展示标题与说明，`content.body` 放正文。
+- 列表页的「新建 / 拉取 / 创建」与详情页的启停 / 删除等主操作写 `content.actions`（1.8.7 起）：与标题同行、右对齐，窄宽度换行到标题下方；不要再在正文顶部另起一行右对齐，也不要单独放「操作」卡。
+- `actions` 节点按页面作用域求值，可用 `visibleOn` 按 `data.can_admin` 显隐；只有 actions 没有标题时，页头只渲染按钮。
+- 稳定锚点 `data-bud-role="page-header"` / `"page-actions"`；标题与副标题仍是 `.bud-page-title` / `.bud-page-subtitle`，壳层三级菜单插在整个页头之后。
+
 ## 4. 列表与分页
 
 | 组件 | 适用 |
 | --- | --- |
 | `table` | 标准数据表格：本地/远程、页码或游标分页、服务端排序、行操作、展开行、自定义单元格、行内编辑、合计行、列配置、导出、树形、虚拟滚动 |
-| `crud` | 查询容器：`content.filter` + `content.toolbar` + `content.bulkActions` + 内部表格；新增/编辑/删除有可抄组合 |
+| `query-table` | 查询容器（1.8.7 起替代已删除的 `crud`）：`content.filter` + `content.toolbar` + `content.bulkActions` + 内部表格；新增表头快速筛选与自定义筛选 |
 | `pagination` | 独立分页器；页码或每页条数变化触发 `query` 与 `change` |
 | `record-list` | 按条目逐条渲染 `content.body`，行外观完全自定义 |
 | `list` | 直接映射 Vuetify `VList` / `VListItem`，适合导航型列表 |
@@ -311,7 +318,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 1. **确认框**：Schema 一律用 `confirm` 动作；宿主已接管 `platform.confirm`（K2，落到实例 `openLayer`）。需要输入指定文本才能继续的，用 `requireText`；不新增 `window.confirm` / `window.prompt`。
 2. **反馈**：操作结果统一用 `toast`（成功 / 失败 / 警告），常驻说明用 `alert`，表单错误用 `errorMessage`；不新增 `window.alert`。
 3. **弹窗内表单**：字段校验交给 `form` / 字段组件的 `required` / `rules` / `validateApi`，不在按钮动作里手写；提交按钮按 1.8.5+ 的写法放图层 `footer`，表单声明 `props.submitMode: "event"`，宿主动作给提交动作打 `inLayer`（成功后关层、页面表单则整页刷新）；失败不要关层重开，用 `setErrors` 原地回填。
-4. **写操作后刷新**：表格 / `crud` / 虚拟列表的删除或编辑成功后，显式 `invoke` 对应组件的 `reload`；组件必须声明稳定 `id`，不依赖自动刷新。
+4. **写操作后刷新**：表格 / `query-table` / 虚拟列表的删除或编辑成功后，显式 `invoke` 对应组件的 `reload`；组件必须声明稳定 `id`，不依赖自动刷新。
 5. **查看详情**：统一用 `property` 键值栅格；旧的 `card` + `text` 组合只作为迁移期遗留，不再新增。
 6. **Vuetify 内部文案**：`embed` 接受扁平 `locale` / `theme` / `uiDefaults`，宿主可据此把 Vuetify locale 设为中文；当前壳仍保留自带主题 CSS，迁移到 `createUi({ theme })` 属宿主改造（backlog A5）。
 7. **交付前**：新 Schema 跑一次 MCP `validateSchema`；`strict: true` 作为终检。

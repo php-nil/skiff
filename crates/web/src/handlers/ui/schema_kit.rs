@@ -18,6 +18,27 @@ pub fn page(title: impl Into<String>, subtitle: impl Into<String>, body: Vec<Val
     })
 }
 
+/// 带页头主操作的页面根节点（budding 1.8.7 `content.actions`）。
+///
+/// 标题与操作同一行、操作右对齐，窄宽度整体换行到标题下方。`actions` 为空时退回
+/// 普通 [`page`]，避免声明空插槽。
+pub fn page_with_actions(
+    title: impl Into<String>,
+    subtitle: impl Into<String>,
+    actions: Vec<Value>,
+    body: Vec<Value>,
+) -> Value {
+    if actions.is_empty() {
+        return page(title, subtitle, body);
+    }
+    json!({
+        "type": "page",
+        "props": { "title": title.into(), "subtitle": subtitle.into() },
+        "content": { "actions": actions },
+        "body": body
+    })
+}
+
 /// 一行纯文本。
 pub fn text_line(text: impl Into<String>) -> Value {
     json!({ "type": "text", "props": { "text": text.into() } })
@@ -45,24 +66,6 @@ pub fn link(text: &str, href: impl Into<String>) -> Value {
 /// 横向排布的一组节点。
 pub fn flex(gap: i64, body: Vec<Value>) -> Value {
     json!({ "type": "flex", "props": { "gap": gap }, "content": { "body": body } })
-}
-
-/// 两端对齐的工具条：左计数、右动作组。
-pub fn toolbar(left: Option<Value>, right: Vec<Value>) -> Value {
-    let mut body = Vec::new();
-    if let Some(left) = left {
-        body.push(left);
-    }
-    body.push(json!({
-        "type": "flex",
-        "props": { "gap": 8, "wrap": true, "justify": "end" },
-        "content": { "body": right }
-    }));
-    json!({
-        "type": "flex",
-        "props": { "gap": 12, "wrap": true, "align": "center", "justify": "space-between" },
-        "content": { "body": body }
-    })
 }
 
 /// 触发宿主动作 / 内联动作链的按钮。
@@ -346,6 +349,21 @@ pub fn search_form(label: &str, value: &str, base: &str, with_reset: bool) -> Va
     })
 }
 
+/// 写操作后整页重取：详情页没有可重载的列表，新状态由服务端重新计算。
+/// 壳脚本注册为 `skiffReload`，只做 `location.reload()` 重新取骨架。
+pub fn reload_page() -> Value {
+    json!({ "type": "skiffReload" })
+}
+
+/// 空串回落为破折号「—」：表格/详情里缺省字段的统一显示口径。
+pub fn or_dash(value: &str) -> &str {
+    if value.is_empty() {
+        "—"
+    } else {
+        value
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +396,39 @@ mod tests {
             form.get("content").is_none(),
             "表单正文不应再有 content.actions"
         );
+    }
+
+    /// 整页重取动作形状固定：壳脚本只认 `skiffReload`，多余字段会让前端误判。
+    #[test]
+    fn reload_page_emits_skiff_reload() {
+        let v = reload_page();
+        assert_eq!(v["type"], "skiffReload");
+        assert_eq!(v.as_object().map(|m| m.len()).unwrap_or(0), 1);
+    }
+
+    /// 空操作区退回普通页面，避免页头声明空插槽；非空时写 `content.actions`。
+    #[test]
+    fn page_with_actions_omits_empty_slot() {
+        let plain = page_with_actions("标题", "说明", Vec::new(), vec![text_line("正文")]);
+        assert!(plain.get("content").is_none());
+        assert_eq!(plain["props"]["title"], "标题");
+
+        let with_actions = page_with_actions(
+            "标题",
+            "说明",
+            vec![action_button("新建", Vec::new(), "primary")],
+            vec![text_line("正文")],
+        );
+        assert_eq!(
+            with_actions["content"]["actions"][0]["props"]["text"],
+            "新建"
+        );
+    }
+
+    /// 空串回落「—」，非空原样借用返回（不复制）。
+    #[test]
+    fn or_dash_falls_back_to_em_dash() {
+        assert_eq!(or_dash(""), "—");
+        assert_eq!(or_dash("running"), "running");
     }
 }

@@ -1,6 +1,6 @@
 # 上游 budding 需求与建议（处理台账）
 
-> 基线：`1.8.6`（上游 `570a00a`，2026-11-23）。上游回执见 [`tests/BUDDING_UPSTREAM_BACKLOG_UP.md`](../../tests/BUDDING_UPSTREAM_BACKLOG_UP.md)——**逐条答复的原文在那里**，本文只记「还要不要做、我们怎么处置」，不复制回执正文。
+> 基线：`1.8.7`（上游 `8906804`，2026-11-24）。上游回执见 [`tests/BUDDING_UPSTREAM_BACKLOG_UP.md`](../../tests/BUDDING_UPSTREAM_BACKLOG_UP.md)——**逐条答复的原文在那里**，本文只记「还要不要做、我们怎么处置」，不复制回执正文。
 > 口径：§一 是上游侧事项（有回执即标状态）；§二 是宿主自己该补的（K 编号）；§三 是仍然开放、下一轮该提的。编号不复用。
 > 用法摘录见 [BUDDING_INTERACTION_CAPABILITIES.md](BUDDING_INTERACTION_CAPABILITIES.md)；接入边界见 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md)。
 
@@ -48,3 +48,4 @@
 | 旧 A1–A5 | 随 U1–U4 消解或转入 K2 / 主题迁移 |
 | 1.8.5 新增能力 | 页脚 `submit` / `reset` 解析本层唯一表单；`confirm` 支持 `warning` / `alertdialog`；`loop` 组件替代旧 `loop` 动作 |
 | 1.8.6 新增能力 | `submitMode: "event"`、`setErrors` 动作、`ApiError.payload`、`onError` 错误快照、`testId` / `data-bud-role`、`inspectLayers()`、`@budding/schema-lint`、改名提示 |
+| 1.8.7 新增能力 | `page` 的 `content.actions` 页头主操作区（稳定锚点 `page-header` / `page-actions`）、`query-table` 替代 `crud`、表头快速筛选 / 自定义筛选、`SYNC_URL_MODES` |

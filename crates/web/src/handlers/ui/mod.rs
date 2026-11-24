@@ -437,7 +437,7 @@ fn plugin_menu_views(state: &AppState, key: &str) -> (String, String, Vec<MenuVi
 }
 
 /// /ui/v1 路由：各资源模块各自注册后合并；路径、方法与响应保持拆分前一致。
-pub fn router() -> axum::Router<Arc<AppState>> {
+pub fn router(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
     axum::Router::new()
         .merge(auth::router())
         .merge(routes::router())
@@ -455,7 +455,7 @@ pub fn router() -> axum::Router<Arc<AppState>> {
         .merge(store::router())
         .merge(settings::router())
         .merge(web::router())
-        .merge(files::router())
+        .merge(files::router(state))
 }
 
 #[cfg(test)]

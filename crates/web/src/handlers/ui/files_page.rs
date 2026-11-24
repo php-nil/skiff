@@ -279,12 +279,12 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
         }
     });
 
-    body.push(kit::card(
-        "操作",
-        vec![kit::flex(12, vec![mkdir, upload, write])],
-    ));
-
-    kit::page("文件管理", "平铺目录 + 面包屑（不使用树形）", body)
+    kit::page_with_actions(
+        "文件管理",
+        "平铺目录 + 面包屑（不使用树形）",
+        vec![mkdir, upload, write],
+        body,
+    )
 }
 
 /// 代码查看器：只读高亮 + 可编辑副本（二进制与截断文件不给编辑入口）。
@@ -408,7 +408,7 @@ pub fn trash_schema(data: &Value) -> Value {
                             }
                         }),
                         trash_request("clear", json!({}), "已清空回收站", "清空回收站失败"),
-                        reload_page()
+                        kit::reload_page()
                     ],
                     "danger",
                 ),
@@ -486,7 +486,7 @@ pub fn trash_schema(data: &Value) -> Value {
                             )
                         ]
                     }),
-                    reload_page()
+                    kit::reload_page()
                 ],
                 "primary"
             ),
@@ -507,7 +507,7 @@ pub fn trash_schema(data: &Value) -> Value {
                         "已彻底删除",
                         "彻底删除失败"
                     ),
-                    reload_page()
+                    kit::reload_page()
                 ],
                 "danger"
             )
@@ -612,13 +612,13 @@ pub fn quotas_schema(data: &Value) -> Value {
     )
 }
 
-/// 回收站写请求：端点挂在入口前缀下（`${prefix}/files/trash/*`），
+/// 回收站写请求：端点挂在 `/ui/v1` 下（`${api}/files/trash/*`），
 /// CSRF 由平台请求适配器统一补。
 fn trash_request(op: &str, data: Value, success: &str, error: &str) -> Value {
     let mut props = json!({
         "api": {
             "method": "POST",
-            "url": format!("${{prefix}}/files/trash/{op}"),
+            "url": format!("${{api}}/files/trash/{op}"),
             "data": data
         }
     });
@@ -626,11 +626,6 @@ fn trash_request(op: &str, data: Value, success: &str, error: &str) -> Value {
         props["messages"] = json!({ "success": success, "error": error });
     }
     json!({ "type": "request", "props": props })
-}
-
-/// 回收站与配额页的数据都来自页面骨架，写操作后整页重取。
-fn reload_page() -> Value {
-    json!({ "type": "skiffReload" })
 }
 
 /// 代码块语言：只覆盖常见扩展，其余按纯文本（高亮由前端 Pack 完成）。

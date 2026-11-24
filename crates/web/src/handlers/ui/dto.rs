@@ -1331,6 +1331,33 @@ pub struct FileExtractBody {
     pub overwrite: bool,
 }
 
+/// `POST /ui/v1/files/trash/restore`：按回收站编号还原，可选覆盖同名目标。
+#[derive(Debug, Deserialize)]
+pub struct TrashRestoreBody {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// `POST /ui/v1/files/trash/purge`：按回收站编号彻底删除。
+#[derive(Debug, Deserialize)]
+pub struct TrashIdBody {
+    #[serde(default)]
+    pub id: String,
+}
+
+/// `POST /ui/v1/files/quotas/set`：设置目录配额（字节数 / 文件数均可单独为 null）。
+#[derive(Debug, Deserialize)]
+pub struct QuotaSetBody {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+    #[serde(default)]
+    pub max_files: Option<u64>,
+}
+
 /// `GET /ui/v1/menu` 的响应数据：内核菜单树的 JSON 投影（契约 §1.1 的三级归属不变）。
 ///
 /// 只做 wire 形状转换，不另造菜单语义：L1/L2 的可见性、顺序、角色与能力门、

@@ -162,7 +162,7 @@
 | 镜像/网络/卷 | `handlers/resources.rs` | 拉取、创建、删除 | 先拆读写路径 |
 | 网站/运行环境 | `handlers/sites.rs` | 建站、配置、SSL、备份、扩展 | 表单字段最多，错误定位需先结构化 |
 | 设置/菜单 | `handlers/settings.rs`、`app/menu.rs` | 保存设置、菜单偏好 | 声明与渲染分离 |
-| 文件管理 | `handlers/files.rs` | 浏览、编辑、上传下载、回收站 | 独立前端，最后迁移 |
+| 文件管理 | `handlers/ui/files.rs` | 浏览、编辑、上传下载、回收站 | 已迁移到 `/ui/v1`（C12 收口） |
 
 ## 附录 B：与现有文档的分工
 

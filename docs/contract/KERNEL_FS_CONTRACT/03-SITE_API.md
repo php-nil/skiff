@@ -49,7 +49,7 @@
 
 - 深链：`/{p}/files`、`/{p}/files/trash`、`/{p}/files/quotas`（`core/files` 及其 L3）；站点详情页的「文件」入口可深链到按 `site=<domain>` 过滤的审计流。配额管理仍是「工具」下的独立二级入口。
 - 目录归属按 [`docs/contract/MENU_CONTRACT.md`](../MENU_CONTRACT.md) 的三级模型：文件管理是内核固定二级（稳定键 `core/files`），回收站与配额是其 L3（`core/files/trash`、`core/files/quotas`）；三个页面都由 budding 壳页渲染同一套标签栏标签栏，不引入第二套菜单机制。
-- 部署形态：`SKIFF_FORM=docker`（1Panel 受限形态，能力面只有 docker/identity，见 §5.4）不提供内核 fs——「工具 → 文件管理 / 回收站 / 配额管理」入口不渲染，`/{p}/files*` 直达一律 403「当前部署形态不提供文件管理能力」（判定单一来源：`crates/web/src/middleware.rs::check_fs_capability`）。
+- 部署形态：`SKIFF_FORM=docker`（1Panel 受限形态，能力面只有 docker/identity，见 §5.4）不提供内核 fs——「工具 → 文件管理 / 回收站 / 配额管理」入口不渲染；直达壳页仍渲染，`/ui/v1/files*` 数据端点一律 403「当前部署形态不提供文件管理能力」（判定单一来源：`crates/web/src/middleware.rs::check_fs_capability`；C12 收口后页面层不再挂门禁，权限统一在数据层判定）。
 - 恢复/彻底删除/清空：POST + CSRF + 二次确认；结果内联提示（成功/冲突/父目录缺失/失败条目）。
 - 站点文件插件（`com.skiff.files`）保留在「网站」菜单，只服务 `path:/www/sites/<域名>/index`：默认入口为壳页原生 schema（浏览 + 文本编辑/保存），旧完整工作台仅接受显式 `?legacy=1`；全盘管理、上传、回收站与配额仍只在 `core/files`，不提供第二套语义。插件未安装/未启用或当前形态没有 fs 能力时，`/{p}/plugins/com.skiff.files/main` 301 到 `/{p}/files`。
 
@@ -78,27 +78,27 @@
 | 路由 | 方法 | 说明 |
 | --- | --- | --- |
 | `/{p}/files` | GET | 文件管理页（Admin） |
-| `/{p}/files/list` | GET | 列目录（`path`） |
-| `/{p}/files/read` | GET | 读文本（`path`，上限 256 KiB） |
-| `/{p}/files/write` | POST | 原子替换写（CSRF + Admin） |
-| `/{p}/files/mkdir` | POST | 新建目录（CSRF + Admin） |
-| `/{p}/files/rename` | POST | 重命名/移动（CSRF + Admin） |
-| `/{p}/files/remove` | POST | 删除（移入回收站，返回 `trash_id`；CSRF + Admin） |
-| `/{p}/files/trash` | GET | 回收站页面 |
-| `/{p}/files/trash/list` | GET | 回收站列表 |
-| `/{p}/files/trash/restore` | POST | 恢复（`id`、`overwrite`；CSRF/Admin） |
-| `/{p}/files/trash/purge` | POST | 彻底删除（`id`；CSRF/Admin） |
-| `/{p}/files/trash/clear` | POST | 清空回收站（CSRF/Admin；返回删除数/字节/失败条目） |
-| `/{p}/files/quotas` | GET | 配额管理页面 |
-| `/{p}/files/quotas/list` | GET | 已设置上限的配额列表 |
-| `/{p}/files/quotas/set` | POST | 设置/修改（`root/max_bytes/max_files`；CSRF/Admin） |
-| `/{p}/files/quotas/cancel` | POST | 取消上限（`root`；CSRF/Admin） |
-| `/{p}/files/quotas/scan` | POST | 全量重扫用量（`root`；CSRF/Admin，O(条目数)） |
+| `/ui/v1/files` | GET | 列目录（`path`） |
+| `/ui/v1/files/read` | GET | 读文本（`path`，上限 256 KiB） |
+| `/ui/v1/files/write` | POST | 原子替换写（CSRF + Admin） |
+| `/ui/v1/files/mkdir` | POST | 新建目录（CSRF + Admin） |
+| `/ui/v1/files/rename` | POST | 重命名/移动（CSRF + Admin） |
+| `/ui/v1/files/remove` | POST | 删除（移入回收站，返回 `trash_id`；CSRF + Admin） |
+| `/{p}/files/trash` | GET | 回收站页面（壳页回落） |
+| `/ui/v1/files/trash/list` | GET | 回收站列表 |
+| `/ui/v1/files/trash/restore` | POST | 恢复（`id`、`overwrite`；CSRF/Admin） |
+| `/ui/v1/files/trash/purge` | POST | 彻底删除（`id`；CSRF/Admin） |
+| `/ui/v1/files/trash/clear` | POST | 清空回收站（CSRF/Admin；返回删除数/字节/失败条目） |
+| `/{p}/files/quotas` | GET | 配额管理页面（壳页回落） |
+| `/ui/v1/files/quotas/list` | GET | 已设置上限的配额列表 |
+| `/ui/v1/files/quotas/set` | POST | 设置/修改（`root/max_bytes/max_files`；CSRF/Admin） |
+| `/ui/v1/files/quotas/cancel` | POST | 取消上限（`root`；CSRF/Admin） |
+| `/ui/v1/files/quotas/scan` | POST | 全量重扫用量（`root`；CSRF/Admin，O(条目数)） |
 | `/{p}/fs/audit` | GET | 审计流 |
 | `/{p}/fs/grants` | GET | 授权根容量（规划中） |
 
-- 页面内 JSON 与页面路径同构，不插 `api` 中缀；旧 `/{p}/files/api/*` 以 308 兼容到新路径，
-  统一规则见 [`docs/contract/URL_CONTRACT.md`](../URL_CONTRACT.md) §4、§7。
+- 全部 JSON 接口收口到 `/ui/v1/files/*`，页面 `/{p}/files*` 走壳页回落；旧 `/{p}/files/api/*`
+  308 兼容已下线（见 `docs/changes/2026-11-23.md`），统一规则见 [`URL_CONTRACT`](../URL_CONTRACT.md)。
 - 管理面写操作同样走内核操作面（不是另一套 `std::fs` 实现），保证锁、原子性、审计一致。
 
 ## 11. 迁移与兼容

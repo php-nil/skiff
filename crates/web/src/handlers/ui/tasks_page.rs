@@ -9,14 +9,6 @@ use serde_json::{json, Value};
 use super::schema_kit::{self, TableOpts};
 use super::{TaskItem, TaskRunItem};
 
-fn or_dash(text: &str) -> &str {
-    if text.is_empty() {
-        "—"
-    } else {
-        text
-    }
-}
-
 /// 行内按钮（`rowActions` 的元素是完整节点，不是描述对象）。
 fn row_button(text: &str, actions: Vec<Value>) -> Value {
     json!({
@@ -49,10 +41,6 @@ fn table_reload() -> Value {
         "type": "invoke",
         "props": { "component": "tasks-table", "command": "reload" }
     })
-}
-
-fn reload_page() -> Value {
-    json!({ "type": "skiffReload" })
 }
 
 /// 任务列表页。
@@ -164,12 +152,12 @@ pub fn task_detail_schema(
                 format!("名称：{}（{}）", task.name, task.id),
                 format!("方式：{} · 目标：{}", task.method, task.target),
                 format!("调度：{}", task.expr),
-                format!("下次运行：{}", or_dash(&task.next_text)),
+                format!("下次运行：{}", schema_kit::or_dash(&task.next_text)),
                 format!("状态：{}", task.state_label),
-                format!("最近结果：{}", or_dash(&task.last_text)),
+                format!("最近结果：{}", schema_kit::or_dash(&task.last_text)),
                 format!(
                     "来源：{} · 内置：{}",
-                    or_dash(&task.source),
+                    schema_kit::or_dash(&task.source),
                     if task.builtin { "是" } else { "否" }
                 ),
             ],
@@ -203,42 +191,41 @@ pub fn task_detail_schema(
             }
         }),
     ];
+    let mut actions = Vec::new();
     if can_admin {
-        let mut actions = vec![
-            json!({
-                "type": "button",
-                "props": {
-                    "text": if task.enabled { "停用任务" } else { "启用任务" },
-                    "color": "secondary"
-                },
-                "onEvent": {
-                    "click": {
-                        "actions": [
-                            task_request(
-                                &task.id,
-                                "toggle",
-                                Some(json!({ "enabled": !task.enabled })),
-                                "任务已更新",
-                                "任务更新失败",
-                            ),
-                            reload_page(),
-                        ]
-                    }
+        actions.push(json!({
+            "type": "button",
+            "props": {
+                "text": if task.enabled { "停用任务" } else { "启用任务" },
+                "color": "secondary"
+            },
+            "onEvent": {
+                "click": {
+                    "actions": [
+                        task_request(
+                            &task.id,
+                            "toggle",
+                            Some(json!({ "enabled": !task.enabled })),
+                            "任务已更新",
+                            "任务更新失败",
+                        ),
+                        schema_kit::reload_page(),
+                    ]
                 }
-            }),
-            json!({
-                "type": "button",
-                "props": { "text": "立即运行", "color": "primary" },
-                "onEvent": {
-                    "click": {
-                        "actions": [
-                            task_request(&task.id, "run", Some(json!({})), "任务已触发", "任务运行失败"),
-                            reload_page(),
-                        ]
-                    }
+            }
+        }));
+        actions.push(json!({
+            "type": "button",
+            "props": { "text": "立即运行", "color": "primary" },
+            "onEvent": {
+                "click": {
+                    "actions": [
+                        task_request(&task.id, "run", Some(json!({})), "任务已触发", "任务运行失败"),
+                        schema_kit::reload_page(),
+                    ]
                 }
-            }),
-        ];
+            }
+        }));
         if !task.builtin {
             actions.push(json!({
                 "type": "button",
@@ -264,22 +251,16 @@ pub fn task_detail_schema(
                 }
             }));
         }
-        body.push(json!({
-            "type": "card",
-            "props": { "title": "任务操作" },
-            "content": {
-                "body": [{ "type": "flex", "props": { "gap": 8, "wrap": true }, "content": { "body": actions } }]
-            }
-        }));
     } else {
         body.push(json!({
             "type": "alert",
             "props": { "type": "info", "text": "写操作需要管理员权限；当前为只读视图。" }
         }));
     }
-    schema_kit::page(
+    schema_kit::page_with_actions(
         format!("{} · 定时任务", task.name),
         "启停、运行与删除均走 /ui/v1",
+        actions,
         body,
     )
 }

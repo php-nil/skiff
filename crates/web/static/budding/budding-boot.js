@@ -244,7 +244,6 @@
     var op = args.op;
     var values = formValues(ctx);
     var path = op === 'set' ? formText(values.path).trim() : args.path;
-    var base = prefix + '/files/quotas/';
     if (op === 'set') {
       var bytes = formText(values.max_bytes).trim();
       var files = formText(values.max_files).trim();
@@ -256,53 +255,33 @@
         toast('容量上限与文件数上限至少设置一项；如需取消请用行内「取消配额」。', 'warning');
         return Promise.resolve();
       }
-      return postPrefixJson(base + 'set', {
+      return writePost('/files/quotas/set', {
         path: path,
         max_bytes: bytes ? Number(bytes) : null,
         max_files: files ? Number(files) : null
-      })
-        .then(function () {
-          toast('已保存配额：' + path, 'success');
-          location.reload();
-        })
-        .catch(function (error) {
-          toast('保存配额失败：' + (error && error.message ? error.message : String(error)), 'error');
-        });
+      }, { fallbackMsg: '已保存配额：' + path });
     }
     if (op === 'scan') {
-      return hostConfirm({
-        title: '重新统计',
-        content: '重新统计会递归扫描整棵目录树，可能耗时较久。\n\n' + path
-      }).then(function (ok) {
-        if (!ok) return;
-        return postPrefixJson(base + 'scan', { path: path })
-          .then(function () {
-            toast('统计完成：' + path, 'success');
-            location.reload();
-          })
-          .catch(function (error) {
-            toast(
-              '重新统计失败：' + (error && error.message ? error.message : String(error)),
-              'error'
-            );
+      return writePost('/files/quotas/scan', { path: path }, {
+        fallbackMsg: '统计完成：' + path,
+        guard: function () {
+          return hostConfirm({
+            title: '重新统计',
+            content: '重新统计会递归扫描整棵目录树，可能耗时较久。\n\n' + path
           });
+        }
       });
     }
     if (op === 'cancel') {
-      return hostConfirm({
-        title: '取消配额',
-        content: '确认取消该目录的配额？\n\n' + path,
-        danger: true
-      }).then(function (ok) {
-        if (!ok) return;
-        return postPrefixJson(base + 'cancel', { path: path })
-          .then(function () {
-            toast('已取消配额', 'success');
-            location.reload();
-          })
-          .catch(function (error) {
-            toast('取消配额失败：' + (error && error.message ? error.message : String(error)), 'error');
+      return writePost('/files/quotas/cancel', { path: path }, {
+        fallbackMsg: '已取消配额',
+        guard: function () {
+          return hostConfirm({
+            title: '取消配额',
+            content: '确认取消该目录的配额？\n\n' + path,
+            danger: true
           });
+        }
       });
     }
     toast('未知的配额操作：' + op, 'error');
@@ -609,54 +588,10 @@
   // page-tabs 组件。节点挂在页面容器 `.bud-page` 内（标题之下、正文之上），底色跟随
   // 内容区而不是侧栏 chrome，样式在 `static/skiff-shell.css`。
 
-  /// 三级菜单登记表（核心页）：只负责**渲染当前地址命中的横向菜单**。
-  ///
-  /// 隐藏路由本身由服务端 `handlers/ui/routes.rs` 的 `SUBVIEWS` 生成并随
-  /// `GET /ui/v1/routes` 下发；这里的表决定「当前路径属于哪一组、组里有哪些 tab、
-  /// 哪个是当前项」，两份表描述同一组子视图，改路径以服务端为准。
-  ///
-  /// - `pattern`：路径段模式，`:name` 捕获一段（站点域名、运行环境 id）并回填到每个 tab；
-  /// - `tabs[0]`：默认视图，附加段为空，就是 L2 自身；
-  /// - `blocked`：同前缀下不参与匹配的字面段（`/sites/new` 不是站点详情）。
-  ///
-  /// 插件多视图不在这里登记：视图列表随 `/ui/v1/routes` 的 `plugins[].views` 下发。
-  var SUBVIEW_TABS = [
-    {
-      pattern: ['sites', 'web'],
-      title: 'Web 服务',
-      tabs: [
-        { title: '状态', segs: [] },
-        { title: '配置', segs: ['config'] },
-        { title: '日志', segs: ['logs'] },
-        { title: '模块', segs: ['modules'] }
-      ]
-    },
-    {
-      pattern: ['sites', ':id'],
-      title: '站点详情',
-      blocked: ['new', 'list', 'runtimes', 'web'],
-      tabs: [
-        { title: '概览', segs: [] },
-        { title: '域名', segs: ['domains'] },
-        { title: '配置', segs: ['config'] },
-        { title: '证书', segs: ['ssl'] },
-        { title: '备份', segs: ['backup'] },
-        { title: '日志', segs: ['logs'] }
-      ]
-    },
-    {
-      pattern: ['sites', 'runtimes', ':id'],
-      title: '运行环境详情',
-      tabs: [
-        { title: '基础信息', segs: [] },
-        { title: '配置', segs: ['config'] },
-        { title: '扩展', segs: ['extensions'] },
-        { title: '站点', segs: ['sites'] },
-        { title: '管理', segs: ['manage'] },
-        { title: '日志', segs: ['logs'] }
-      ]
-    }
-  ];
+  /// 三级子视图登记表：**随 `/ui/v1/routes` 下发**（Rust 侧 SUBVIEWS 的镜像）。
+  /// 前端不再自己维护硬编码 pattern + tabs，改成纯消费——改路径只动 `routes.rs`，
+  /// JS 零成本同步。插件多视图同理，只是 `pluginSubviews` 直接从 `pluginMeta.views` 取。
+  var subviews = [];
 
   /// tab 的绝对路径：模式里的 `:name` 用捕获值替换，其余段原样拼接。
   function subviewPath(pattern, params, segs) {
@@ -671,8 +606,8 @@
   /// 命中要求「剩余段完全等于某个 tab 的附加段」，因此 `/sites/web` 这种字面模式
   /// 排在参数模式之前，`/sites/a.com/unknown` 也不会误判成站点详情。
   function matchSubviews(segs) {
-    for (var i = 0; i < SUBVIEW_TABS.length; i++) {
-      var group = SUBVIEW_TABS[i];
+    for (var i = 0; i < subviews.length; i++) {
+      var group = subviews[i];
       if (segs.length < group.pattern.length) continue;
       var params = {};
       var ok = true;
@@ -775,8 +710,12 @@
       });
     }
     // 标题之下、正文之上；页面没有标题时作为首个内容块。
+    // 1.8.7 起声明 `content.actions` 的页面把标题/副标题包进 `.bud-page-header`，
+    // 优先认这个容器，否则会插进标题与主操作之间。
     var after =
-      host.querySelector('.bud-page-subtitle') || host.querySelector('.bud-page-title');
+      host.querySelector('.bud-page-header') ||
+      host.querySelector('.bud-page-subtitle') ||
+      host.querySelector('.bud-page-title');
     if (after) {
       if (after.nextElementSibling !== nav) host.insertBefore(nav, after.nextElementSibling);
     } else if (host.firstElementChild !== nav) {
@@ -1074,11 +1013,12 @@
   function composeEdit(args, ctx) {
     var values = formValues(ctx);
     var op = formText(values.action) === 'up' ? 'up' : 'validate';
-    return submitJson('/compose/' + op, {
+    return writePost('/compose/' + op, {
       project: formText(values.project),
       compose: formText(values.compose)
-    })
-      .then(function (data) {
+    }, {
+      ctx: ctx,
+      onSuccess: function (data) {
         if (op === 'up') {
           var failed = data.failed || 0;
           toast(
@@ -1097,14 +1037,11 @@
             ((data.networks || []).join('、') || '—'),
           'success'
         );
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          (op === 'up' ? '部署失败：' : '校验失败：') +
-            (error && error.message ? error.message : String(error))
-        );
-      });
+      },
+      onCatch: function (error) {
+        formError(ctx, (op === 'up' ? '部署失败：' : '校验失败：') + (error && error.message ? error.message : String(error)));
+      }
+    });
   }
 
   /// 搜索 / 翻页跳转：读表单 `q`（或显式 `args.q`），按 `URLSearchParams` 编码后
@@ -1125,45 +1062,32 @@
   /// 菜单偏好写操作：复用 `/ui/v1/settings/menu`（同一校验与审计）。
   function menuWrite(args) {
     var action = args.action || '';
-    var guard =
-      action === 'reset'
-        ? hostConfirm({
-            title: '恢复默认菜单',
-            content: '确认恢复默认菜单偏好？本账号的顺序、隐藏与固定将被清除。',
-            danger: true
-          })
-        : Promise.resolve(true);
     var payload = {
       action: action,
       key: args.key || ''
     };
-    return guard
-      .then(function (ok) {
-        if (!ok) return;
-        return submitJson('/settings/menu', payload).then(function (data) {
-          toast((data && data.message) || '已保存菜单偏好', 'success');
-          location.reload();
-        });
-      })
-      .catch(function (error) {
-        toast('保存失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+    return writePost('/settings/menu', payload, {
+      fallbackMsg: '已保存菜单偏好',
+      guard: function () {
+        if (action === 'reset') {
+          return hostConfirm({
+            title: '恢复默认菜单',
+            content: '确认恢复默认菜单偏好？本账号的顺序、隐藏与固定将被清除。',
+            danger: true
+          });
+        }
+        return Promise.resolve(true);
+      }
+    });
   }
 
   /// Docker 设置写操作：复用 `/ui/v1/settings/docker`（同一落盘与审计）。
   function dockerSettingsWrite(args, ctx) {
     var values = formValues(ctx);
-    return submitJson('/settings/docker', {
+    return writePost('/settings/docker', {
       registry_mirror: formText(values.registry_mirror).trim(),
       image_prefix: formText(values.image_prefix).trim()
-    })
-      .then(function (data) {
-        toast((data && data.message) || '已保存', 'success');
-        location.reload();
-      })
-      .catch(function (error) {
-        toast('保存失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+    }, { fallbackMsg: '已保存' });
   }
 
   /// 界面设置写操作：复用 `/ui/v1/settings/ui`（同一校验与审计）。
@@ -1182,53 +1106,23 @@
       formError(ctx, invalid + '必须是 #rrggbb 格式，例如 #17a98e');
       return Promise.resolve();
     }
-    return submitJson('/settings/ui', {
+    return writePost('/settings/ui', {
       primary: primary,
       // 关闭自定义时留空，服务端按页面底色自动推导，避免旧值在下次开启时意外复活。
       menu: menuCustom ? menu : '',
       page: page,
       menu_custom: menuCustom
-    })
-      .then(function (data) {
-        toast((data && data.message) || '已保存配色', 'success');
-        location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '保存失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+    }, { ctx: ctx, fallbackMsg: '已保存配色' });
   }
 
   /// 预设方案：一次提交整套颜色；服务端仍做严格校验与对比度校正。
   function uiPresetApply(args) {
-    return submitJson('/settings/ui', {
+    return writePost('/settings/ui', {
       primary: formText(args.primary).trim(),
       menu: formText(args.menu).trim(),
       page: formText(args.page).trim(),
       menu_custom: !!args.menu_custom
-    })
-      .then(function (data) {
-        toast((data && data.message) || '已应用预设配色', 'success');
-        location.reload();
-      })
-      .catch(function (error) {
-        toast(
-          '应用预设失败：' + (error && error.message ? error.message : String(error)),
-          'error'
-        );
-      });
-  }
-
-  /// 运行环境写操作统一收尾：成功提示、失败展示，均复用 `/ui/v1` 错误信封。
-  function runtimeDone(data, fallback) {
-    toast((data && data.message) || fallback || '操作已完成', 'success');
-    location.reload();
-  }
-
-  function runtimeFail(error) {
-    toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
+    }, { fallbackMsg: '已应用预设配色' });
   }
 
   function runtimeNum(raw) {
@@ -1241,59 +1135,43 @@
   function runtimeCreate(args, ctx) {
     var v = formValues(ctx);
     var kind = formText(v.kind).trim();
-    return submitJson('/runtimes', {
+    return writePost('/runtimes', {
       kind: kind,
       version: formText(v.version).trim(),
       name: formText(v.name).trim(),
       // 非 PHP 不发该字段（null = 不改动），否则会用一个与安装无关的选择
       // 去改写全局 apk 源。
       apk_mirror: kind === 'php' ? formText(v.apk_mirror).trim() : null
-    })
-      .then(function (data) {
-        if (args && args.inLayer) closeTopLayer();
-        runtimeDone(data, '安装任务已提交');
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '操作失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+    }, { ctx: ctx, args: args, fallbackMsg: '安装任务已提交' });
   }
 
   function runtimeImagesWrite(args, ctx) {
     var v = formValues(ctx);
-    return submitJson('/runtimes/images', {
+    return writePost('/runtimes/images', {
       nginx_image: formText(v.nginx_image).trim(),
       php_image: formText(v.php_image).trim()
-    })
-      .then(function (data) {
-        runtimeDone(data, '镜像参数已保存');
-      })
-      .catch(runtimeFail);
+    }, { fallbackMsg: '镜像参数已保存' });
   }
 
   function runtimeAction(args) {
-    var guard = args.confirm_text
-      ? hostConfirm({ title: '确认操作', content: String(args.confirm_text), danger: true })
-      : Promise.resolve(true);
-    return guard
-      .then(function (ok) {
-        if (!ok) return;
-        return submitJson(
-          '/runtimes/' + encodeURIComponent(args.id) + '/action/' + encodeURIComponent(args.op),
-          {}
-        ).then(function (data) {
-          // 删除后详情页已无对应实体，留在原地只会渲染「运行环境不存在」。
-          if (args.op === 'delete') {
-            toast((data && data.message) || '运行环境已删除', 'success');
-            window.location.href = prefix + '/sites/runtimes';
-            return;
-          }
-          runtimeDone(data, '操作已完成');
-        });
-      })
-      .catch(runtimeFail);
+    var op = args.op;
+    return writePost('/runtimes/' + encodeURIComponent(args.id) + '/action/' + encodeURIComponent(op), {}, {
+      fallbackMsg: '操作已完成',
+      guard: function () {
+        if (!args.confirm_text) return Promise.resolve(true);
+        return hostConfirm({ title: '确认操作', content: String(args.confirm_text), danger: true });
+      },
+      onSuccess: function (data) {
+        // 删除后详情页已无对应实体，留在原地只会渲染「运行环境不存在」。
+        if (op === 'delete') {
+          toast((data && data.message) || '运行环境已删除', 'success');
+          window.location.href = prefix + '/sites/runtimes';
+          return;
+        }
+        toast((data && data.message) || '操作已完成', 'success');
+        location.reload();
+      }
+    });
   }
 
   function runtimeProbe(args) {
@@ -1304,12 +1182,14 @@
           data.ok ? 'success' : 'warning'
         );
       })
-      .catch(runtimeFail);
+      .catch(function (error) {
+        toast('探测失败：' + (error && error.message ? error.message : String(error)), 'error');
+      });
   }
 
   function runtimeConfigWrite(args, ctx) {
     var v = formValues(ctx);
-    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/config', {
+    return writePost('/runtimes/' + encodeURIComponent(args.id) + '/config', {
       memory_limit: formText(v.memory_limit).trim(),
       upload_max_filesize: formText(v.upload_max_filesize).trim(),
       post_max_size: formText(v.post_max_size).trim(),
@@ -1320,25 +1200,17 @@
       min_spare_servers: runtimeNum(v.min_spare_servers),
       max_spare_servers: runtimeNum(v.max_spare_servers),
       max_requests: runtimeNum(v.max_requests)
-    })
-      .then(function (data) {
-        runtimeDone(data, 'PHP 配置已保存');
-      })
-      .catch(runtimeFail);
+    }, { ctx: ctx, fallbackMsg: 'PHP 配置已保存' });
   }
 
   function runtimeNodeWrite(args, ctx) {
     var v = formValues(ctx);
-    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/node-config', {
+    return writePost('/runtimes/' + encodeURIComponent(args.id) + '/node-config', {
       command: formText(v.command).trim(),
       health_path: formText(v.health_path).trim(),
       node_env: formText(v.node_env).trim(),
       env: formText(v.env)
-    })
-      .then(function (data) {
-        runtimeDone(data, 'Node.js 配置已保存');
-      })
-      .catch(runtimeFail);
+    }, { fallbackMsg: 'Node.js 配置已保存' });
   }
 
   function runtimePortWrite(args, ctx) {
@@ -1348,33 +1220,28 @@
       toast('端口必须是 1–65535 之间的整数', 'warning');
       return Promise.resolve();
     }
-    return hostConfirm({
-      title: '修改运行环境端口',
-      content: '改端口会重写全部绑定站点反代并重建容器，确认继续？',
-      danger: true
-    }).then(function (ok) {
-      if (!ok) return;
-      return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/port', {
-        port: port,
-        confirm: true
-      })
-        .then(function (data) {
-          runtimeDone(data, '端口已保存');
-        })
-        .catch(runtimeFail);
+    return writePost('/runtimes/' + encodeURIComponent(args.id) + '/port', {
+      port: port,
+      confirm: true
+    }, {
+      ctx: ctx,
+      fallbackMsg: '端口已保存',
+      guard: function () {
+        return hostConfirm({
+          title: '修改运行环境端口',
+          content: '改端口会重写全部绑定站点反代并重建容器，确认继续？',
+          danger: true
+        });
+      }
     });
   }
 
   function runtimeFileWrite(args, ctx) {
     var v = formValues(ctx);
-    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/config-file', {
+    return writePost('/runtimes/' + encodeURIComponent(args.id) + '/config-file', {
       key: args.key,
       content: formText(v.content)
-    })
-      .then(function (data) {
-        runtimeDone(data, '配置文件已保存');
-      })
-      .catch(runtimeFail);
+    }, { fallbackMsg: '配置文件已保存' });
   }
 
   /// 打开配置文件编辑视图。`?file=` 只是查询参数，沿用内页 navigate 会被路由
@@ -1389,122 +1256,89 @@
   }
 
   function runtimeExt(args) {
-    var guard = args.confirm_text
-      ? hostConfirm({ title: '确认操作', content: String(args.confirm_text), danger: true })
-      : Promise.resolve(true);
-    return guard
-      .then(function (ok) {
-        if (!ok) return;
-        return submitJson(
-          '/runtimes/' +
-            encodeURIComponent(args.id) +
-            '/extensions/' +
-            encodeURIComponent(args.key) +
-            '/' +
-            encodeURIComponent(args.op),
-          {}
-        ).then(function (data) {
-          runtimeDone(data, '扩展任务已提交');
-        });
-      })
-      .catch(runtimeFail);
+    return writePost(
+      '/runtimes/' +
+        encodeURIComponent(args.id) +
+        '/extensions/' +
+        encodeURIComponent(args.key) +
+        '/' +
+        encodeURIComponent(args.op),
+      {},
+      {
+        fallbackMsg: '扩展任务已提交',
+        guard: function () {
+          if (!args.confirm_text) return Promise.resolve(true);
+          return hostConfirm({ title: '确认操作', content: String(args.confirm_text), danger: true });
+        }
+      }
+    );
   }
 
   function runtimePecl(args, ctx) {
     var v = formValues(ctx);
-    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/pecl', {
+    return writePost('/runtimes/' + encodeURIComponent(args.id) + '/pecl', {
       name: formText(v.name).trim(),
       version: formText(v.version).trim()
-    })
-      .then(function (data) {
-        runtimeDone(data, 'PECL 安装任务已提交');
-      })
-      .catch(runtimeFail);
+    }, { fallbackMsg: 'PECL 安装任务已提交' });
   }
 
   function runtimeClone(args, ctx) {
     var v = formValues(ctx);
-    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/clone', {
+    return writePost('/runtimes/' + encodeURIComponent(args.id) + '/clone', {
       name: formText(v.name).trim()
-    })
-      .then(function (data) {
-        runtimeDone(data, '克隆任务已提交');
-      })
-      .catch(runtimeFail);
+    }, { fallbackMsg: '克隆任务已提交' });
   }
 
   function runtimeUnbind(args) {
-    return hostConfirm({
-      title: '解绑站点',
-      content: '解绑后站点会转为静态并停止，确认解绑 ' + args.domain + '？',
-      danger: true
-    }).then(function (ok) {
-      if (!ok) return;
-      return submitJson(
-        '/runtimes/' +
-          encodeURIComponent(args.id) +
-          '/sites/' +
-          encodeURIComponent(args.domain) +
-          '/unbind',
-        {}
-      )
-        .then(function (data) {
-          runtimeDone(data, '站点已解绑');
-        })
-        .catch(runtimeFail);
-    });
+    return writePost(
+      '/runtimes/' +
+        encodeURIComponent(args.id) +
+        '/sites/' +
+        encodeURIComponent(args.domain) +
+        '/unbind',
+      {},
+      {
+        fallbackMsg: '站点已解绑',
+        guard: function () {
+          return hostConfirm({
+            title: '解绑站点',
+            content: '解绑后站点会转为静态并停止，确认解绑 ' + args.domain + '？',
+            danger: true
+          });
+        }
+      }
+    );
   }
 
 
   /// Web 服务容器动作：复用 `POST /ui/v1/runtimes/web/action/{op}`（同一命令层与审计）。
   function webEnvAction(args) {
     var op = args.op;
-    var guard = Promise.resolve(true);
-    if (op === 'rebuild') {
-      guard = hostConfirm({
-        title: '重新安装 Web 服务',
-        content: '将重建 OpenResty 容器，期间所有站点不可访问。确认继续？',
-        danger: true
-      });
-    } else if (op === 'delete') {
-      guard = hostConfirm({
-        title: '删除 Web 服务容器',
-        content: '删除后所有站点立即不可访问，配置与站点目录会保留。确认删除？',
-        danger: true
-      });
-    }
-    return guard
-      .then(function (ok) {
-        if (!ok) return;
-        return submitJson('/runtimes/web/action/' + encodeURIComponent(op), { confirm: true }).then(
-          function (data) {
-            // 安装/重建：提交成功即刷新进入当前作业，不弹阻塞提示，
-            // 避免旧页面的完成记录在提示期间继续可见。
-            if (op === 'install' || op === 'rebuild') {
-              location.reload();
-              return;
-            }
-            toast((data && data.message) || '操作已完成', 'success');
-            location.reload();
-          }
-        );
-      })
-      .catch(function (error) {
-        toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+    return writePost('/runtimes/web/action/' + encodeURIComponent(op), { confirm: true }, {
+      guard: function () {
+        if (op === 'rebuild') {
+          return hostConfirm({ title: '重新安装 Web 服务', content: '将重建 OpenResty 容器，期间所有站点不可访问。确认继续？', danger: true });
+        }
+        if (op === 'delete') {
+          return hostConfirm({ title: '删除 Web 服务容器', content: '删除后所有站点立即不可访问，配置与站点目录会保留。确认删除？', danger: true });
+        }
+        return Promise.resolve(true);
+      },
+      onSuccess: function (data) {
+        // 安装/重建：提交成功即刷新进入当前作业，不弹阻塞提示。
+        if (op === 'install' || op === 'rebuild') { location.reload(); return; }
+        toast((data && data.message) || '操作已完成', 'success');
+        location.reload();
+      }
+    });
   }
 
   /// 主配置保存：复用 `/ui/v1/web/config`（nginx -t + reload + 审计）。
   function webConfigWrite(args, ctx) {
     var values = formValues(ctx);
-    return submitJson('/web/config', { content: formText(values.content) })
-      .then(function (data) {
-        toast((data && data.message) || '主配置已保存', 'success');
-        location.reload();
-      })
-      .catch(function (error) {
-        toast('保存失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+    return writePost('/web/config', { content: formText(values.content) }, {
+      fallbackMsg: '主配置已保存'
+    });
   }
 
   /// 性能参数保存：复用 `/ui/v1/web/params`。
@@ -1524,21 +1358,14 @@
       return Promise.resolve();
     }
     var gzip = formText(values.gzip);
-    return submitJson('/web/params', {
+    return writePost('/web/params', {
       worker_processes: formText(values.worker_processes).trim(),
       worker_connections: connections,
       keepalive_timeout: keepalive,
       client_max_body_size: formText(values.client_max_body_size).trim(),
       gzip: gzip === 'true' || gzip === 'on' || values.gzip === true,
       gzip_types: formText(values.gzip_types).trim()
-    })
-      .then(function (data) {
-        toast((data && data.message) || '性能参数已保存', 'success');
-        location.reload();
-      })
-      .catch(function (error) {
-        toast('保存失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+    }, { ctx: ctx, fallbackMsg: '性能参数已保存' });
   }
 
   /// 日志按需加载：把筛选条件带回 URL，页面再走 `/ui/v1/web/logs`（不自动读文件）。
@@ -1643,6 +1470,46 @@
     });
   }
 
+  /// submitJson 通用收尾：guard → post → success handler → catch。
+  /// 覆盖文件/运行环境/设置/站点等几乎所有写操作的共性模式：
+  ///   - guard 提供二次确认（可选，不提供直接过）；
+  ///   - 默认成功链路：closeTopLayer + toast(data.message || fallback, 'success') + reload；
+  ///   - 有 ctx 失败用 formError，没有 ctx 用 toast。
+  /// 需要特殊处理（跳转、条件 toast、多 POST）时用 opts.onSuccess / opts.onCatch 覆盖。
+  function writePost(path, payload, opts) {
+    opts = opts || {};
+    var ctx = opts.ctx;
+    var args = opts.args;
+    var guard = typeof opts.guard === 'function' ? opts.guard() : Promise.resolve(true);
+    return guard.then(function (ok) {
+      if (!ok) return;
+      return submitJson(path, payload)
+        .then(function (data) {
+          if (typeof opts.onSuccess === 'function') {
+            opts.onSuccess(data);
+          } else {
+            if (args && args.inLayer) closeTopLayer();
+            toast(
+              (data && data.message) || opts.fallbackMsg || '操作已完成',
+              opts.successLevel || 'success'
+            );
+            location.reload();
+          }
+        })
+        .catch(function (error) {
+          var text = (error && error.message ? error.message : String(error));
+          var label = opts.failPrefix ? opts.failPrefix + text : text;
+          if (typeof opts.onCatch === 'function') {
+            opts.onCatch(error, label);
+          } else if (ctx) {
+            formError(ctx, '操作失败：' + text);
+          } else {
+            toast(label, 'error');
+          }
+        });
+    });
+  }
+
   /// 终端：每次打开/重连都走既有 `POST /{p}/containers/{id}/exec/ticket`
   /// （Admin + CSRF + `Verb::Exec` 策略），票据绑定会话与容器、单次使用。
   function loadTerminalUrl(containerId) {
@@ -1736,37 +1603,32 @@
   /// 改密：成功后轮换会话并回写新 CSRF，然后整页刷新让表单与状态归位。
   function passwordChange(args, ctx) {
     var values = formValues(ctx);
-    return submitJson('/settings/password', {
+    return writePost('/settings/password', {
       old_password: String(values.old_password || ''),
       new_password: String(values.new_password || ''),
       confirm_password: String(values.confirm_password || '')
-    })
-      .then(function (data) {
+    }, {
+      onSuccess: function (data) {
         if (sessionState) sessionState.csrf_token = data.csrf_token || sessionState.csrf_token;
         toast(data.message || '口令已修改', 'success');
         window.location.reload();
-      })
-      .catch(function (error) {
+      },
+      onCatch: function (error) {
         toast('修改失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+      }
+    });
   }
 
   function totpSetup() {
-    return submitJson('/settings/totp/setup', {})
-      .then(function () {
-        window.location.reload();
-      })
-      .catch(function (error) {
-        toast('生成密钥失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+    return writePost('/settings/totp/setup', {});
   }
 
   function totpEnable(args, ctx) {
     var values = formValues(ctx);
-    return submitJson('/settings/totp/enable', { code: String(values.code || '') })
-      .then(function (data) {
-        // 备份码只显示一次：以前经 sessionStorage 中转、刷新后由页面弹出，
-        // 页面改由服务端产出后没有这个钩子，改为当场弹窗，避免静默丢失。
+    return writePost('/settings/totp/enable', { code: String(values.code || '') }, {
+      ctx: ctx,
+      onSuccess: function (data) {
+        // 备份码只显示一次：当场弹窗避免静默丢失。
         var codes = data.backup_codes || [];
         if (codes.length === 0) {
           toast(data.message || '两步验证已启用', 'success');
@@ -1780,42 +1642,28 @@
           toast(data.message || '两步验证已启用', 'success');
           window.location.reload();
         });
-      })
-      .catch(function (error) {
-        toast('启用失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+      }
+    });
   }
 
   function keyImport(args, ctx) {
     var values = formValues(ctx);
-    return submitJson('/settings/keys', {
+    return writePost('/settings/keys', {
       public_key: String(values.public_key || ''),
       label: String(values.label || '')
-    })
-      .then(function (data) {
-        toast(data.message || '已导入公钥', 'success');
-        window.location.reload();
-      })
-      .catch(function (error) {
-        toast('导入失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
+    }, { fallbackMsg: '已导入公钥' });
   }
 
   function keyRemove(args) {
-    return hostConfirm({
-      title: '撤销公钥',
-      content: '撤销后该公钥签名的包将无法安装/升级，确认撤销？',
-      danger: true
-    }).then(function (ok) {
-      if (!ok) return;
-      return submitJson('/settings/keys/' + encodeURIComponent(args.key_id), {})
-        .then(function (data) {
-          toast(data.message || '已撤销该公钥', 'success');
-          window.location.reload();
-        })
-        .catch(function (error) {
-          toast('撤销失败：' + (error && error.message ? error.message : String(error)), 'error');
+    return writePost('/settings/keys/' + encodeURIComponent(args.key_id), {}, {
+      fallbackMsg: '已撤销该公钥',
+      guard: function () {
+        return hostConfirm({
+          title: '撤销公钥',
+          content: '撤销后该公钥签名的包将无法安装/升级，确认撤销？',
+          danger: true
         });
+      }
     });
   }
 
@@ -1914,7 +1762,7 @@
   }
 
   /// 宿主上传适配器（budding `PlatformAdapter.upload`）：组件给 FormData，
-  /// 这里按单片上限切片，逐片 POST 到既有 `/{p}/files/upload`（同授权、同审计），
+  /// 这里按单片上限切片，逐片 POST 到 `/ui/v1/files/upload`（同授权、同审计），
   /// 并按字节回报进度；失败直接抛错，由组件展示重试。
   function uploadFile(req) {
     var form = req && req.body;
@@ -1936,7 +1784,7 @@
       }
       var end = Math.min(offset + chunkBytes, file.size);
       var url =
-        prefix +
+        apiBase +
         '/files/upload?path=' +
         encodeURIComponent(target) +
         '&offset=' +
@@ -1992,7 +1840,7 @@
       return;
     }
     window.location.href =
-      prefix + '/files/download?path=' + encodeURIComponent(String(args.path || ''));
+      apiBase + '/files/download?path=' + encodeURIComponent(String(args.path || ''));
   }
 
   /// 关闭最上层弹层（确认框之外的业务弹窗用它收尾）。
@@ -2014,17 +1862,11 @@
       return Promise.resolve();
     }
     var base = String(args.dir || '').replace(/\/+$/, '');
-    return submitJson('/files/mkdir', { path: base + '/' + name })
-      .then(function (data) {
-        toast(data.message || '目录已创建', 'success');
-        window.location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '新建目录失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+    return writePost('/files/mkdir', { path: base + '/' + name }, {
+      ctx: ctx,
+      args: args,
+      fallbackMsg: '目录已创建'
+    });
   }
 
   /// `POST /ui/v1/files/write`：带 `path` 时覆盖保存，否则按 `dir` + 文件名新建。
@@ -2040,18 +1882,15 @@
       var base = String(args.dir || '').replace(/\/+$/, '');
       target = base + '/' + name;
     }
-    return submitJson('/files/write', { path: target, content: String(values.content || '') })
-      .then(function () {
-        closeTopLayer();
-        toast('已保存', 'success');
-        window.location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '保存失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+    return writePost(
+      '/files/write',
+      { path: target, content: String(values.content || '') },
+      {
+        ctx: ctx,
+        args: args,
+        fallbackMsg: '已保存'
+      }
+    );
   }
 
   function fileRename(args, ctx) {
@@ -2068,18 +1907,11 @@
       return Promise.resolve();
     }
     var parent = current.replace(/[\\/][^\\/]*$/, '');
-    return submitJson('/files/rename', { from: current, to: parent + '/' + next })
-      .then(function (data) {
-        closeTopLayer();
-        toast(data.message || '已重命名', 'success');
-        window.location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '重命名失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+    return writePost('/files/rename', { from: current, to: parent + '/' + next }, {
+      ctx: ctx,
+      args: args,
+      fallbackMsg: '已重命名'
+    });
   }
 
   function fileCopy(args, ctx) {
@@ -2094,18 +1926,14 @@
       formError(ctx, '目标路径必须是绝对路径（以 / 开头）', 'path');
       return Promise.resolve();
     }
-    return submitJson('/files/copy', { from: from, to: to, overwrite: !!values.overwrite })
-      .then(function (data) {
-        closeTopLayer();
+    return writePost('/files/copy', { from: from, to: to, overwrite: !!values.overwrite }, {
+      ctx: ctx,
+      args: args,
+      onSuccess: function (data) {
         toast((data.message || '已复制') + '：' + (data.to || to), 'success');
-        window.location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '复制失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+        location.reload();
+      }
+    });
   }
 
   function fileChmod(args, ctx) {
@@ -2120,18 +1948,14 @@
       formError(ctx, '权限必须是八进制（如 755 或 0755）', 'mode');
       return Promise.resolve();
     }
-    return submitJson('/files/chmod', { path: path, mode: mode })
-      .then(function (data) {
-        closeTopLayer();
+    return writePost('/files/chmod', { path: path, mode: mode }, {
+      ctx: ctx,
+      args: args,
+      onSuccess: function (data) {
         toast('权限已修改为 ' + (data.mode !== undefined ? data.mode.toString(8) : mode), 'success');
-        window.location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '修改权限失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+        location.reload();
+      }
+    });
   }
 
   function fileChown(args, ctx) {
@@ -2154,18 +1978,14 @@
       return Promise.resolve();
     }
     // 后端 DTO 是 u32；这里必须发数字，字符串会 422。
-    return submitJson('/files/chown', { path: path, uid: uid, gid: gid })
-      .then(function (data) {
-        closeTopLayer();
+    return writePost('/files/chown', { path: path, uid: uid, gid: gid }, {
+      ctx: ctx,
+      args: args,
+      onSuccess: function (data) {
         toast(data.message || '属主已修改', data.root_owned ? 'warning' : 'success');
-        window.location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '修改属主失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+        location.reload();
+      }
+    });
   }
 
   function fileArchive(args, ctx) {
@@ -2181,23 +2001,18 @@
       formError(ctx, '压缩包路径必须是绝对路径（以 / 开头）', 'path');
       return Promise.resolve();
     }
-    return submitJson('/files/archive', {
-      sources: [source],
-      dest: dest,
-      format: format,
-      overwrite: !!values.overwrite
-    })
-      .then(function (data) {
-        closeTopLayer();
-        toast('已创建压缩包 ' + (data.path || dest), 'success');
-        window.location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '压缩失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+    return writePost(
+      '/files/archive',
+      { sources: [source], dest: dest, format: format, overwrite: !!values.overwrite },
+      {
+        ctx: ctx,
+        args: args,
+        onSuccess: function (data) {
+          toast('已创建压缩包 ' + (data.path || dest), 'success');
+          location.reload();
+        }
+      }
+    );
   }
 
   function fileExtract(args, ctx) {
@@ -2212,49 +2027,44 @@
       formError(ctx, '目标目录必须是绝对路径（以 / 开头）', 'to');
       return Promise.resolve();
     }
-    return submitJson('/files/extract', {
-      archive: archive,
-      dest: dest,
-      overwrite: !!values.overwrite
-    })
-      .then(function (data) {
-        closeTopLayer();
-        var skipped = (data.skipped_symlinks || 0) + (data.skipped_special || 0);
-        toast(
-          '已解压 ' + (data.files || 0) + ' 个文件' + (skipped > 0 ? '，跳过 ' + skipped + ' 个特殊条目' : ''),
-          skipped > 0 ? 'warning' : 'success'
-        );
-        window.location.reload();
-      })
-      .catch(function (error) {
-        formError(
-          ctx,
-          '解压失败：' + (error && error.message ? error.message : String(error))
-        );
-      });
+    return writePost(
+      '/files/extract',
+      { archive: archive, dest: dest, overwrite: !!values.overwrite },
+      {
+        ctx: ctx,
+        args: args,
+        onSuccess: function (data) {
+          var skipped = (data.skipped_symlinks || 0) + (data.skipped_special || 0);
+          toast(
+            '已解压 ' + (data.files || 0) + ' 个文件' + (skipped > 0 ? '，跳过 ' + skipped + ' 个特殊条目' : ''),
+            skipped > 0 ? 'warning' : 'success'
+          );
+          location.reload();
+        }
+      }
+    );
   }
 
   function fileRemove(args) {
     var name = String(args.name || '');
     var path = String(args.path || '');
-    return hostConfirm({
-      title: '删除文件',
-      content: '确认删除 ' + name + '？删除后进入回收站，可在回收站恢复。',
-      danger: true
-    }).then(function (ok) {
-      if (!ok) return;
-      return submitJson('/files/remove', { path: path })
-        .then(function (data) {
-          toast(
-            (data.message || '已移入回收站') +
-              (data.trash_id ? '（回收站编号 ' + data.trash_id + '）' : ''),
-            'success'
-          );
-          window.location.reload();
-        })
-        .catch(function (error) {
-          toast('删除失败：' + (error && error.message ? error.message : String(error)), 'error');
+    return writePost('/files/remove', { path: path }, {
+      args: args,
+      guard: function () {
+        return hostConfirm({
+          title: '删除文件',
+          content: '确认删除 ' + name + '？删除后进入回收站，可在回收站恢复。',
+          danger: true
         });
+      },
+      onSuccess: function (data) {
+        toast(
+          (data.message || '已移入回收站') +
+            (data.trash_id ? '（回收站编号 ' + data.trash_id + '）' : ''),
+          'success'
+        );
+        location.reload();
+      }
     });
   }
 
@@ -3119,6 +2929,8 @@
           (data.plugins || []).forEach(function (meta) {
             if (meta && meta.plugin_id) pluginMeta[meta.plugin_id] = meta;
           });
+          // 内置三级子视图也从路由表拿，前端零硬编码（Rust 侧 SUBVIEWS）。
+          subviews = data.subviews || [];
           embed(shellSchema(), data.routes || []);
           markShellChrome();
           mountSubNav();

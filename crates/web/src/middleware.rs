@@ -87,8 +87,9 @@ pub async fn request_timeout(req: Request, next: Next) -> Response {
 }
 
 /// 文件能力面门禁（§5.1/§5.4）：`SKIFF_FORM=docker` 的能力面只有 docker/identity，
-/// 内核不提供 fs。路由层（`/{p}/files*` 页面与 JSON 接口）统一挂这处判定——
-/// 受限形态下既不能渲染入口，也不能让直达 URL 借道列出容器内 `/`、`/www`。
+/// 内核不提供 fs。`/ui/v1/files*` JSON 接口统一挂这处判定（`fs_capability` 中间件），
+/// 菜单入口由 `check_fs_capability` 隐藏；受限形态下直达壳页虽能渲染，数据端点一律 403，
+/// 不能借道列出容器内 `/`、`/www`。
 pub fn check_fs_capability(state: &AppState) -> Result<(), AppError> {
     if state.cfg.form == Form::DockerRestricted {
         return Err(AppError::Forbidden(

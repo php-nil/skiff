@@ -263,9 +263,9 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 | --- | --- | --- |
 | 应用装配 | `crates/app/src/lib.rs` | `AppState` 持有 `AdminFs`，提供 `admin_fs()` 访问器 |
 | 管理客户端 | `crates/app/src/admin_fs.rs` | 管理员主体调用原语；数据根硬拒；审计落 `audit` 表；256 KiB 编辑上限 |
-| Web 页面/API | `crates/web/src/handlers/files.rs` | `/{p}/files` 与 `/files/{list,read,write,mkdir,rename,remove}`（旧 `/files/api/*` 308 兼容）；Admin + CSRF |
-| 页面外壳 | `crates/web/static/budding/budding-boot.js`（`files` 页） | 平铺目录 + 面包屑，数据走 `/files/*` 与 `/ui/v1/files*`；无独立样式表 |
-| 菜单/权限 | `app/menu.rs`、`handlers/files.rs` | 内置 `core/files`（L3：回收站 / 配额）；站点文件插件 `com.skiff.files` 挂在「网站」下（站点级授权根） |
+| Web 页面/API | `crates/web/src/handlers/ui/files.rs` | 页面 `/{p}/files*`（壳页回落），JSON 全在 `/ui/v1/files/*`（含上传/下载/回收站/配额）；Admin + CSRF；形态门禁 `fs_capability` 挂子路由 |
+| 页面外壳 | `crates/web/static/budding/budding-boot.js`（`files` 页） | 平铺目录 + 面包屑，数据全走 `/ui/v1/files*`；无独立样式表 |
+| 菜单/权限 | `app/menu.rs`、`handlers/ui/files.rs` | 内置 `core/files`（L3：回收站 / 配额）；站点文件插件 `com.skiff.files` 挂在「网站」下（站点级授权根） |
 
 ### 8.2 语义与边界
 

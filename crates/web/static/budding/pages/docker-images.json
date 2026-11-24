@@ -5,6 +5,54 @@
     "title": "镜像",
     "subtitle": "${data && data.can_admin ? '拉取与删除走 /ui/v1' : '只读列表；写操作需要管理员权限'}"
   },
+  "content": {
+    "actions": [
+      {
+        "type": "button",
+        "props": { "text": "拉取镜像", "variant": "tonal", "color": "primary" },
+        "visibleOn": "${!!(data && data.can_admin)}",
+        "action": {
+          "type": "dialog",
+          "props": { "title": "拉取镜像", "width": 560 },
+          "content": {
+            "body": [
+              { "type": "text", "props": { "text": "镜像名支持 tag 与仓库前缀，例如 nginx:1.27。" } },
+              {
+                "type": "form",
+                "props": {
+                  "api": { "method": "POST", "url": "/ui/v1/images/pull" },
+                  "successMessage": "已拉取",
+                  "onSuccess": [
+                    {
+                      "type": "invoke",
+                      "props": { "component": "docker-images-table", "command": "reload" }
+                    },
+                    { "type": "close" }
+                  ]
+                },
+                "body": [
+                  {
+                    "type": "input-text",
+                    "props": {
+                      "name": "image",
+                      "label": "镜像名",
+                      "required": true,
+                      "rules": { "required": true, "messages": { "required": "请输入镜像名" } }
+                    }
+                  }
+                ]
+              }
+            ],
+            "footer": [
+              { "type": "button", "props": { "text": "重置", "variant": "text" }, "action": { "type": "reset" } },
+              { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "action": { "type": "close" } },
+              { "type": "button", "props": { "text": "拉取", "color": "primary" }, "action": { "type": "submit" } }
+            ]
+          }
+        }
+      }
+    ]
+  },
   "body": [
     {
       "type": "alert",
@@ -14,58 +62,6 @@
         "text": "${(data && data.docker_reason) || 'Docker 守护进程当前不可达，列表为空。'}"
       },
       "visibleOn": "${!!data && !data.docker_available}"
-    },
-    {
-      "type": "flex",
-      "props": { "gap": 8, "wrap": true, "justify": "end" },
-      "visibleOn": "${!!(data && data.can_admin)}",
-      "content": {
-        "body": [
-          {
-            "type": "button",
-            "props": { "text": "拉取镜像", "variant": "tonal", "color": "primary" },
-            "action": {
-              "type": "dialog",
-              "props": { "title": "拉取镜像", "width": 560 },
-              "content": {
-                "body": [
-                  { "type": "text", "props": { "text": "镜像名支持 tag 与仓库前缀，例如 nginx:1.27。" } },
-                  {
-                    "type": "form",
-                    "props": {
-                      "api": { "method": "POST", "url": "/ui/v1/images/pull" },
-                      "successMessage": "已拉取",
-                      "onSuccess": [
-                        {
-                          "type": "invoke",
-                          "props": { "component": "docker-images-table", "command": "reload" }
-                        },
-                        { "type": "close" }
-                      ]
-                    },
-                    "body": [
-                      {
-                        "type": "input-text",
-                        "props": {
-                          "name": "image",
-                          "label": "镜像名",
-                          "required": true,
-                          "rules": { "required": true, "messages": { "required": "请输入镜像名" } }
-                        }
-                      }
-                    ]
-                  }
-                ],
-                "footer": [
-                  { "type": "button", "props": { "text": "重置", "variant": "text" }, "action": { "type": "reset" } },
-                  { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "action": { "type": "close" } },
-                  { "type": "button", "props": { "text": "拉取", "color": "primary" }, "action": { "type": "submit" } }
-                ]
-              }
-            }
-          }
-        ]
-      }
     },
     {
       "type": "table",

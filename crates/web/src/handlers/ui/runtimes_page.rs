@@ -28,7 +28,7 @@ pub fn runtimes_schema(catalog: &Value, total: i64) -> Value {
         json!(null),
         TableOpts {
             empty_text: Some(
-                "还没有运行环境，点击下方「新建运行环境」安装后即可绑定站点".to_string(),
+                "还没有运行环境，点击右上角「新建运行环境」安装后即可绑定站点".to_string(),
             ),
             ..Default::default()
         },
@@ -56,16 +56,14 @@ pub fn runtimes_schema(catalog: &Value, total: i64) -> Value {
         )
     ]);
 
-    let tools = vec![create_dialog(catalog)];
-    let body = vec![
-        kit::toolbar(
-            Some(kit::small_text(format!("共 {total} 个运行环境"))),
-            tools,
-        ),
-        table,
-    ];
+    let body = vec![kit::small_text(format!("共 {total} 个运行环境")), table];
 
-    kit::page("运行环境", "镜像、实例与安装入口；未安装镜像会先拉取", body)
+    kit::page_with_actions(
+        "运行环境",
+        "镜像、实例与安装入口；未安装镜像会先拉取",
+        vec![create_dialog(catalog)],
+        body,
+    )
 }
 
 fn create_dialog(catalog: &Value) -> Value {

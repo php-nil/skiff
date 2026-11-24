@@ -93,7 +93,7 @@ pub fn containers_schema(
                 } else if filter == "error" {
                     "没有异常容器"
                 } else {
-                    "还没有容器，可在下方新建"
+                    "还没有容器，可在右上角新建"
                 }
                 .to_string(),
             ),
@@ -161,26 +161,27 @@ pub fn containers_schema(
     });
     body.push(table);
 
-    if can_admin {
-        body.push(kit::flex(
-            8,
-            vec![kit::dialog_form_button(kit::DialogForm {
-                text: "新建容器",
-                variant: "tonal",
-                title: "新建容器",
-                width: 720,
-                submit: json!({ "type": "skiffDockerWrite", "props": { "op": "create" } }),
-                fields: container_create_fields(),
-                initial: None,
-                submit_text: "创建容器",
-                notice: "端口、环境变量、绑定与卷均按每行一条；网络每行一个名称。留空表示不设置。",
-            })],
-        ));
-    }
+    // 主操作放页头右侧（budding 1.8.7 `content.actions`），不再沉到表格下方。
+    let actions = if can_admin {
+        vec![kit::dialog_form_button(kit::DialogForm {
+            text: "新建容器",
+            variant: "tonal",
+            title: "新建容器",
+            width: 720,
+            submit: json!({ "type": "skiffDockerWrite", "props": { "op": "create" } }),
+            fields: container_create_fields(),
+            initial: None,
+            submit_text: "创建容器",
+            notice: "端口、环境变量、绑定与卷均按每行一条；网络每行一个名称。留空表示不设置。",
+        })]
+    } else {
+        Vec::new()
+    };
 
-    kit::page(
+    kit::page_with_actions(
         "容器",
         "启停/重启/删除在详情页操作，资源限制可在详情页编辑",
+        actions,
         body,
     )
 }
@@ -265,19 +266,15 @@ pub fn container_detail_schema(data: &ContainerDetailData) -> Value {
     if data.can_delete {
         actions.push(container_op("删除", "delete", c));
     }
-    if !actions.is_empty() {
-        body.push(kit::flex(8, actions));
-    }
-
     body.push(kit::detail_lines(
         "基本信息",
         vec![
             format!("名称：{}（{}）", c.name, c.short_id),
             format!("镜像：{}", data.image),
             format!("状态：{} · {}", c.state.label, c.status),
-            format!("创建时间：{}", or_dash(&data.created_at)),
+            format!("创建时间：{}", kit::or_dash(&data.created_at)),
             format!("健康检查：{}", data.health),
-            format!("启动命令：{}", or_dash(&data.cmd)),
+            format!("启动命令：{}", kit::or_dash(&data.cmd)),
         ],
     ));
     body.push(kit::detail_lines(
@@ -362,9 +359,10 @@ pub fn container_detail_schema(data: &ContainerDetailData) -> Value {
         ));
     }
 
-    kit::page(
+    kit::page_with_actions(
         format!("{} · 容器", c.name),
         "操作与资源限制均走 /ui/v1",
+        actions,
         body,
     )
 }
@@ -429,7 +427,7 @@ fn container_op(text: &str, action: &str, c: &super::dto::ContainerItem) -> Valu
             "props": { "url": "${prefix}/docker/containers" }
         }));
     } else {
-        actions.push(reload_page());
+        actions.push(kit::reload_page());
     }
     kit::action_button(text, actions, "tonal")
 }
@@ -454,11 +452,6 @@ fn container_reload() -> Value {
         "type": "invoke",
         "props": { "component": "containers-table", "command": "reload" }
     })
-}
-
-/// 详情页没有可重载的列表，写操作后整页重取（新状态由服务端重新计算）。
-fn reload_page() -> Value {
-    json!({ "type": "skiffReload" })
 }
 
 /// 容器日志：尾部快照 + 刷新，无实时跟随。
@@ -501,14 +494,6 @@ pub fn container_logs_schema(
     )
 }
 
-fn or_dash(value: &str) -> &str {
-    if value.is_empty() {
-        "—"
-    } else {
-        value
-    }
-}
-
 /// 路径段编码：与 JS 的 `encodeURIComponent` 同语义（`/` 也编码）。
 fn enc(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -530,4 +515,32 @@ fn enc(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 新建入口属于页头主操作（`content.actions`），不再混在正文末尾。
+    #[test]
+    fn containers_schema_puts_create_entry_in_header_actions() {
+        let page = containers_schema("", 2, true, "", true);
+        assert_eq!(page["props"]["title"], "容器");
+        assert_eq!(page["content"]["actions"][0]["props"]["text"], "新建容器");
+        assert!(
+            !page["body"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["props"]["text"] == "新建容器"),
+            "正文不应再保留第二个新建入口"
+        );
+    }
+
+    /// 没有管理员权限时退回普通页面，不声明空操作区。
+    #[test]
+    fn containers_schema_omits_header_actions_without_admin() {
+        let page = containers_schema("", 0, true, "", false);
+        assert!(page.get("content").is_none());
+    }
 }

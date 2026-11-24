@@ -1332,9 +1332,9 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         href("jobs"),
                     ),
                 ];
-                // 文件管理只对管理员开放：viewer 看不到入口，直接访问也会 403。
+                // 文件管理只对管理员开放：viewer 看不到入口（壳页虽渲染，数据端点 403）。
                 // 受限形态（1Panel Docker 包）能力面只有 docker/identity，没有 fs：
-                // 入口同样隐藏，直达由 `middleware::check_fs_capability` 拒绝。
+                // 入口同样隐藏；直达壳页虽渲染，`/ui/v1/files*` 数据端点由 `fs_capability` 拒绝。
                 if user.role().as_str() == "admin" && state.cfg.form != Form::DockerRestricted {
                     // 回收站是「文件管理」的 L3 视图，不再作为独立二级菜单项。
                     // 回收站与配额都是壳页的 L3：`/{p}/files/trash`、`/{p}/files/quotas`。

@@ -148,12 +148,15 @@ fn builtin_page(key: &str) -> Option<(&'static str, PageKind)> {
 }
 
 /// 页内互斥子视图（L3）：只有隐藏路由需要它，默认视图就是 L2 自身。
+#[derive(Clone)]
 struct Subview {
     /// 路径模式，`:name` 为参数段（与 budding 路由的模式语法一致）。
     pattern: &'static [&'static str],
     /// 侧栏高亮落点（L2 路径）。
     menu: &'static str,
     title: &'static str,
+    /// 模式里的参数段匹配到这些字面量时**不命中**（`/sites/new` 不是站点详情）。
+    blocked: &'static [&'static str],
     /// （标题，附加路径段）；第一个是默认视图，不单独登记路由。
     tabs: &'static [(&'static str, &'static [&'static str])],
 }
@@ -163,6 +166,7 @@ const SUBVIEWS: &[Subview] = &[
         pattern: &["sites", "web"],
         menu: "/sites/web",
         title: "Web 服务",
+        blocked: &[],
         tabs: &[
             ("状态", &[]),
             ("配置", &["config"]),
@@ -174,6 +178,7 @@ const SUBVIEWS: &[Subview] = &[
         pattern: &["sites", ":id"],
         menu: "/sites/list",
         title: "站点详情",
+        blocked: &["new", "list", "runtimes", "web"],
         tabs: &[
             ("概览", &[]),
             ("域名", &["domains"]),
@@ -187,6 +192,7 @@ const SUBVIEWS: &[Subview] = &[
         pattern: &["sites", "runtimes", ":id"],
         menu: "/sites/runtimes",
         title: "运行环境详情",
+        blocked: &[],
         tabs: &[
             ("基础信息", &[]),
             ("配置", &["config"]),
@@ -574,8 +580,20 @@ pub async fn routes(
             })
         })
         .collect();
+    // 内置三级子视图（Rust 侧 SUBVIEWS 的镜像）：前端消费后不再维护 JS 侧硬编码表。
+    let subviews_json: Vec<serde_json::Value> = SUBVIEWS
+        .iter()
+        .map(|s| {
+            json!({
+                "pattern": s.pattern.to_vec(),
+                "blocked": s.blocked.to_vec(),
+                "title": s.title,
+                "tabs": s.tabs.iter().map(|(t, segs)| json!({ "title": t, "segs": segs.to_vec() })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     Json(json!({
-        "data": { "routes": routes_json, "plugins": plugin_list }
+        "data": { "routes": routes_json, "plugins": plugin_list, "subviews": subviews_json }
     }))
 }
 
@@ -883,12 +901,8 @@ fn page_source(prefix: &str, raw_path: &str, s: &Search) -> PageSource {
             api("/files"),
             query(&[kv("path", s.get("path")), "with_schema=true".to_string()])
         )),
-        ["files", "trash"] => {
-            PageSource::url(format!("{prefix}/files/trash/list?with_schema=true"))
-        }
-        ["files", "quotas"] => {
-            PageSource::url(format!("{prefix}/files/quotas/list?with_schema=true"))
-        }
+        ["files", "trash"] => PageSource::url(api("/files/trash/list?with_schema=true")),
+        ["files", "quotas"] => PageSource::url(api("/files/quotas/list?with_schema=true")),
         ["files", "view"] => {
             if s.get("path").is_empty() {
                 PageSource::special("missing-path")
@@ -1080,16 +1094,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_json_endpoints_keep_the_entry_prefix() {
-        // 这两个端点不在 `/ui/v1` 下，前缀不能丢。
+    fn files_trash_and_quotas_route_to_ui_v1() {
+        // 回收站与配额已收口到 `/ui/v1/files/*`，不再走入口前缀下的遗留端点。
         assert_eq!(
             url("/files/trash", ""),
-            "/p/files/trash/list?with_schema=true"
+            "/ui/v1/files/trash/list?with_schema=true"
         );
         assert_eq!(
             url("/files/quotas", ""),
-            "/p/files/quotas/list?with_schema=true"
+            "/ui/v1/files/quotas/list?with_schema=true"
         );
+        // 静态布局资产仍挂在入口前缀下，前缀不能丢。
         assert_eq!(
             url("/docker/images", ""),
             "/p/static/budding/pages/docker-images.json"

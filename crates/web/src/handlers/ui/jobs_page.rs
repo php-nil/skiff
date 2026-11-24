@@ -230,8 +230,8 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
     let can_admin = flag("can_admin");
     let can_cancel = flag("can_cancel");
     let can_retry = flag("can_retry");
+    let mut actions = Vec::new();
     if can_admin && (can_cancel || can_retry) {
-        let mut actions = Vec::new();
         if can_cancel {
             actions.push(json!({
                 "type": "button",
@@ -292,13 +292,6 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
                 }
             }));
         }
-        body.push(json!({
-            "type": "card",
-            "props": { "title": "作业操作" },
-            "content": {
-                "body": [{ "type": "flex", "props": { "gap": 8, "wrap": true }, "content": { "body": actions } }]
-            }
-        }));
     } else if can_admin {
         body.push(schema_kit::text_line(
             "当前状态下没有可用的取消或重试操作。",
@@ -309,7 +302,12 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
             "props": { "type": "info", "text": "取消与重试需要管理员权限。" }
         }));
     }
-    schema_kit::page(format!("{title} · 作业"), "只读详情", body)
+    let subtitle = if actions.is_empty() {
+        "只读详情"
+    } else {
+        "取消与重试均走 /ui/v1"
+    };
+    schema_kit::page_with_actions(format!("{title} · 作业"), subtitle, actions, body)
 }
 
 /// 作业日志页：聚合后的只读文本 + 返回 / 刷新入口。
@@ -413,6 +411,14 @@ mod tests {
         let schema = job_detail_schema(&detail(json!({ "can_admin": false })), "/p").to_string();
         assert!(schema.contains("需要管理员权限"));
         assert!(!schema.contains("作业操作"));
+    }
+
+    /// 作业操作在页头 `content.actions`，正文不再保留第二份。
+    #[test]
+    fn detail_puts_allowed_actions_in_header() {
+        let schema = job_detail_schema(&detail(json!({ "can_cancel": true })), "/p");
+        assert_eq!(schema["content"]["actions"][0]["props"]["text"], "请求取消");
+        assert!(!schema["body"].to_string().contains("请求取消"));
     }
 
     /// 步骤文案在服务端成形：状态中文化、结束时间补 `· 结束`。

@@ -41,11 +41,21 @@ pub fn site_page_schema(data: &SiteDetailData, tab: &str, prefix: &str) -> Value
         _ if data.can_manage => "站点概览；写操作复用既有权限、CSRF 与审计".to_string(),
         _ => "只读概览".to_string(),
     };
-    json!({
+    // 概览页的站点操作放页头右侧；其它页签各自把操作留在内容区内。
+    let actions = if view == "overview" {
+        overview_header_actions(data)
+    } else {
+        Vec::new()
+    };
+    let mut page = json!({
         "type": "page",
         "props": { "title": site.domain, "subtitle": subtitle },
         "body": body
-    })
+    });
+    if !actions.is_empty() {
+        page["content"] = json!({ "actions": actions });
+    }
+    page
 }
 
 fn overview_section(data: &SiteDetailData, prefix: &str) -> Vec<Value> {
@@ -134,17 +144,19 @@ fn overview_section(data: &SiteDetailData, prefix: &str) -> Vec<Value> {
         "content": { "body": row_nodes }
     }));
 
-    body.extend(overview_actions(data));
+    if !data.can_manage {
+        body.push(json!({
+            "type": "alert",
+            "props": { "type": "info", "text": "写操作需要管理员权限；当前为只读视图。" }
+        }));
+    }
     body
 }
 
-fn overview_actions(data: &SiteDetailData) -> Vec<Value> {
+fn overview_header_actions(data: &SiteDetailData) -> Vec<Value> {
     let site = &data.site;
     if !data.can_manage {
-        return vec![json!({
-            "type": "alert",
-            "props": { "type": "info", "text": "写操作需要管理员权限；当前为只读视图。" }
-        })];
+        return Vec::new();
     }
     let mut actions = Vec::new();
     if site.status.code == "running" {
@@ -192,11 +204,7 @@ fn overview_actions(data: &SiteDetailData) -> Vec<Value> {
             }
         ] } }
     }));
-    vec![json!({
-        "type": "card",
-        "props": { "title": "站点操作" },
-        "content": { "body": [flex(json!({ "gap": 8, "wrap": true }), actions)] }
-    })]
+    actions
 }
 
 fn config_section(data: &SiteDetailData) -> Vec<Value> {
@@ -815,20 +823,18 @@ pub fn sites_page_schema(
             "（只读，写操作需管理员）"
         }
     );
-    json!({
+    let mut page = json!({
         "type": "page",
         "props": { "title": "网站", "subtitle": "站点列表；启停、删除与新建都在本页完成" },
         "body": [
-            flex(
-                json!({ "gap": 12, "wrap": true, "align": "center", "justify": "space-between" }),
-                vec![
-                    json!({ "type": "text", "props": { "text": count_text, "size": "small" } }),
-                    flex(json!({ "gap": 8, "wrap": true, "justify": "end" }), tools)
-                ]
-            ),
+            kit::small_text(count_text),
             table
         ]
-    })
+    });
+    if !tools.is_empty() {
+        page["content"] = json!({ "actions": tools });
+    }
+    page
 }
 
 /// 新建站点字段：列表弹窗与 `/sites/new` 深链页共用同一份定义。

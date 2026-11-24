@@ -307,14 +307,17 @@ pub fn plugin_info_schema(data: &Value) -> Value {
         ));
     }
 
-    if flag(data, "/can_admin") {
-        body.push(kit::flex(8, plugin_actions(&p, true, true)));
-    }
+    let actions = if flag(data, "/can_admin") {
+        plugin_actions(&p, true, true)
+    } else {
+        Vec::new()
+    };
     body.push(kit::link("返回插件中心", "${prefix}/plugins/installed"));
 
-    kit::page(
+    kit::page_with_actions(
         format!("{} · 插件", text(&p, "/name")),
         text(&p, "/id"),
+        actions,
         body,
     )
 }

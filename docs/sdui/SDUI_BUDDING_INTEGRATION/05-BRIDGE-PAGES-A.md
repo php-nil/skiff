@@ -116,10 +116,10 @@
 
 **渲染映射**
 
-- 站点列表：Schema 由内核生成（`GET /ui/v1/sites?with_schema=true`），前端只 fetch + embed；`table`（`source` 游标分页、`paging: 'cursor'`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{id}`；`can_admin` 时提供「新建站点」与批量启停卡片。
-- 站点详情：Schema 由内核 `crates/web/src/handlers/ui/site_page.rs` 按 `?tab=` 生成，与 `data` 同一次响应返回；前端只 fetch、对 `code` 节点做运行时转义后 embed。运行环境不可用时顶部 warning `alert`；「站点信息」+「站点操作」（启停/默认/删除）+「vhost 配置」+「附加域名」+「证书 / HTTPS」+「站点备份」卡片。删除用内建 `confirm` 的 `requireText` 要求输入域名，服务端同样校验 `confirm`；配置 code 组件预填当前内容，保存失败直接展示字段错误。
+- 站点列表：Schema 由内核生成（`GET /ui/v1/sites?with_schema=true`），前端只 fetch + embed；`table`（`source` 游标分页、`paging: 'cursor'`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{id}`；`can_admin` 时页头右侧提供「批量启停」与「新建站点」。
+- 站点详情：Schema 由内核 `crates/web/src/handlers/ui/site_page.rs` 按 `?tab=` 生成，与 `data` 同一次响应返回；前端只 fetch、对 `code` 节点做运行时转义后 embed。运行环境不可用时顶部 warning `alert`；「站点信息」+ 页头站点操作（启停/默认/删除）+「vhost 配置」+「附加域名」+「证书 / HTTPS」+「站点备份」卡片。删除用内建 `confirm` 的 `requireText` 要求输入域名，服务端同样校验 `confirm`；配置 code 组件预填当前内容，保存失败直接展示字段错误。
 - 新建站点：`/{p}/sites/new` 隐藏路由；骨架由 `GET /ui/v1/pages/sites-new`（`handlers/ui/sites_extra_page.rs`）产出，`?type=` 预选站点类型。运行环境下拉在服务端按当前用户可见范围取好（非 Admin 拿不到 `/runtimes`，只留静态 / 反代两类），无就绪实例时保持空选项并由后端拒绝。
-- 运行环境列表：骨架由 `handlers/ui/runtimes_page.rs` 在 `?with_schema=true` 时产出；`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；新建走页内 dialog（`skiffRuntimeCreate`），深链页保持可用。
+- 运行环境列表：骨架由 `handlers/ui/runtimes_page.rs` 在 `?with_schema=true` 时产出；`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；新建走页头 dialog（`skiffRuntimeCreate`），深链页保持可用。
 - 站点日志：`GET /ui/v1/sites/{id}/logs?with_schema=true`，骨架在 `sites_extra_page.rs::site_logs_schema`。
 - **D10 翻页**：1.8.0 的 `table` 支持游标分页（`paging: 'cursor'` + `cursorPath` + `loadMore`），与内核 `{items, next_cursor}` 直接对齐；本页与运行环境、容器、镜像/网络/卷、任务、作业列表统一改为 `source` 取数 + 底部「加载更多」，页面级只额外读一次 `?limit=1` 的元数据（`can_admin` / `docker_available`）。
 
@@ -274,5 +274,5 @@
 
 - 骨架由 `handlers/ui/compose_page.rs` 在 `?with_schema=true` 时产出；壳脚本只 fetch，不再保留 `composeSchema`。
 - 项目表格：项目 / 归属 / 服务数 / 运行中，行内按钮启动、停止、重启、清理（清理前确认，卷默认保留）。
-- `can_admin` 时列表上方给「新建 / 编辑编排」按钮：打开弹窗（项目名必填，不能为 `skiff` / `sites`；compose 文本域；操作下拉「仅校验 / 校验并部署」），页脚为「重置 / 取消 / 执行」。校验结果用 toast 展示服务顺序、网络与卷；部署后刷新列表。viewer 只看到权限提示。
+- `can_admin` 时页头右侧给「新建 / 编辑编排」按钮：打开弹窗（项目名必填，不能为 `skiff` / `sites`；compose 文本域；操作下拉「仅校验 / 校验并部署」），页脚为「重置 / 取消 / 执行」。校验结果用 toast 展示服务顺序、网络与卷；部署后刷新列表。viewer 只看到权限提示。
 - 服务日志暂由旧页展示（日志查看器待 T3）。

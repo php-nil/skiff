@@ -166,8 +166,9 @@ pub fn store_schema(data: &Value) -> Value {
         upgrade_lines.push(note.to_string());
     }
     body.push(kit::detail_lines("内核升级通道", upgrade_lines));
+    let mut actions = Vec::new();
     if flag(&upgrade, "/can_download") && !text(&upgrade, "/available").is_empty() {
-        body.push(kit::action_button(
+        actions.push(kit::action_button(
             &format!("下载升级包 {}", text(&upgrade, "/available")),
             vec![json!({ "type": "skiffUpgradeDownload",
                    "props": { "version": text(&upgrade, "/available") } })],
@@ -176,5 +177,5 @@ pub fn store_schema(data: &Value) -> Value {
     }
 
     let _ = API_BASE;
-    kit::page("商店", "目录快照与插件安装", body)
+    kit::page_with_actions("商店", "目录快照与插件安装", actions, body)
 }

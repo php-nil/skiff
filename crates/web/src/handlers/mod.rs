@@ -7,7 +7,6 @@ pub mod compose;
 pub mod containers;
 pub mod dashboard;
 pub mod docker_settings;
-pub mod files;
 pub mod jobs;
 pub mod meta;
 pub mod nginx;

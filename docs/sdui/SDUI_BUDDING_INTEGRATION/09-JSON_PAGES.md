@@ -69,6 +69,24 @@ crates/web/static/budding/
 - 列表用组件自己的 `source`（`paging: 'cursor'` + `cursorPath`），页面 `source` 只取一次元数据（`can_admin` / `docker_available` / 计数）。
 - 初始渲染时数据未到，表达式按**防御式**书写（`data && data.can_admin`），避免 gate 求值抛错后节点被 fail-closed 隐藏且不再回头。
 
+**页头主操作**：列表页的「新建 / 拉取 / 创建」与详情页的启停 / 删除等主操作写 `content.actions`（budding 1.8.7），与标题同行、右对齐；不要再在正文顶部另起一行右对齐，也不要单独放一张「操作」卡。`actions` 按页面作用域求值，可直接按 `data.can_admin` 显隐：
+
+```json
+{
+  "type": "page",
+  "props": { "title": "镜像", "subtitle": "…" },
+  "content": {
+    "actions": [
+      { "type": "button", "props": { "text": "拉取镜像", "color": "primary" }, "visibleOn": "${!!(data && data.can_admin)}" }
+    ]
+  },
+  "body": []
+}
+```
+
+- 服务端拼装走 `schema_kit::page_with_actions`（`actions` 为空时自动退回普通 `page`，不声明空插槽）。
+- 有 `actions` 时 budding 渲染 `data-bud-role="page-header"` / `"page-actions"` 锚点；标题与副标题仍是 `.bud-page-title` / `.bud-page-subtitle`，壳层三级菜单插在整个页头之后。
+
 **绑定与条件**：一律用 budding 原生 `${}` 模板与 `visibleOn` / `hiddenOn`，不引入宿主自造的占位符。
 
 | 需求 | 写法 |
@@ -139,7 +157,7 @@ crates/web/static/budding/
 | Web 服务（状态 / 配置 / 日志 / 模块） | `handlers/ui/web_page.rs` | `?view=&with_schema=true` |
 | 安全 / 菜单 / 界面 / Docker 设置 | `handlers/ui/settings_page.rs` | 四个 GET 各带 `?with_schema=true` |
 | 插件列表 / 插件详情 | `handlers/ui/plugins_page.rs` | `?tab=&with_schema=true` |
-| 文件管理（目录 / 查看 / 回收站 / 配额） | `handlers/ui/files_page.rs` | `?with_schema=true`（回收站与配额在 `handlers/files.rs` 内联调用） |
+| 文件管理（目录 / 查看 / 回收站 / 配额） | `handlers/ui/files_page.rs` | `?with_schema=true`（`trash_schema` / `quotas_schema` 由 `handlers/ui/files.rs` 调用，挂响应顶层） |
 | 商店 | `handlers/ui/store_page.rs` | `?with_schema=true` |
 | 任务 / 作业 / 审计 | `handlers/ui/tasks_page.rs` / `jobs_page.rs` / `audit_page.rs` | `?with_schema=true`；作业日志走 `GET /ui/v1/jobs/{id}/logs`（服务端聚合最多 10 页） |
 
