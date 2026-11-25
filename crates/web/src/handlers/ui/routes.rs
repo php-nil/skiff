@@ -124,8 +124,9 @@ const BUILTIN_PAGES: &[(&str, &str, PageKind)] = &[
     ("core/plugins/discover", "/plugins/discover", PageKind::Page),
     ("core/plugins/updates", "/plugins/updates", PageKind::Page),
     ("core/plugins/store", "/plugins/store", PageKind::Page),
-    ("core/tasks", "/tasks", PageKind::Page),
-    ("core/jobs", "/jobs", PageKind::Page),
+    ("core/tasks/scheduled", "/tasks/scheduled", PageKind::Page),
+    ("core/tasks/jobs", "/tasks/jobs", PageKind::Page),
+    ("core/tasks/audit", "/tasks/audit", PageKind::Page),
     ("core/files", "/files", PageKind::Page),
     ("core/files/trash", "/files/trash", PageKind::Page),
     ("core/files/quotas", "/files/quotas", PageKind::Page),
@@ -137,7 +138,6 @@ const BUILTIN_PAGES: &[(&str, &str, PageKind)] = &[
     ("core/settings/menu", "/settings/menu", PageKind::Page),
     ("core/settings/ui", "/settings/ui", PageKind::Page),
     ("core/docker/settings", "/docker/settings", PageKind::Page),
-    ("core/settings/audit", "/settings/audit", PageKind::Page),
 ];
 
 fn builtin_page(key: &str) -> Option<(&'static str, PageKind)> {
@@ -228,8 +228,13 @@ const DETAIL_ROUTES: &[(&str, &str, PageKind, &str)] = &[
         PageKind::Page,
         "/docker/containers",
     ),
-    ("/tasks/:id", "任务详情", PageKind::Page, "/tasks"),
-    ("/jobs/:id", "作业详情", PageKind::Page, "/jobs"),
+    (
+        "/tasks/scheduled/:id",
+        "任务详情",
+        PageKind::Page,
+        "/tasks/scheduled",
+    ),
+    ("/tasks/jobs/:id", "作业详情", PageKind::Page, "/tasks/jobs"),
     (
         "/docker/containers/:id/terminal",
         "容器终端",
@@ -242,7 +247,12 @@ const DETAIL_ROUTES: &[(&str, &str, PageKind, &str)] = &[
         PageKind::Page,
         "/docker/containers",
     ),
-    ("/jobs/:id/logs", "作业日志", PageKind::Page, "/jobs"),
+    (
+        "/tasks/jobs/:id/logs",
+        "作业日志",
+        PageKind::Page,
+        "/tasks/jobs",
+    ),
     ("/files/view", "代码查看器", PageKind::Page, "/files"),
     ("/files/trash", "回收站", PageKind::Page, "/files"),
     ("/files/quotas", "配额管理", PageKind::Page, "/files"),
@@ -878,8 +888,9 @@ fn page_source(prefix: &str, raw_path: &str, s: &Search) -> PageSource {
         ["docker", "compose"] => PageSource::url(api("/compose?with_schema=true")),
         ["docker", "settings"] => PageSource::url(api("/settings/docker?with_schema=true")),
 
-        // 任务与作业
-        ["tasks"] => PageSource::url(format!(
+        // 任务审计：三个页面的壳页路径统一在 /tasks 下，数据接口仍按资源走
+        // `/ui/v1/tasks`、`/ui/v1/jobs`、`/ui/v1/audit`（契约 §3：分组段只用于页面）。
+        ["tasks", "scheduled"] => PageSource::url(format!(
             "{}{}",
             api("/tasks?limit=1&with_schema=true"),
             if s.get("q").is_empty() {
@@ -888,12 +899,27 @@ fn page_source(prefix: &str, raw_path: &str, s: &Search) -> PageSource {
                 format!("&q={}", enc(s.get("q")))
             }
         )),
-        ["tasks", id] => PageSource::url(api(&format!("/tasks/{}?with_schema=true", enc(id)))),
-        ["jobs"] => PageSource::url(api("/jobs?limit=1&with_schema=true")),
-        ["jobs", id] => PageSource::url(api(&format!("/jobs/{}?with_schema=true", enc(id)))),
-        ["jobs", id, "logs"] => {
+        ["tasks", "scheduled", id] => {
+            PageSource::url(api(&format!("/tasks/{}?with_schema=true", enc(id))))
+        }
+        ["tasks", "jobs"] => PageSource::url(api("/jobs?limit=1&with_schema=true")),
+        ["tasks", "jobs", id] => {
+            PageSource::url(api(&format!("/jobs/{}?with_schema=true", enc(id))))
+        }
+        ["tasks", "jobs", id, "logs"] => {
             PageSource::url(api(&format!("/jobs/{}/logs?with_schema=true", enc(id))))
         }
+        ["tasks", "audit"] => PageSource::url(format!(
+            "{}{}",
+            api("/audit"),
+            query(&[
+                "limit=50".to_string(),
+                "with_schema=true".to_string(),
+                kv("q", s.get("q")),
+                kv("cat", s.get("cat")),
+                kv("cursor", s.get("cursor")),
+            ])
+        )),
 
         // 文件
         ["files"] => PageSource::url(format!(
@@ -939,16 +965,6 @@ fn page_source(prefix: &str, raw_path: &str, s: &Search) -> PageSource {
         ["settings", "security"] => PageSource::url(api("/settings?with_schema=true")),
         ["settings", "menu"] => PageSource::url(api("/settings/menu?with_schema=true")),
         ["settings", "ui"] => PageSource::url(api("/settings/ui?with_schema=true")),
-        ["settings", "audit"] => PageSource::url(format!(
-            "{}{}",
-            api("/audit"),
-            query(&[
-                "limit=50".to_string(),
-                "with_schema=true".to_string(),
-                kv("q", s.get("q")),
-                kv("cursor", s.get("cursor")),
-            ])
-        )),
 
         // 工具空态：内核给出的空态文案落到插件中心。
         ["__menu-empty", _] => PageSource::url(api("/plugins?tab=installed&with_schema=true")),
@@ -1037,7 +1053,7 @@ mod tests {
         );
         assert_eq!(url("/files", ""), "/ui/v1/files?with_schema=true");
         assert_eq!(
-            url("/tasks", "q=a%26b"),
+            url("/tasks/scheduled", "q=a%26b"),
             "/ui/v1/tasks?limit=1&with_schema=true&q=a%26b"
         );
     }
@@ -1072,6 +1088,19 @@ mod tests {
     }
 
     #[test]
+    fn audit_page_forwards_keyword_and_category_filters() {
+        assert_eq!(
+            url("/tasks/audit", "q=admin&cat=task"),
+            "/ui/v1/audit?limit=50&with_schema=true&q=admin&cat=task"
+        );
+        // 空分类不写进地址，保持与关键字筛选同一口径。
+        assert_eq!(
+            url("/tasks/audit", "q=admin&cat="),
+            "/ui/v1/audit?limit=50&with_schema=true&q=admin"
+        );
+    }
+
+    #[test]
     fn shell_specials_stay_in_the_shell() {
         // 这三类结构离不开浏览器或内存态，不能由服务端给 URL。
         assert_eq!(
@@ -1083,7 +1112,7 @@ mod tests {
             Some("store-confirm")
         );
         assert_eq!(
-            src("/plugins/com.skiff.files/main", "").special,
+            src("/plugins/com.skiff.monitor/history", "").special,
             Some("plugin-view")
         );
         assert_eq!(

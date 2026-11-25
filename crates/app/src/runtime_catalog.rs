@@ -22,21 +22,23 @@ pub const RUNTIME_KINDS: &[RuntimeKindDef] = &[
     RuntimeKindDef {
         kind: KIND_PHP,
         label: "PHP",
-        versions: &["8.5", "8.4", "8.3"],
+        // 2026-11 对齐上游（`endoflife.date`，EOL 在册即收）：8.6（2026-11 GA，EOL 2030-12）、
+        // 8.5、8.4、8.3、8.2（仅安全维护，EOL 2026-12-31）。补丁号由镜像清单给出。
+        versions: &["8.6", "8.5", "8.4", "8.3", "8.2"],
     },
     RuntimeKindDef {
         kind: KIND_NODE,
         label: "Node.js",
-        // Node 只保留 LTS 线：24（Krypton，当前 LTS）、22（维护期 LTS）、
+        // Node 只保留 LTS 线：26（当前 LTS）、24（Krypton）、22（维护期 LTS）、
         // 20（2026-04 已 EOL，仅保留给旧应用）。
-        versions: &["24", "22", "20"],
+        versions: &["26", "24", "22", "20"],
     },
     RuntimeKindDef {
         kind: KIND_RUST,
         label: "Rust",
-        // 2026-11：最新稳定 1.99（1.99.0 于 2026-10-01 发布，1.99.1 于 2026-10-15）；
-        // 保留 1.98（次新）与仍在使用中的 1.83 作为可选，不强制所有人升级。
-        versions: &["1.99", "1.98", "1.97", "1.83"],
+        // 2026-11：最新稳定 1.100（1.99 已于 2026-11-12 EOL）；1.99 及更早留给旧项目，
+        // 清单里不会再出现，仅在镜像服务取不到清单时作为回退项。
+        versions: &["1.100", "1.99", "1.98", "1.97", "1.83"],
     },
 ];
 
@@ -50,8 +52,37 @@ pub fn kind_label(kind: &str) -> String {
         .unwrap_or_else(|| kind.to_string())
 }
 
+/// 只接受纯数字点分版本（1–3 段）。挡掉 `8.5-beta` / `8.5/../x` 这类会拼进镜像名的输入。
+fn is_dotted_version(version: &str) -> bool {
+    let mut segments = 0;
+    for seg in version.split('.') {
+        if seg.is_empty() || !seg.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        segments += 1;
+    }
+    (1..=3).contains(&segments)
+}
+
+/// 目录里登记的大版本即可创建，带补丁号也认：`8.5.13` 归到 `8.5`。
+///
+/// 补丁号由镜像服务的 tag 清单给出（见 [`crate::runtime_index`]），目录只维护
+/// 「支持哪些大版本」这一层。比对按点号边界做，三种目录层级都能对上：
+/// PHP `8.5.13` → `8.5`、Node `24.22.3` → `24`、Rust `1.99.1` → `1.99`；
+/// 而 `8.55.0` 不会被 `8.5` 误收，`21.1` 也不会被 `24` 误收。
 pub fn version_supported(kind: &str, version: &str) -> bool {
-    kind_def(kind).is_some_and(|d| d.versions.contains(&version.trim()))
+    let Some(def) = kind_def(kind) else {
+        return false;
+    };
+    let version = version.trim();
+    if !is_dotted_version(version) {
+        return false;
+    }
+    def.versions.iter().any(|allowed| {
+        version == *allowed
+            || (version.starts_with(allowed)
+                && version.as_bytes().get(allowed.len()) == Some(&b'.'))
+    })
 }
 
 /// 名称默认跟随版本（`php-8.5` / `node-24` / `rust-1.99`）；唯一性仍由库里同类型校验。
@@ -59,15 +90,35 @@ pub fn default_name(kind: &str, version: &str) -> String {
     format!("{}-{}", kind, version.trim())
 }
 
-pub fn image_for(kind: &str, version: &str, configured_php_image: &str) -> String {
+/// 镜像前缀拼接：与 `site_settings` 读取侧同一口径——前缀为空、或镜像名自带路径时原样。
+///
+/// 补丁号版镜像（`php:8.5.13-fpm-alpine`）同样要拼前缀，否则配了加速/私有仓库的环境
+/// 只有默认版本走前缀，手选补丁号会直连 Docker Hub。
+pub fn with_registry_prefix(prefix: &str, image: &str) -> String {
+    let prefix = prefix.trim().trim_end_matches('/');
+    if prefix.is_empty() || image.contains('/') {
+        image.to_string()
+    } else {
+        format!("{prefix}/{image}")
+    }
+}
+
+pub fn image_for(
+    kind: &str,
+    version: &str,
+    configured_php_image: &str,
+    image_prefix: &str,
+) -> String {
     let version = version.trim();
-    match kind {
-        KIND_PHP if version == DEFAULT_PHP_VERSION => configured_php_image.to_string(),
+    let bare = match kind {
+        // 默认版本的镜像名由「Docker 设置」给出（已含前缀），不再二次拼接。
+        KIND_PHP if version == DEFAULT_PHP_VERSION => return configured_php_image.to_string(),
         KIND_PHP => format!("php:{version}-fpm-alpine"),
         KIND_NODE => format!("node:{version}-alpine"),
         KIND_RUST => format!("rust:{version}-slim"),
         _ => format!("{kind}:{version}"),
-    }
+    };
+    with_registry_prefix(image_prefix, &bare)
 }
 
 /// 当前实现 PHP、Node.js 与 Rust；Go 未实现，也不在 `RUNTIME_KINDS` 目录中。
@@ -1527,27 +1578,40 @@ mod tests {
     fn version_catalog_is_dropdown_only() {
         assert!(version_supported(KIND_PHP, "8.5"));
         assert!(version_supported(KIND_PHP, "8.3"));
-        assert!(!version_supported(KIND_PHP, "8.2"));
+        assert!(version_supported(KIND_PHP, "8.2"), "8.2 仍在安全维护期");
+        assert!(!version_supported(KIND_PHP, "8.1"), "8.1 已 EOL，不进目录");
         assert!(!version_supported(KIND_PHP, "8"));
+        assert!(version_supported(KIND_NODE, "26"));
         assert!(version_supported(KIND_NODE, "24"));
         assert!(version_supported(KIND_NODE, "22"));
         assert!(!version_supported(KIND_NODE, "21"));
-        assert!(!version_supported(KIND_NODE, "24.1"));
+        // Node 的目录项是单段，补丁号要能归进去（清单里是 `24.22.3` 这种三段号）。
+        assert!(version_supported(KIND_NODE, "24.22.3"));
+        assert!(!version_supported(KIND_NODE, "21.1"), "大版本不在目录");
+        assert!(!version_supported(KIND_NODE, "2"), "不能被 `24` 误收");
         assert!(kind_def("go").is_none(), "Go 未实现，不得进入目录");
         assert!(version_supported(KIND_RUST, "1.99"));
         assert!(version_supported(KIND_RUST, "1.98"));
         assert!(version_supported(KIND_RUST, "1.83"), "保留旧版本可选");
-        assert!(!version_supported(KIND_RUST, "1.100"));
+        assert!(version_supported(KIND_RUST, "1.100"), "当前稳定版");
+        assert!(!version_supported(KIND_RUST, "1.200"), "大版本不在目录");
+        // 补丁号（镜像服务清单给的）按大版本归入目录；畸形写法一律拒。
+        assert!(version_supported(KIND_PHP, "8.5.13"));
+        assert!(version_supported(KIND_PHP, "8.4.28"));
+        assert!(version_supported(KIND_RUST, "1.99.1"));
+        assert!(!version_supported(KIND_PHP, "9.0.1"), "大版本不在目录");
+        assert!(!version_supported(KIND_PHP, "8.5.13-beta"), "非纯数字版本");
+        assert!(!version_supported(KIND_PHP, "8.5.13.1"), "超过三段");
         assert!(kind_def("unknown").is_none());
     }
 
     #[test]
     fn node_catalog_uses_lts_images() {
         let node = kind_def(KIND_NODE).expect("node 目录必须存在");
-        assert_eq!(*node.versions.first().unwrap(), "24");
+        assert_eq!(*node.versions.first().unwrap(), "26");
         assert!(node.versions.len() >= 2, "至少保留一个旧 LTS 可选");
         assert_eq!(
-            image_for(KIND_NODE, "24", DEFAULT_PHP_IMAGE),
+            image_for(KIND_NODE, "24", DEFAULT_PHP_IMAGE, ""),
             "node:24-alpine"
         );
         assert_eq!(default_name(KIND_NODE, "22"), "node-22");
@@ -1569,7 +1633,7 @@ mod tests {
     #[test]
     fn rust_catalog_starts_with_latest_stable() {
         let rust = kind_def(KIND_RUST).expect("rust 目录必须存在");
-        assert_eq!(*rust.versions.first().unwrap(), "1.99");
+        assert_eq!(*rust.versions.first().unwrap(), "1.100");
         assert!(rust.versions.len() >= 3, "至少保留一个旧版本可选");
     }
 
@@ -1582,20 +1646,38 @@ mod tests {
     #[test]
     fn image_names_are_derived() {
         assert_eq!(
-            image_for(KIND_PHP, "8.5", DEFAULT_PHP_IMAGE),
+            image_for(KIND_PHP, "8.5", DEFAULT_PHP_IMAGE, ""),
             DEFAULT_PHP_IMAGE
         );
         assert_eq!(
-            image_for(KIND_PHP, "8.4", DEFAULT_PHP_IMAGE),
+            image_for(KIND_PHP, "8.4", DEFAULT_PHP_IMAGE, ""),
             "php:8.4-fpm-alpine"
         );
         assert_eq!(
-            image_for(KIND_RUST, "1.99", DEFAULT_PHP_IMAGE),
+            image_for(KIND_RUST, "1.99", DEFAULT_PHP_IMAGE, ""),
             "rust:1.99-slim"
         );
         assert_eq!(
-            image_for(KIND_RUST, "1.98", DEFAULT_PHP_IMAGE),
+            image_for(KIND_RUST, "1.98", DEFAULT_PHP_IMAGE, ""),
             "rust:1.98-slim"
+        );
+        // 补丁号必须按 tag 拼出固定版本，且与默认版本一样受镜像前缀约束。
+        assert_eq!(
+            image_for(KIND_PHP, "8.5.13", DEFAULT_PHP_IMAGE, ""),
+            "php:8.5.13-fpm-alpine"
+        );
+        assert_eq!(
+            image_for(KIND_PHP, "8.5.13", DEFAULT_PHP_IMAGE, "mirror.example.com"),
+            "mirror.example.com/php:8.5.13-fpm-alpine"
+        );
+        assert_eq!(
+            image_for(KIND_PHP, "8.5", DEFAULT_PHP_IMAGE, "mirror.example.com"),
+            DEFAULT_PHP_IMAGE,
+            "默认版本的镜像名由设置给出（已含前缀），不得二次拼接"
+        );
+        assert_eq!(
+            image_for(KIND_RUST, "1.99", DEFAULT_PHP_IMAGE, "mirror.example.com"),
+            "mirror.example.com/rust:1.99-slim"
         );
     }
 

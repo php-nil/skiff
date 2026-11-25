@@ -90,7 +90,7 @@ pub use skiff_model::is_posix_absolute;
 /// 站点统一身份的固定 UID/GID（与内核 `skiff_model::SITE_UID` / `SITE_GID` 同源）。
 ///
 /// 插件 chown 站点文档根时必须用这个值：容器内的 PHP 进程按同一身份运行，
-/// 插件若另立一套（如固定 1000），站点文件会被改成容器无法写入的属主。
+/// 插件若另立一套（如固定 1000），站点文档根里的文件会被改成容器无法写入的属主。
 pub use skiff_model::{SITE_GID, SITE_UID};
 
 pub fn join(root: &str, file: &str) -> String {

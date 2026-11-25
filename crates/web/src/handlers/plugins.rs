@@ -61,28 +61,6 @@ pub async fn view(
     Path((id, view_name)): Path<(String, String)>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    // 站点文件插件（`com.skiff.files`）是可选入口：未安装/未启用，或受限形态没有
-    // fs 能力面时，回退到内核「文件管理」页（不 404）。插件可用时按正常视图渲染。
-    if id == "com.skiff.files" {
-        let usable = state
-            .db()
-            .plugin(&id)
-            .ok()
-            .flatten()
-            .map(|r| r.enabled)
-            .unwrap_or(false)
-            && crate::middleware::check_fs_capability(&state).is_ok();
-        if !usable {
-            let to = format!("/{}/files", state.cfg.entry_prefix);
-            let mut resp = axum::response::Response::new(axum::body::Body::empty());
-            *resp.status_mut() = axum::http::StatusCode::FOUND;
-            if let Ok(value) = axum::http::HeaderValue::from_str(&to) {
-                resp.headers_mut()
-                    .insert(axum::http::header::LOCATION, value);
-            }
-            return Ok(resp);
-        }
-    }
     // 默认交付 budding 壳页：壳页优先读随包 schema 原生渲染。
     // `?legacy=1` 是**没有 schema 的旧视图**（如 monitor/health、testkit/mount）的
     // iframe 宿主入口——壳页在 schema 404 时自动加这个参数回跳，属于现役路径。

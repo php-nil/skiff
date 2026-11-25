@@ -3,6 +3,23 @@
 use super::{now, Db, Result};
 use crate::model::AuditEntry;
 use rusqlite::params;
+use skiff_model::AuditCategory;
+
+/// 动作命名空间表达式：`.` 前一段；不含 `.` 时取整个 `action`（如旧数据 `login`）。
+const NAMESPACE_SQL: &str =
+    "CASE WHEN instr(action, '.') > 0 THEN substr(action, 1, instr(action, '.') - 1) ELSE action END";
+
+/// 把代码内定义的命名空间常量拼成 SQL 列表；常量只含小写字母与下划线，不含用户输入。
+fn sql_list(names: &[&str]) -> String {
+    debug_assert!(names
+        .iter()
+        .all(|n| n.chars().all(|c| c.is_ascii_lowercase() || c == '_')));
+    names
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 impl Db {
     pub fn audit(
@@ -36,17 +53,30 @@ impl Db {
     /// 审计 keyset 分页（SDUI D10）：`(ts, id)` 倒序，`before` 为上一页末项的排序键。
     ///
     /// `keyword` 非空时对 actor / ip / action / target / detail 做 ASCII 不区分大小写的
-    /// 子串匹配（`instr(lower(...))`，不引入 `LIKE` 通配符转义问题）。排序与范围全部落在
-    /// 既有 `idx_audit_ts(ts DESC, id DESC)` 上；关键字只做行内过滤，不新增索引。
-    /// `limit` 是上限，调用方多要一条来判定是否还有下一页。
+    /// 子串匹配（`instr(lower(...))`，不引入 `LIKE` 通配符转义问题）。`category` 按
+    /// 动作命名空间过滤（口径见 `skiff_model::AuditCategory`），`None` 表示全部分类。
+    /// 排序与范围全部落在既有 `idx_audit_ts(ts DESC, id DESC)` 上；关键字与分类都只做
+    /// 行内过滤，不新增索引。`limit` 是上限，调用方多要一条来判定是否还有下一页。
     pub fn audit_page(
         &self,
         keyword: &str,
+        category: Option<AuditCategory>,
         before: Option<(i64, i64)>,
         limit: usize,
     ) -> Result<Vec<AuditEntry>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
+        // 分类条件由枚举常量拼出，不含用户输入；`Other` 反选全部已登记命名空间。
+        let category_filter = match category {
+            None => String::new(),
+            Some(AuditCategory::Other) => format!(
+                " AND {NAMESPACE_SQL} NOT IN ({})",
+                sql_list(&AuditCategory::all_namespaces())
+            ),
+            Some(category) => format!(
+                " AND {NAMESPACE_SQL} IN ({})",
+                sql_list(category.namespaces())
+            ),
+        };
+        let sql = format!(
             "SELECT id, ts, actor, ip, action, target, result, detail
              FROM audit
              WHERE (?1 = ''
@@ -55,10 +85,12 @@ impl Db {
                     OR instr(lower(action), lower(?1)) > 0
                     OR instr(lower(target), lower(?1)) > 0
                     OR instr(lower(detail), lower(?1)) > 0)
-               AND (?2 IS NULL OR ts < ?2 OR (ts = ?2 AND id < ?3))
+               AND (?2 IS NULL OR ts < ?2 OR (ts = ?2 AND id < ?3)){category_filter}
              ORDER BY ts DESC, id DESC
-             LIMIT ?4",
-        )?;
+             LIMIT ?4"
+        );
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(
             params![
                 keyword,
@@ -125,18 +157,18 @@ mod tests {
     #[test]
     fn audit_page_walks_backwards_with_keyset() {
         let db = seeded();
-        let first = db.audit_page("", None, 2).unwrap();
+        let first = db.audit_page("", None, None, 2).unwrap();
         assert_eq!(first.len(), 2);
         assert_eq!(first[0].action, "site.delete");
         assert_eq!(first[1].action, "site.create");
         let older = db
-            .audit_page("", Some((first[1].ts, first[1].id)), 2)
+            .audit_page("", None, Some((first[1].ts, first[1].id)), 2)
             .unwrap();
         assert_eq!(older.len(), 1);
         assert_eq!(older[0].action, "login");
         // 已到末页：再往后没有数据。
         assert!(db
-            .audit_page("", Some((older[0].ts, older[0].id)), 2)
+            .audit_page("", None, Some((older[0].ts, older[0].id)), 2)
             .unwrap()
             .is_empty());
     }
@@ -153,11 +185,42 @@ mod tests {
             ("权限", 1),        // detail
         ] {
             assert_eq!(
-                db.audit_page(keyword, None, 10).unwrap().len(),
+                db.audit_page(keyword, None, None, 10).unwrap().len(),
                 expected,
                 "关键字 {keyword}"
             );
         }
+    }
+
+    /// 分类按动作命名空间过滤；关键字与分类同时生效；未登记动作落 `Other`。
+    #[test]
+    fn audit_page_filters_by_category() {
+        let db = seeded();
+        db.audit("a", "1.1.1.1", "docker.containers.start", "c1", "ok", "")
+            .unwrap();
+        db.audit("a", "1.1.1.1", "task.run", "t1", "ok", "")
+            .unwrap();
+        db.audit("a", "1.1.1.1", "custom.thing", "x", "ok", "")
+            .unwrap();
+
+        let count = |cat| db.audit_page("", Some(cat), None, 20).unwrap().len();
+        assert_eq!(count(AuditCategory::Auth), 1);
+        assert_eq!(count(AuditCategory::Site), 2);
+        assert_eq!(count(AuditCategory::Docker), 1);
+        assert_eq!(count(AuditCategory::Task), 1);
+        assert_eq!(count(AuditCategory::Other), 1);
+        assert_eq!(count(AuditCategory::Files), 0);
+
+        // 分类与关键字是 AND：只有站点分类里命中目标串的记录。
+        let rows = db
+            .audit_page("example", Some(AuditCategory::Site), None, 20)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action, "site.create");
+        assert!(db
+            .audit_page("example", Some(AuditCategory::Docker), None, 20)
+            .unwrap()
+            .is_empty());
     }
 
     /// `%` / `_` 是普通字符：instr 不把关键字当 LIKE 通配符。
@@ -170,7 +233,7 @@ mod tests {
             .unwrap();
         db.audit("a", "1.1.1.1", "file.upload", "file_01.txt", "ok", "")
             .unwrap();
-        assert_eq!(db.audit_page("%", None, 10).unwrap().len(), 1);
-        assert_eq!(db.audit_page("_", None, 10).unwrap().len(), 1);
+        assert_eq!(db.audit_page("%", None, None, 10).unwrap().len(), 1);
+        assert_eq!(db.audit_page("_", None, None, 10).unwrap().len(), 1);
     }
 }

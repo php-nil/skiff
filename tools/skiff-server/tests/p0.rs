@@ -29,6 +29,46 @@ fn plugin_sample() -> Value {
     serde_json::from_str(&text).expect("插件样例不是合法 JSON")
 }
 
+/// 渠道里某一类运行环境条目数。断言用它而不是写死数字：真实条目会随
+/// `skiff-server runtimes` 刷新增减，写死就得每刷一次改一次测试。
+fn runtime_entry_count(kind: &str) -> usize {
+    let dir = catalog().join("stable/runtimes");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!("{kind}-"))
+        })
+        .count()
+}
+
+/// 渠道时间戳：清单的 `generated_at` 必须取它（确定性产物的来源）。
+fn channel_generated_at() -> String {
+    let text = fs::read_to_string(catalog().join("stable/channel.json")).expect("读渠道文件失败");
+    let value: Value = serde_json::from_str(&text).expect("渠道文件不是合法 JSON");
+    value["generated_at"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// 版本数值键：`8.5.13` → (8, 5, 13)，段数不足补 0（与 build 的排序口径一致）。
+fn version_key(version: &str) -> (u64, u64, u64) {
+    let mut parts = version
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
 #[test]
 fn samples_pass_schema_and_semantics() -> Result<()> {
     check::run(&catalog(), &schema(), None, None, false)?;
@@ -77,7 +117,11 @@ fn generated_index_contains_samples() -> Result<()> {
     assert_eq!(index["schema"], json!("skiff.server.index/v1"));
     assert_eq!(index["plugins"].as_array().unwrap().len(), 1);
     assert_eq!(index["apps"].as_array().unwrap().len(), 1);
-    assert_eq!(index["runtimes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        index["runtimes"].as_array().unwrap().len(),
+        runtime_entry_count("php") + runtime_entry_count("node") + runtime_entry_count("rust"),
+        "索引里的运行环境条数必须等于源条目数（不多不少）"
+    );
     assert_eq!(index["upgrades"].as_array().unwrap().len(), 1);
     assert!(artifact.get("channels/stable/manifest.json.sig").is_some());
     let blobs = artifact
@@ -86,6 +130,153 @@ fn generated_index_contains_samples() -> Result<()> {
         .filter(|path| path.starts_with("blobs/sha256/"))
         .count();
     assert_eq!(blobs, 3);
+    Ok(())
+}
+
+#[test]
+fn build_generates_runtime_index_at_fixed_path() -> Result<()> {
+    let artifact = build(&catalog(), &schema(), &Signer::Unsigned)?;
+    let raw = artifact
+        .get("channels/stable/runtime-index/php.json")
+        .expect("缺少固定路径的版本清单产物");
+    let value: Value = serde_json::from_slice(raw)?;
+    assert_eq!(value["schema"], json!("skiff.server.runtime-index/v1"));
+    assert_eq!(value["kind"], json!("php"));
+    assert_eq!(value["channel"], json!("stable"));
+    // 时间戳取渠道的 generated_at，同输入必得同输出。
+    assert_eq!(
+        value["generated_at"],
+        json!(channel_generated_at()),
+        "生成的清单必须用渠道时间戳，不能用系统时间"
+    );
+    let versions = value["versions"].as_array().expect("versions 必须是数组");
+    assert_eq!(
+        versions.len(),
+        runtime_entry_count("php"),
+        "php 清单条目数必须等于该渠道 php 条目数"
+    );
+    let first = &versions[0];
+    let first_version = first["version"].as_str().unwrap_or_default();
+    assert!(
+        versions
+            .iter()
+            .all(|item| version_key(item["version"].as_str().unwrap_or(""))
+                <= version_key(first_version)),
+        "清单必须按版本数值降序，首位却是 {first_version}"
+    );
+    assert_eq!(first["default"], json!(true), "最高版本应是默认版本");
+    assert_eq!(
+        versions
+            .iter()
+            .filter(|item| item["default"] == json!(true))
+            .count(),
+        1,
+        "默认版本只能有一个"
+    );
+    assert!(
+        first.get("image").is_none() && first.get("image_digest").is_none(),
+        "v1 只放面板消费的字段，镜像引用与 digest 留到 v2：{first}"
+    );
+
+    // 与 index.json 同源：runtimes 条目怎么排序，清单就怎么排（版本数值降序）。
+    let index: Value = serde_json::from_slice(artifact.get("channels/stable/index.json").unwrap())?;
+    assert_eq!(
+        index["runtimes"].as_array().unwrap().len(),
+        runtime_entry_count("php") + runtime_entry_count("node") + runtime_entry_count("rust")
+    );
+    // 清单按类型拆分：某类型没有条目就不产出该文件（面板 404 → 回退目录大版本）。
+    for kind in ["php", "node", "rust"] {
+        let produced = artifact
+            .get(&format!("channels/stable/runtime-index/{kind}.json"))
+            .is_some();
+        assert_eq!(
+            produced,
+            runtime_entry_count(kind) > 0,
+            "{kind} 的清单产出与否必须与源条目一致"
+        );
+    }
+    Ok(())
+}
+
+/// 夹具复制到临时目录：测试要在样例上增删条目，不能改动仓库里的源数据。
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// 清单按类型分文件：同一渠道里 php / node / rust 各出自己那份，互不串味。
+#[test]
+fn runtime_index_is_generated_per_kind() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let source = dir.path().join("catalog");
+    copy_dir(&catalog(), &source)?;
+    // 真实渠道里三类都有条目，直接加一条测不出「没条目 → 不落盘」；
+    // 所以先清空 runtimes/，从「一类都没发」开始。
+    let runtimes = source.join("stable/runtimes");
+    for entry in fs::read_dir(&runtimes)? {
+        fs::remove_file(entry?.path())?;
+    }
+
+    let empty = build(&source, &schema(), &Signer::Unsigned)?;
+    for kind in ["php", "node", "rust"] {
+        assert!(
+            empty
+                .get(&format!("channels/stable/runtime-index/{kind}.json"))
+                .is_none(),
+            "{kind} 没有条目却产出了清单"
+        );
+    }
+
+    let node_entry = json!({
+        "kind": "node",
+        "version": "24.4.0",
+        "image": "node:24.4.0-alpine",
+        "image_digest": format!("sha256:{}", "c".repeat(64)),
+        "eol": null,
+        "api_min": "1.0",
+        "default": true
+    });
+    fs::write(
+        source.join("stable/runtimes/node-24.4.0.json"),
+        serde_json::to_vec_pretty(&node_entry)?,
+    )?;
+
+    let artifact = build(&source, &schema(), &Signer::Unsigned)?;
+    let node: Value = serde_json::from_slice(
+        artifact
+            .get("channels/stable/runtime-index/node.json")
+            .expect("缺 node 清单产物"),
+    )?;
+    assert_eq!(node["kind"], json!("node"));
+    assert_eq!(node["channel"], json!("stable"));
+    assert_eq!(node["versions"][0]["version"], json!("24.4.0"));
+    assert_eq!(node["versions"][0]["default"], json!(true));
+
+    // 只有 node 有条目：php / rust 仍不该落盘（不同类不互相牵连）。
+    assert!(artifact
+        .get("channels/stable/runtime-index/rust.json")
+        .is_none());
+    Ok(())
+}
+
+#[test]
+fn runtime_index_is_deterministic() -> Result<()> {
+    let first = build(&catalog(), &schema(), &Signer::Unsigned)?;
+    let second = build(&catalog(), &schema(), &Signer::Unsigned)?;
+    assert_eq!(
+        first.get("channels/stable/runtime-index/php.json"),
+        second.get("channels/stable/runtime-index/php.json"),
+        "版本清单必须确定性生成（不含系统时间）"
+    );
     Ok(())
 }
 

@@ -193,6 +193,14 @@ pub struct PageListQuery {
     pub with_schema: bool,
 }
 
+/// 版本清单查询：`kind` 缺省 PHP（`refresh=true` 绕过缓存，页面刷新入口用它）。
+#[derive(Debug, Default, Deserialize)]
+pub struct VersionIndexQuery {
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub refresh: bool,
+}
+
 /// 文案与状态统一走 `{code,label}` 双字段（D8）。
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusDto {
@@ -915,12 +923,14 @@ pub struct JobItem {
     pub active: bool,
 }
 
-/// 审计列表查询参数：关键字 `q`、`limit`（默认 50 / 上限 200）与签名游标。
+/// 审计列表查询参数：关键字 `q`、分类 `cat`、`limit`（默认 50 / 上限 200）与签名游标。
 ///
 /// `with_schema` 只在页面加载时由前端传 `true`；翻页跳转不带该参数。
 #[derive(Debug, Default, Deserialize)]
 pub struct AuditQuery {
     pub q: Option<String>,
+    /// 分类键（`skiff_model::AuditCategory::key`）；缺省或未知值表示全部分类。
+    pub cat: Option<String>,
     pub limit: Option<usize>,
     pub cursor: Option<String>,
     #[serde(default)]
@@ -933,6 +943,9 @@ pub struct AuditItem {
     pub id: i64,
     pub ts: String,
     pub ts_label: String,
+    /// 分类键与展示文案（派生自 action，见 `skiff_model::AuditCategory`）。
+    pub category: String,
+    pub category_label: String,
     pub actor: String,
     pub ip: String,
     pub action: String,
@@ -1157,6 +1170,9 @@ pub struct MenuUpdateBody {
 pub struct DockerSettingsData {
     pub registry_mirror: String,
     pub image_prefix: String,
+    /// 运行环境版本清单的**生效地址**（只读）：固定为 `<镜像基址>/channels/<channel>/runtime-index/php.json`，
+    /// 基址取 `[catalog].mirrors` 首项；为空表示未配置镜像源，只用内置副本。
+    pub runtime_index_url: String,
     pub can_admin: bool,
 }
 

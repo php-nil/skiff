@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use crate::build::{read_dir_sorted, sha256_hex, SCHEMA_FILES};
+use crate::build::{read_dir_sorted, sha256_hex, RUNTIME_INDEX_KINDS, SCHEMA_FILES};
 use crate::check;
 use crate::model::{blob_url, IndexFile, ManifestFile, SignatureFile};
 use crate::schema::SchemaSet;
@@ -27,6 +27,12 @@ pub const MAX_OBJECT_BYTES: u64 = 256 * 1024 * 1024;
 /// 主站数据源（HTTP 或本地目录）。
 pub trait Source {
     fn fetch(&self, relative: &str) -> Result<Vec<u8>>;
+
+    /// 取「可以没有」的文件：主站明确没有（目录缺文件 / HTTP 404、410）返回 `None`。
+    ///
+    /// 只有「确实不发布」才算 `None`；网络错误、5xx、其它 4xx 仍是失败——否则镜像会
+    /// 把一次故障当成「主站撤了这份文件」，静默删掉本地副本。
+    fn fetch_optional(&self, relative: &str) -> Result<Option<Vec<u8>>>;
 }
 
 pub struct DirSource {
@@ -44,6 +50,17 @@ impl Source for DirSource {
         let path = self.root.join(relative);
         fs::read(&path).with_context(|| format!("读取主站文件失败: {}", path.display()))
     }
+
+    fn fetch_optional(&self, relative: &str) -> Result<Option<Vec<u8>>> {
+        let path = self.root.join(relative);
+        match fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => {
+                Err(error).with_context(|| format!("读取主站文件失败: {}", path.display()))
+            }
+        }
+    }
 }
 
 pub struct HttpSource {
@@ -60,27 +77,47 @@ impl HttpSource {
                 .build(),
         }
     }
+
+    /// 404 / 410 视为「主站未发布这份文件」；其余状态码与传输错误都是失败。
+    fn get(&self, relative: &str) -> Result<Option<ureq::Response>> {
+        let url = format!("{}/{}", self.base, relative);
+        match self.agent.get(&url).call() {
+            Ok(response) => Ok(Some(response)),
+            Err(ureq::Error::Status(code, _)) if code == 404 || code == 410 => Ok(None),
+            Err(error) => Err(anyhow::Error::new(error)).with_context(|| format!("GET {url} 失败")),
+        }
+    }
 }
 
 impl Source for HttpSource {
     fn fetch(&self, relative: &str) -> Result<Vec<u8>> {
         let url = format!("{}/{}", self.base, relative);
         let response = self
-            .agent
-            .get(&url)
-            .call()
-            .with_context(|| format!("GET {url} 失败"))?;
-        let mut bytes = Vec::new();
-        response
-            .into_reader()
-            .take(MAX_OBJECT_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .with_context(|| format!("读取响应失败: {url}"))?;
-        if bytes.len() as u64 > MAX_OBJECT_BYTES {
-            bail!("{url} 超过单对象上限 {MAX_OBJECT_BYTES} 字节");
-        }
-        Ok(bytes)
+            .get(relative)?
+            .ok_or_else(|| anyhow::anyhow!("GET {url} 失败：主站返回 404"))?;
+        read_body(response, &url)
     }
+
+    fn fetch_optional(&self, relative: &str) -> Result<Option<Vec<u8>>> {
+        let url = format!("{}/{}", self.base, relative);
+        match self.get(relative)? {
+            Some(response) => read_body(response, &url).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+fn read_body(response: ureq::Response, url: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_OBJECT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("读取响应失败: {url}"))?;
+    if bytes.len() as u64 > MAX_OBJECT_BYTES {
+        bail!("{url} 超过单对象上限 {MAX_OBJECT_BYTES} 字节");
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -91,6 +128,10 @@ pub struct SyncReport {
     pub bytes_fetched: u64,
     /// 清单是否变化（同一 `seq` 且字节一致时为 false）。
     pub manifest_written: bool,
+    /// 版本清单实际写入份数（内容没变就不写，不计）。
+    pub runtime_index_written: usize,
+    /// 主站已不发布、镜像本地残留被删掉的版本清单份数。
+    pub runtime_index_removed: usize,
 }
 
 /// 执行一次单渠道同步。
@@ -190,7 +231,7 @@ pub fn run(
         report.bytes_fetched += size;
     }
 
-    // 步骤 5/6：blob 齐了再更新 schema / 索引 / 清单 / 签名（清单最后，减少半更新窗口）。
+    // 步骤 5/6：blob 齐了再更新 schema / 版本清单 / 索引 / 清单 / 签名（清单最后，减少半更新窗口）。
     for schema_file in SCHEMA_FILES {
         let relative = format!("schema/{schema_file}");
         let bytes = source
@@ -198,6 +239,34 @@ pub fn run(
             .with_context(|| format!("步骤 5/6 拉取 {relative} 失败"))?;
         write_atomic(mirror, &relative, &bytes)
             .with_context(|| format!("步骤 5/6 写入 {relative} 失败"))?;
+    }
+    // 版本清单不进签名链，但它也是镜像要对外提供的产物：主站发哪几份，镜像就留哪几份。
+    let mut runtime_index_written = 0usize;
+    let mut runtime_index_removed = 0usize;
+    for kind in RUNTIME_INDEX_KINDS {
+        let relative = format!("{channel_prefix}/runtime-index/{kind}.json");
+        let fetched = source
+            .fetch_optional(&relative)
+            .with_context(|| format!("步骤 5/6 拉取 {relative} 失败"))?;
+        match fetched {
+            Some(bytes) => {
+                let changed = fs::read(mirror.join(&relative)).ok().as_deref() != Some(&bytes[..]);
+                if changed {
+                    write_atomic(mirror, &relative, &bytes)
+                        .with_context(|| format!("步骤 5/6 写入 {relative} 失败"))?;
+                    runtime_index_written += 1;
+                }
+            }
+            None => {
+                // 主站不再发布该类型：本地残留要删掉，否则镜像会长期对外发一份过期清单。
+                let stale = mirror.join(&relative);
+                if stale.is_file() {
+                    fs::remove_file(&stale)
+                        .with_context(|| format!("步骤 5/6 删除残留 {relative} 失败"))?;
+                    runtime_index_removed += 1;
+                }
+            }
+        }
     }
     write_atomic(
         mirror,
@@ -218,6 +287,8 @@ pub fn run(
     )
     .context("步骤 5/6 写入 manifest.json.sig 失败")?;
     report.manifest_written = manifest_written;
+    report.runtime_index_written = runtime_index_written;
+    report.runtime_index_removed = runtime_index_removed;
 
     // 步骤 6/6：同步后自检。只看本渠道 + schema + blob，镜像里其它渠道/旧 blob 不参与。
     self_check(mirror, channel, public_key, previous_seq).context("步骤 6/6 同步后自检失败")?;
@@ -381,6 +452,29 @@ fn self_check(
     let schemas = SchemaSet::new(mirror.join("schema"));
     let summary = check::validate_artifact_with(&files, &schemas, true, Some(public_key), true)?;
 
+    // 版本清单不参与签名，但同步进来的那几份必须能按 schema 解析、且 kind/channel 自洽；
+    // 缺失不算错（主站可以只发布其中一类），内容坏了才算。
+    for kind in RUNTIME_INDEX_KINDS {
+        let path = format!("{prefix}runtime-index/{kind}.json");
+        let Some(bytes) = files.get(&path) else {
+            continue;
+        };
+        let value: serde_json::Value = serde_json::from_slice(bytes)
+            .with_context(|| format!("自检解析版本清单失败: {path}"))?;
+        schemas
+            .validate("runtime-index.schema.json", &value)
+            .with_context(|| format!("自检版本清单 schema 校验失败: {path}"))?;
+        if value["kind"].as_str() != Some(*kind) {
+            bail!("自检发现 {path} 的 kind={} 与文件名不一致", value["kind"]);
+        }
+        if value["channel"].as_str() != Some(channel) {
+            bail!(
+                "自检发现 {path} 的 channel={} 与目标渠道 {channel} 不一致",
+                value["channel"]
+            );
+        }
+    }
+
     let manifest_path = format!("{prefix}manifest.json");
     let manifest: ManifestFile = serde_json::from_slice(
         files
@@ -426,4 +520,59 @@ pub fn copy_tree(from: &Path, to: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    use super::*;
+
+    /// 起一个只回一次响应的极简 HTTP 服务，返回基地址。
+    fn serve_status(status_line: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                // 读到请求头结束的空行再回包，避免在半截请求上写响应。
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) if line == "\r\n" => break,
+                        Ok(_) => {}
+                    }
+                }
+                let mut stream = stream;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn http_404_means_not_published() {
+        let source = HttpSource::new(&serve_status("404 Not Found"));
+        assert_eq!(
+            source
+                .fetch_optional("channels/stable/runtime-index/php.json")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn http_500_is_still_a_failure() {
+        let source = HttpSource::new(&serve_status("500 Internal Server Error"));
+        assert!(source
+            .fetch_optional("channels/stable/runtime-index/php.json")
+            .is_err());
+    }
 }

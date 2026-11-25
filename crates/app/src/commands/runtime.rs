@@ -835,8 +835,9 @@ mod tests {
             "{err}"
         );
 
-        // 空类型回落 php，空版本被版本目录拒绝。
-        let err = create(&state, create_cmd("", "")).await.unwrap_err();
+        // 空类型回落 php；不在目录里的版本要在这里挡掉（还没走到 Docker）。
+        // 注意空版本是合法的：按契约回落该类型目录首项，另有专门用例覆盖。
+        let err = create(&state, create_cmd("", "9.9.9")).await.unwrap_err();
         assert!(
             matches!(err, SiteError::BadRequest(ref m) if m.contains("版本无效")),
             "{err}"

@@ -30,10 +30,20 @@ pub const SCHEMA_FILES: &[&str] = &[
     "index.schema.json",
     "manifest.schema.json",
     "plugin.schema.json",
+    "runtime-index.schema.json",
     "runtime.schema.json",
     "signature.schema.json",
     "upgrade.schema.json",
 ];
+
+/// 版本清单产物名：`channels/<channel>/runtime-index/<kind>.json`，三个类型各一份。
+///
+/// **路径是契约的一部分**：面板不配置地址，直接按固定路径取（见 SITE_RUNTIME_CONTRACT
+/// §4.5）。每个类型只从自己的 `runtimes/` 条目生成；某类型没有条目就不落盘，面板取到
+/// 404 会回退内置副本（PHP）或目录大版本（Node.js / Rust）。
+const RUNTIME_INDEX_SCHEMA: &str = "runtime-index.schema.json";
+/// 三类清单的唯一来源：`build` 按它产出、`sync` 按它补拉、`check` 按它校验。
+pub(crate) const RUNTIME_INDEX_KINDS: &[&str] = &["php", "node", "rust"];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Artifact {
@@ -190,6 +200,20 @@ pub fn build(catalog_dir: &Path, schema_dir: &Path, signer: &Signer) -> Result<A
         schemas.validate("index.schema.json", &to_value(&index)?)?;
         let index_bytes = pretty_json(&index)?;
         let index_sha = sha256_hex(&index_bytes);
+
+        // 版本清单：面板按固定路径取，与 index.json 同批产出；每个类型只产自己那份，
+        // 没有条目的类型不落盘（面板取到 404 会回退内置副本 / 目录大版本）。
+        for kind in RUNTIME_INDEX_KINDS {
+            if let Some(bytes) = runtime_index_bytes(
+                &index.runtimes,
+                kind,
+                &name,
+                &channel.generated_at,
+                &schemas,
+            )? {
+                artifact.put(format!("channels/{name}/runtime-index/{kind}.json"), bytes)?;
+            }
+        }
 
         let manifest = ManifestFile {
             schema: crate::model::MANIFEST_SCHEMA.to_string(),
@@ -353,6 +377,86 @@ fn pretty_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 
 fn to_value<T: Serialize>(value: &T) -> Result<Value> {
     serde_json::to_value(value).context("JSON 值转换失败")
+}
+
+/// 版本清单（`skiff.server.runtime-index/v1`）里的一条。
+///
+/// **只放面板真正消费的字段**：版本号、EOL 日期、是否默认。镜像引用与 digest 留到
+/// 「按 digest 锁定安装」落地时再以 v2 加入——没有消费方就下发，等于让镜像方去核对一个
+/// 没人用的值，还会诱使有人手填假 digest。
+#[derive(Serialize)]
+struct RuntimeIndexVersion<'a> {
+    version: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eol: Option<&'a str>,
+    #[serde(skip_serializing_if = "is_false")]
+    default: bool,
+}
+
+#[derive(Serialize)]
+struct RuntimeIndexFile<'a> {
+    schema: &'static str,
+    kind: &'a str,
+    channel: &'a str,
+    generated_at: &'a str,
+    versions: Vec<RuntimeIndexVersion<'a>>,
+}
+
+/// 从该渠道的 `runtimes/` 条目生成某一类型的版本清单；没有可用条目时返回 `None`（不落盘）。
+///
+/// 输出必须确定性：条目按版本**数值降序**（同版本再按字符串兜底），时间戳取渠道的
+/// `generated_at` 而非系统时间——否则同输入会得到不同字节，`seq`/摘要的语义就废了。
+/// 已 `yanked` 的条目不下发：它表示该版本已下架，不该再出现在安装选项里。
+fn runtime_index_bytes(
+    entries: &[RuntimeEntry],
+    kind: &str,
+    channel: &str,
+    generated_at: &str,
+    schemas: &SchemaSet,
+) -> Result<Option<Vec<u8>>> {
+    let mut rows: Vec<&RuntimeEntry> = entries
+        .iter()
+        .filter(|e| e.kind == kind && !e.yanked)
+        .collect();
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    rows.sort_by(|a, b| {
+        version_key(&b.version)
+            .cmp(&version_key(&a.version))
+            .then_with(|| b.version.cmp(&a.version))
+    });
+    let file = RuntimeIndexFile {
+        schema: "skiff.server.runtime-index/v1",
+        kind,
+        channel,
+        generated_at,
+        versions: rows
+            .into_iter()
+            .map(|e| RuntimeIndexVersion {
+                version: &e.version,
+                eol: e.eol.as_deref(),
+                default: e.default,
+            })
+            .collect(),
+    };
+    let value = to_value(&file)?;
+    schemas.validate(RUNTIME_INDEX_SCHEMA, &value)?;
+    pretty_json(&file).map(Some)
+}
+
+/// 版本数值化排序键：`8.5.13` → (8, 5, 13)；段数不足补 0，非数字段按 0。
+pub(crate) fn version_key(version: &str) -> (u64, u64, u64) {
+    let mut parts = version.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub fn read_dir_sorted(dir: &Path) -> Result<Vec<PathBuf>> {

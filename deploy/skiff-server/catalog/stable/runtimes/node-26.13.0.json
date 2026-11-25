@@ -1,0 +1,9 @@
+{
+  "kind": "node",
+  "version": "26.13.0",
+  "image": "node:26.13.0-alpine",
+  "image_digest": "sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216",
+  "eol": "2029-04-30",
+  "api_min": "1.0",
+  "default": false
+}

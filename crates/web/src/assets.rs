@@ -97,7 +97,17 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.7";
 ///   把菜单插进标题与主操作之间。
 /// v47：壳侧三级子视图表从 JS 硬编码迁到 Rust（`SUBVIEWS` 加 `blocked` 字段，随
 ///   `/ui/v1/routes` 一起下发），前端改纯消费；改路径只动 `routes.rs`，JS 零成本同步。
-pub const SHELL_VERSION: &str = "47";
+/// v48：`skiffSearch` 增加 `cat` 透传（审计页分类筛选）；不升版本会继续命中旧壳缓存。
+/// v49：侧栏品牌标记换成产品图标（`skiff-shell.css` 用 `favicon.svg` 覆盖上游的
+///   首字母色块，相对样式表解析、自动带入口前缀）。
+/// v50：新建运行环境改为「镜像服务版本清单」下拉 + 自定义版本；`runtimeCreate`
+///   按 `version_custom > version_php > version_other` 取值，新增「刷新版本清单」动作。
+/// v51：清单地址改为固定路径（`channels/<channel>/runtime-index/php.json`，由镜像基址
+///   推导），Docker 设置页不再提交 `runtime_index_url`；不升版本旧壳会继续 POST 该字段。
+/// v52：版本下拉按类型各一份（`version_php` / `version_node` / `version_rust`，取各自
+///   `runtime-index/<kind>.json`），`runtimeCreate` 改按 `version_<kind>` 取值；
+///   「刷新版本清单」一次刷三类。不升版本旧壳会继续取 `version_other`，Node/Rust 装空版本。
+pub const SHELL_VERSION: &str = "52";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
@@ -347,6 +357,27 @@ mod tests {
     fn favicon_asset_is_embedded() {
         let asset = Assets::get("favicon.svg").expect("static/favicon.svg 必须入库");
         assert!(String::from_utf8_lossy(&asset.data).contains("<svg"));
+    }
+
+    /// 侧栏品牌区必须用产品图标，不是上游默认的「首字母色块」。
+    ///
+    /// 图形取 `favicon.svg` 且写成**相对** URL——样式表在 `/<前缀>/static/` 下，
+    /// 相对路径自动带入口前缀；写成 `/static/...` 会在自定义前缀下 404。
+    #[test]
+    fn shell_css_brands_the_sidebar_with_product_icon() {
+        let css = include_str!("../static/skiff-shell.css");
+        assert!(
+            css.contains("url(\"favicon.svg\")"),
+            "侧栏品牌标记必须引用 favicon.svg（相对样式表解析）"
+        );
+        assert!(
+            !css.contains("url(\"/static/favicon.svg\")"),
+            "品牌图标不能用绝对路径：自定义入口前缀下会 404"
+        );
+        assert!(
+            css.contains(".bud-admin .bud-admin__brand .bud-admin__mark"),
+            "覆盖必须压过上游 scoped 规则（.bud-admin__mark[data-v-…]）"
+        );
     }
 
     /// D11：版本化产物可长缓存，稳定别名必须回源校验，其余资源策略不变。

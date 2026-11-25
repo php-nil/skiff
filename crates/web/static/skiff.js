@@ -1850,7 +1850,7 @@
         if (exitEl && typeof d.exit_code === "number") exitEl.textContent = String(d.exit_code);
       }
       function connect() {
-        var url = "/" + prefix + "/jobs/" + encodeURIComponent(id) + "/logs/stream?after=" + cursor;
+        var url = "/" + prefix + "/tasks/jobs/" + encodeURIComponent(id) + "/logs/stream?after=" + cursor;
         es = new EventSource(url);
         es.addEventListener("log", function (ev) {
           var d = JSON.parse(ev.data);
@@ -1898,7 +1898,7 @@
     });
 
     async function open(id) {
-      var url = "/" + prefix + "/jobs/" + encodeURIComponent(id);
+      var url = "/" + prefix + "/tasks/jobs/" + encodeURIComponent(id);
       if (full) full.setAttribute("href", url);
       release();
       body.innerHTML = '<p class="muted">加载中…</p>';

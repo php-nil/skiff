@@ -302,6 +302,10 @@ pub async fn settings_docker(
             .get_setting("sites.image_prefix")
             .map_err(|e| ApiError(AppError::from(e)))?
             .unwrap_or_default(),
+        // 只读：路径固定为「镜像基址 + 渠道目录 + 类型文件名」，由 catalog 配置推导，
+        // 不在本页配置。这里给 PHP 那份（同一目录下还有 node.json / rust.json）。
+        runtime_index_url: skiff_app::runtime_index::index_url(&state, skiff_store::KIND_PHP)
+            .unwrap_or_default(),
         can_admin: user.can(skiff_model::Permission::Admin),
     };
     let schema = if q.with_schema {

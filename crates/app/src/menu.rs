@@ -1,6 +1,6 @@
 //! 三级菜单模型、声明合并与用户偏好（`docs/contract/MENU_CONTRACT.md` P1）。
 //!
-//! 这里是**唯一**的菜单合成入口：固定六一级 + 内置二级 + 已启用插件声明，
+//! 这里是**唯一**的菜单合成入口：固定七一级 + 内置二级 + 已启用插件声明，
 //! 再套上当前用户的顺序/隐藏/固定/布局偏好。模板只消费 `PageMenu`，
 //! 不再自己拼导航（旧的 `handlers::nav` 已删除）。
 
@@ -83,6 +83,7 @@ pub const L1_OVERVIEW: &str = "overview";
 pub const L1_SITES: &str = "sites";
 pub const L1_DOCKER: &str = "docker";
 pub const L1_PLUGINS: &str = "plugins";
+pub const L1_TASKS: &str = "tasks";
 pub const L1_TOOLS: &str = "tools";
 pub const L1_SETTINGS: &str = "settings";
 
@@ -100,7 +101,9 @@ pub fn canonical_active(active: &str) -> String {
         "compose" => "core/docker/compose".into(),
         "plugins" => "core/plugins/installed".into(),
         "settings" => "core/settings/security".into(),
-        "audit" => "core/settings/audit".into(),
+        "tasks" => "core/tasks/scheduled".into(),
+        "jobs" => "core/tasks/jobs".into(),
+        "audit" => "core/tasks/audit".into(),
         "menu-settings" => "core/settings/menu".into(),
         other => other.to_string(),
     }
@@ -1303,6 +1306,45 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
             },
         },
         Decl {
+            key: L1_TASKS.into(),
+            parent: "root".into(),
+            label: "任务审计".into(),
+            icon: "activity".into(),
+            order: 45,
+            href: String::new(),
+            plugin: false,
+            pinnable: false,
+            default_visible: true,
+            roles: None,
+            children: vec![
+                builtin(
+                    "core/tasks/scheduled",
+                    L1_TASKS,
+                    "计划任务",
+                    "clock",
+                    10,
+                    href("tasks/scheduled"),
+                ),
+                builtin(
+                    "core/tasks/jobs",
+                    L1_TASKS,
+                    "任务中心",
+                    "activity",
+                    20,
+                    href("tasks/jobs"),
+                ),
+                builtin_role(
+                    "core/tasks/audit",
+                    L1_TASKS,
+                    "审计日志",
+                    "shield",
+                    30,
+                    href("tasks/audit"),
+                    &["operator", "admin"],
+                ),
+            ],
+        },
+        Decl {
             key: L1_TOOLS.into(),
             parent: "root".into(),
             label: "工具".into(),
@@ -1314,24 +1356,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
             default_visible: true,
             roles: None,
             children: {
-                let mut items = vec![
-                    builtin(
-                        "core/tasks",
-                        L1_TOOLS,
-                        "计划任务",
-                        "clock",
-                        10,
-                        href("tasks"),
-                    ),
-                    builtin(
-                        "core/jobs",
-                        L1_TOOLS,
-                        "任务中心",
-                        "activity",
-                        15,
-                        href("jobs"),
-                    ),
-                ];
+                let mut items = Vec::new();
                 // 文件管理只对管理员开放：viewer 看不到入口（壳页虽渲染，数据端点 403）。
                 // 受限形态（1Panel Docker 包）能力面只有 docker/identity，没有 fs：
                 // 入口同样隐藏；直达壳页虽渲染，`/ui/v1/files*` 数据端点由 `fs_capability` 拒绝。
@@ -1405,19 +1430,15 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     25,
                     href("settings/ui"),
                 ),
-                builtin_role(
-                    "core/settings/audit",
-                    L1_SETTINGS,
-                    "审计日志",
-                    "shield",
-                    30,
-                    href("settings/audit"),
-                    &["operator", "admin"],
-                ),
             ],
         },
     ];
-    root.retain(|l1| l1.children.iter().all(|c| c.roles_ok(role)) && l1.roles_ok(role));
+    // 角色门逐项过滤：受限子项只隐藏自己，不连坐整个一级。
+    // （例：viewer 看不到「审计日志」，但仍应看到「设置」与「任务审计」的其他入口。）
+    for l1 in &mut root {
+        l1.children.retain(|c| c.roles_ok(role));
+    }
+    root.retain(|l1| l1.roles_ok(role));
 
     let mut plugin_decls: HashMap<String, Vec<Decl>> = HashMap::new();
     // 受限形态（`SKIFF_FORM=docker`）没有 fs 能力面：依赖 fs 的插件入口不渲染，
@@ -1493,7 +1514,7 @@ fn default_order(a: &Decl, b: &Decl) -> std::cmp::Ordering {
     (a.order, a.plugin, &a.label, &a.key).cmp(&(b.order, b.plugin, &b.label, &b.key))
 }
 
-/// 插件 manifest → L2/L3 声明；老包走 legacy 降级（契约 §2.7）。
+/// 插件 manifest → L2/L3 声明；老包走 legacy 降级（契约 §2.6）。
 fn plugin_menu_decls(
     m: &skiff_pkgfmt::Manifest,
     plugin_id: &str,
@@ -1506,7 +1527,9 @@ fn plugin_menu_decls(
         let Some(ui) = m.ui.first() else {
             return out;
         };
-        let parent = legacy_parent(plugin_id);
+        // 旧包（只声明 `[[ui]]`、没有 `[[menu]]`）统一挂到「工具」：它们没有声明归属，
+        // 内核不替它猜一级菜单。
+        let parent = L1_TOOLS.to_string();
         let label = if ui.label.trim().is_empty() {
             m.name.clone()
         } else {
@@ -1541,7 +1564,7 @@ fn plugin_menu_decls(
             parent,
             label,
             icon: icon_or_dot(ui.icon.as_deref()),
-            order: legacy_order(plugin_id),
+            order: 1000,
             href: menu_href(prefix, &format!("plugin/{plugin_id}/legacy")),
             plugin: true,
             pinnable: true,
@@ -1608,28 +1631,6 @@ fn icon_or_dot(icon: Option<&str>) -> String {
     } else {
         "dot".into()
     }
-}
-
-fn legacy_parent(plugin_id: &str) -> String {
-    match plugin_id {
-        "com.skiff.nginx" => L1_SITES.into(),
-        _ => L1_TOOLS.into(),
-    }
-}
-
-fn legacy_order(plugin_id: &str) -> i32 {
-    const OFFICIAL: &[&str] = &[
-        "com.skiff.nginx",
-        "com.skiff.files",
-        "com.skiff.cron",
-        "com.skiff.monitor",
-        "com.skiff.guard",
-    ];
-    let idx = OFFICIAL
-        .iter()
-        .position(|id| *id == plugin_id)
-        .unwrap_or(OFFICIAL.len());
-    1000 + idx as i32 * 10
 }
 
 fn slug(path: &str, idx: usize) -> String {
@@ -1750,7 +1751,7 @@ fn empty_state(state: &AppState, l1: &str) -> Option<MenuEmpty> {
                     && skiff_pkgfmt::Manifest::parse(&p.manifest)
                         .map(|m| {
                             if m.menu.is_empty() {
-                                legacy_parent(&p.id) == l1
+                                L1_TOOLS == l1
                             } else {
                                 m.menu.iter().any(|d| d.parent == l1)
                             }
@@ -1795,9 +1796,11 @@ mod tests {
 
     #[test]
     fn plugin_keys_are_namespaced_and_legacy_maps() {
+        // 旧包没有 `[[menu]]`：内核只做「一级 = 工具 + 视图平铺」，不替它猜归属
+        // （曾经的 `com.skiff.nginx → 网站` 特例已随插件内核化删除）。
         let m = skiff_pkgfmt::Manifest {
-            id: "com.skiff.nginx".into(),
-            name: "Nginx".into(),
+            id: "com.example.legacy".into(),
+            name: "Legacy".into(),
             version: "1.0.0".into(),
             key_id: "0".repeat(64),
             api: "1.0".into(),
@@ -1808,7 +1811,7 @@ mod tests {
             permissions: Vec::new(),
             network_egress: Vec::new(),
             ui: vec![skiff_pkgfmt::UiEntry {
-                label: "网站".into(),
+                label: "旧视图".into(),
                 path: "index.html".into(),
                 icon: Some("globe".into()),
             }],
@@ -1824,11 +1827,11 @@ mod tests {
             memory_limit_mb: None,
             pids_limit: None,
         };
-        let decls = plugin_menu_decls(&m, "com.skiff.nginx", "p", true, "admin");
+        let decls = plugin_menu_decls(&m, "com.example.legacy", "p", true, "admin");
         assert_eq!(decls.len(), 1);
-        assert_eq!(decls[0].key, "plugin/com.skiff.nginx/legacy");
-        assert_eq!(decls[0].parent, "sites");
-        assert_eq!(plugin_primary_key("com.skiff.nginx", &m), decls[0].key);
+        assert_eq!(decls[0].key, "plugin/com.example.legacy/legacy");
+        assert_eq!(decls[0].parent, L1_TOOLS);
+        assert_eq!(plugin_primary_key("com.example.legacy", &m), decls[0].key);
     }
 
     #[test]
@@ -1998,7 +2001,7 @@ view = "jobs"
         let mut order = BTreeMap::new();
         order.insert("tools".to_string(), vec!["plugin/x/menu".to_string()]);
         let mut prefs = MenuPrefs {
-            hidden: vec!["plugin/x/menu".into(), "core/settings/audit".into()],
+            hidden: vec!["plugin/x/menu".into(), "core/tasks/audit".into()],
             pinned: vec!["plugin/x/menu".into()],
             order,
             ..Default::default()

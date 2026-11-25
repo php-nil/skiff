@@ -76,6 +76,24 @@ pub async fn runtimes(
         })
         .collect();
     let (items, next_cursor, total) = paginate(rows, clamp_limit(q.limit), q.cursor.as_deref());
+    if q.with_schema {
+        // 清单过期或缺失时后台预热一次：不阻塞这次渲染，下次打开弹窗即为最新。
+        // 三类各预热一份（Node.js / Rust 也可能被镜像服务发布清单）。
+        if skiff_app::runtime_index::remote_enabled(&state) {
+            for kind in skiff_app::runtime_index::KINDS {
+                let stale =
+                    skiff_app::runtime_index::cached(&state, kind).is_none_or(|i| !i.fresh());
+                if !stale {
+                    continue;
+                }
+                let st = Arc::clone(&state);
+                let kind = kind.to_string();
+                tokio::spawn(async move {
+                    let _ = skiff_app::runtime_index::load(&st, &kind, false).await;
+                });
+            }
+        }
+    }
     let schema = q
         .with_schema
         .then(|| super::runtimes_page::runtimes_schema(&catalog_json(&state), total as i64));
@@ -330,9 +348,38 @@ pub(super) fn catalog_json(state: &AppState) -> serde_json::Value {
         })
         .collect();
     let (fixed, base) = state.apk_mirror_current();
+    // 版本清单：按类型各一份（`runtime-index/<kind>.json`），只读缓存（不触网），
+    // 页面据此内联下拉选项；缓存缺失由列表页后台预热，用户也可点「刷新版本清单」
+    // 同步拉一次（见 `runtime_versions`）。
+    let remote_index = skiff_app::runtime_index::remote_enabled(state);
+    let mut indexes = serde_json::Map::new();
+    for kind in skiff_app::runtime_index::KINDS {
+        let cached = skiff_app::runtime_index::cached(state, kind);
+        let index = cached
+            .clone()
+            .unwrap_or_else(|| skiff_app::runtime_index::default_index(kind));
+        // 有镜像服务时「还没拿到 / 已过期」= 等待刷新；没有镜像服务时内置副本/目录就是终态。
+        let pending = remote_index && (cached.is_none() || !index.fresh());
+        let value = json!({
+            "kind": index.kind,
+            "source": index.source,
+            "fetched_at": index.fetched_at,
+            "generated_at": index.generated_at,
+            "versions": index.versions,
+            "eol": index.eol,
+            "default": index.default,
+            "error": index.error,
+            "failed": index.failed,
+            "pending": pending,
+            "remote": remote_index,
+            "url": skiff_app::runtime_index::index_url(state, kind).unwrap_or_default(),
+        });
+        indexes.insert((*kind).to_string(), value);
+    }
     json!({
         "kinds": kinds,
         "default_php_version": skiff_app::sites::DEFAULT_PHP_VERSION,
+        "version_indexes": indexes,
         "apk_mirrors": mirrors,
         "apk_mirror_current": {
             "fixed": fixed,
@@ -340,6 +387,42 @@ pub(super) fn catalog_json(state: &AppState) -> serde_json::Value {
             "label": skiff_app::runtime_catalog::apk_mirror_label(&base),
         },
     })
+}
+
+/// `GET /ui/v1/runtimes/versions?kind=php|node|rust[&refresh=true]`：镜像服务提供的版本清单。
+///
+/// `refresh=true` 绕过缓存（页面「刷新版本清单」用它）；否则命中 10 分钟缓存，
+/// 失败结果按 60 秒负缓存压住重试。
+pub async fn runtime_versions(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<VersionIndexQuery>,
+) -> Result<Response, ApiError> {
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
+    let kind = q
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .unwrap_or(skiff_store::KIND_PHP);
+    // 只有已实现的类型才有清单文件；未知类型直接拒，避免拼出不存在的地址。
+    if skiff_app::runtime_index::index_file(kind).is_none() {
+        return Err(ApiError(AppError::BadRequest(format!(
+            "未知运行环境类型：{kind}"
+        ))));
+    }
+    let index = skiff_app::runtime_index::load(&state, kind, q.refresh).await;
+    write_done(json!({
+        "kind": index.kind,
+        "source": index.source,
+        "fetched_at": index.fetched_at,
+        "generated_at": index.generated_at,
+        "versions": index.versions,
+        "eol": index.eol,
+        "default": index.default,
+        "error": index.error,
+        "failed": index.failed,
+    }))
 }
 
 /// `POST /ui/v1/runtimes`：创建/安装运行环境（同 `RUNTIME_CREATE` 与 `runtime_cmd::create`）。
@@ -910,6 +993,7 @@ pub(super) fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/ui/v1/runtimes", get(runtimes).post(runtime_create))
         .route("/ui/v1/runtimes/catalog", get(runtime_catalog))
+        .route("/ui/v1/runtimes/versions", get(runtime_versions))
         .route(
             "/ui/v1/runtimes/images",
             get(runtime_images).post(runtime_images_save),

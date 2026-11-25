@@ -14,9 +14,11 @@ use skiff_server::build::{build, write};
 use skiff_server::check;
 use skiff_server::notify::{self, NotifyOptions};
 use skiff_server::release;
+use skiff_server::runtimes;
 use skiff_server::serve;
 use skiff_server::sign::{Signer, ENV_PUBLIC_KEY};
 use skiff_server::sync::{self, DirSource, HttpSource};
+use skiff_server::upstream::HttpUpstream;
 
 const HELP: &str = "\
 Skiff-server：商店清单校验、静态产物生成、签名发布、镜像同步、静态服务与发布面 API
@@ -26,6 +28,11 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
   skiff-server publish [--catalog <dir>] [--schema <dir>] [--out <dir>] [--prev <dir>]
   skiff-server check   [--catalog <dir>] [--schema <dir>] [--dist <dir>] [--prev <dir>]
                        [--require-signature] [--public-key <hex>]
+                       [--builtin-index <dir> [--channel <name>]]
+  skiff-server runtimes [--channel stable] [--catalog <dir>] [--schema <dir>]
+                       [--kinds php,node,rust] [--builtin <dir> | --no-builtin]
+                       [--per-branch 3] [--out <dir>] [--today YYYY-MM-DD]
+                       [--proxy <url>] [--prune] [--dry-run]
   skiff-server sync    --from <url|dir> --to <dir> [--channel stable] [--public-key <hex>]
   skiff-server serve   --dist <dir> [--listen 127.0.0.1:8443]
                        [--tls-cert <pem> --tls-key <pem> | --http]
@@ -48,6 +55,16 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
   --prev <dir>          上一版产物目录，用于拒绝 seq 回退 / release 的 seq 基准
   --require-signature   占位/空签名直接判失败（发布门禁用）
   --public-key <hex>    固定 Ed25519 公钥；缺省读环境变量 SKIFF_SERVER_PUBLIC_KEY
+  --builtin-index <dir> 与产物逐字节比对版本清单内置副本（通常 crates/app/assets/runtime-index）
+  --channel <name>      产物有多个渠道时指定比哪个；只用于 --builtin-index
+  --kinds <list>        runtimes 只刷这几类（逗号分隔），默认 php,node,rust
+  --builtin <dir>       runtimes 的内置副本目录，默认 crates/app/assets/runtime-index
+  --proxy <url>         runtimes 经该 HTTP 代理出网（如 http://10.66.10.22:1010）。
+                        直连不到 docker.io 时必须显式给；不读 HTTPS_PROXY 环境变量
+  --per-branch <n>      runtimes 每个发布分支保留几个版本（1–4），默认 3；与面板每大版本上限一致
+  --today <date>        runtimes 的 EOL 判定基准日（YYYY-MM-DD），默认 UTC 今天
+  --prune               runtimes 删除上游已不支持且未 yanked 的旧条目
+  --dry-run             runtimes 只报告将要做的事，不写文件
   --from <url|dir>      同步源：https:// 基地址或本地产物目录
   --to <dir>            同步目标镜像目录
   --channel <name>      渠道，默认 stable
@@ -96,6 +113,7 @@ fn run() -> Result<()> {
         Some("gen") => gen(&args[1..]),
         Some("publish") => publish(&args[1..]),
         Some("check") => check_cmd(&args[1..]),
+        Some("runtimes") => runtimes_cmd(&args[1..]),
         Some("sync") => sync_cmd(&args[1..]),
         Some("serve") => serve_cmd(&args[1..]),
         Some("api") => api_cmd(&args[1..]),
@@ -166,8 +184,16 @@ fn check_cmd(args: &[String]) -> Result<()> {
     let dist = options.get("--dist").map(Path::new);
     let prev = options.get("--prev").map(Path::new);
     let key = public_key(&options)?;
+    let builtin = options.get("--builtin-index").map(Path::new);
+    let channel = options.get("--channel").map(String::as_str);
     if key.is_some() && dist.is_none() {
         bail!("--public-key 必须配合 --dist 使用（内存生成的产物没有可验证的签名）");
+    }
+    if builtin.is_some() && dist.is_none() {
+        bail!("--builtin-index 必须配合 --dist 使用（内存生成的产物还没有回填路径）");
+    }
+    if channel.is_some() && builtin.is_none() {
+        bail!("--channel 只用于 --builtin-index；它不改变校验范围");
     }
     check::run_with_public_key(
         &catalog,
@@ -176,7 +202,132 @@ fn check_cmd(args: &[String]) -> Result<()> {
         prev,
         flags.contains("--require-signature"),
         key.as_deref(),
-    )
+    )?;
+    if let (Some(builtin), Some(dist)) = (builtin, dist) {
+        let count = check::verify_builtin_index(dist, builtin, channel)?;
+        println!("✓ 内置副本一致：{count} 份");
+    }
+    Ok(())
+}
+
+fn runtimes_cmd(args: &[String]) -> Result<()> {
+    let (parsed, flags) = parse(args, &["--prune", "--dry-run", "--no-builtin"])?;
+    let channel = parsed
+        .get("--channel")
+        .cloned()
+        .unwrap_or_else(|| "stable".to_string());
+    let kinds = match parsed.get("--kinds") {
+        Some(value) => runtimes::parse_kinds(value)?,
+        None => runtimes::all_kinds(),
+    };
+    let builtin = if flags.contains("--no-builtin") {
+        None
+    } else {
+        Some(path_option(
+            &parsed,
+            "--builtin",
+            "crates/app/assets/runtime-index",
+        ))
+    };
+    let today = parsed
+        .get("--today")
+        .cloned()
+        .unwrap_or_else(runtimes::today_utc);
+    if !is_iso_date(&today) {
+        bail!("--today 必须是 YYYY-MM-DD: {today}");
+    }
+    let per_branch = match parsed.get("--per-branch") {
+        Some(value) => value
+            .parse::<usize>()
+            .with_context(|| format!("--per-branch 必须是正整数: {value}"))?,
+        None => skiff_server::upstream::DEFAULT_PER_BRANCH,
+    };
+    if !(1..=4).contains(&per_branch) {
+        bail!("--per-branch 必须在 1–4 之间（面板每个大版本最多列 4 条）: {per_branch}");
+    }
+    let options = runtimes::Options {
+        channel: channel.clone(),
+        catalog: path_option(&parsed, "--catalog", "deploy/skiff-server/catalog"),
+        schema: path_option(&parsed, "--schema", "deploy/skiff-server/schema"),
+        kinds,
+        builtin: builtin.clone(),
+        out: parsed.get("--out").map(PathBuf::from),
+        today,
+        prune: flags.contains("--prune"),
+        dry_run: flags.contains("--dry-run"),
+        per_branch,
+    };
+    let upstream = match parsed.get("--proxy") {
+        Some(url) => HttpUpstream::with_proxy(url)?,
+        None => HttpUpstream::new(),
+    };
+    let report = runtimes::run(&upstream, &options)?;
+
+    println!(
+        "✓ 运行环境目录{}（渠道 {channel}）",
+        if options.dry_run {
+            "演练完成，未写文件"
+        } else {
+            "已刷新"
+        }
+    );
+    for (kind, item) in &report.kinds {
+        if item.versions.is_empty() {
+            println!("  {kind:<5} 无可用版本");
+        } else {
+            println!(
+                "  {kind:<5} {} 个版本：{}",
+                item.versions.len(),
+                item.versions.join(" / ")
+            );
+        }
+        println!(
+            "        条目 新增 {} / 更新 {} / 未变 {}；清单 {}",
+            item.added,
+            item.updated,
+            item.unchanged,
+            match item.listed {
+                Some(count) => format!("{count} 条"),
+                None if options.dry_run => "未生成（演练）".to_string(),
+                None => "未产出".to_string(),
+            }
+        );
+        for skipped in &item.skipped {
+            eprintln!("        跳过 {skipped}");
+        }
+    }
+    if let Some(builtin) = &builtin {
+        let state = if options.dry_run {
+            "演练未检查"
+        } else if report.builtin_written {
+            "已更新"
+        } else {
+            "无变化"
+        };
+        println!("  内置副本 {}（{state}）", builtin.display());
+    }
+    if let Some(out) = &options.out {
+        println!(
+            "  产物 {} 个文件 → {}",
+            report.artifact_files,
+            out.display()
+        );
+    }
+    if !report.pruned.is_empty() {
+        println!("  清理条目：{}", report.pruned.join(" / "));
+    }
+    Ok(())
+}
+
+fn is_iso_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
 }
 
 fn sync_cmd(args: &[String]) -> Result<()> {
@@ -213,6 +364,12 @@ fn sync_cmd(args: &[String]) -> Result<()> {
             "未变化"
         }
     );
+    if report.runtime_index_written > 0 || report.runtime_index_removed > 0 {
+        println!(
+            "  版本清单：写入 {} 份 / 清理残留 {} 份",
+            report.runtime_index_written, report.runtime_index_removed
+        );
+    }
     Ok(())
 }
 

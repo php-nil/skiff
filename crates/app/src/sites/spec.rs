@@ -309,6 +309,48 @@ pub(crate) fn pinned_image_ref(image: &str, digest: &str) -> String {
     }
 }
 
+/// 拉取镜像的决策：要不要拉、按什么引用拉、拉失败能不能退让。
+///
+/// 抽成纯函数是为了能测：`ensure_runtime_image` 依赖真实 Docker，本机与 CI 都不便构造。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ImagePullPlan {
+    /// 本地镜像与登记 digest 一致，直接复用，不发拉取请求。
+    Reuse(String),
+    /// 按 `pull_ref` 拉取；`fallback` 非空表示「未固定版本」，拉取失败可沿用该本地镜像。
+    Pull {
+        pull_ref: String,
+        fallback: Option<String>,
+    },
+}
+
+/// 决定镜像从哪里来。
+///
+/// 目录里的版本 tag 是浮动的（`php:8.5-fpm-alpine`），**未登记 digest 就一定要拉**：
+/// 本地那份可能是旧补丁号（8.5.13 发布后本地仍是 8.5.12）。登记了 digest 才按 digest
+/// 对齐——同一实例重建保持同一版本，tag 漂移时换回登记版本。
+pub(crate) fn plan_image_pull(
+    image: &str,
+    registered_digest: &str,
+    local_digest: Option<&str>,
+) -> ImagePullPlan {
+    let registered = digest_sha256(registered_digest);
+    if registered.is_empty() {
+        return ImagePullPlan::Pull {
+            pull_ref: image.to_string(),
+            fallback: local_digest.map(str::to_string),
+        };
+    }
+    if let Some(local) = local_digest {
+        if digest_sha256(local) == registered {
+            return ImagePullPlan::Reuse(local.to_string());
+        }
+    }
+    ImagePullPlan::Pull {
+        pull_ref: pinned_image_ref(image, registered_digest),
+        fallback: None,
+    }
+}
+
 /// PHP 实例 socket 的容器内路径：`/www/runtime/<kind>/<name>/php-fpm.sock`。
 pub fn runtime_container_socket(kind: &str, name: &str) -> String {
     format!("{CONTAINER_RUNTIME_ROOT}/{kind}/{name}/php-fpm.sock")
@@ -495,11 +537,17 @@ server.listen(port, host, () => {{
 }
 
 impl AppState {
-    /// 拉镜像：先 `inspect`，本地已有就直接回填 digest 并跳过 `ImagePull`。
+    /// 准备运行环境镜像：登记了 digest 的按 digest 对齐，未登记的按 tag 拉取取最新补丁。
     ///
-    /// - 登记 digest 为空（新环境）：采用本地 tag 的真实 digest 落库，不再冷拉。
-    /// - 登记 digest 与本地一致：跳过拉取。
+    /// - 登记 digest 为空（新环境）：**按 tag 拉取**。目录里的 tag 是浮动的
+    ///   （`php:8.5-fpm-alpine`），本地镜像可能停在旧补丁号（8.5.12 vs 8.5.13）；
+    ///   直接采用本地镜像等于把「首次拉到的那一版」当成本版本永久复用，用户看到的
+    ///   安装结果就永远比 Docker Hub 上的最新补丁慢一拍。镜像已最新时 `pull` 只做
+    ///   manifest 校验，代价很小。
+    /// - 登记 digest 与本地一致：跳过拉取（同一实例重建保持同一版本，可复现）。
     /// - 登记 digest 与本地不一致（tag 漂移）：按登记 digest 拉取固定版本并提示。
+    /// - 浮动 tag 拉取失败（离线 / 镜像源不可达）且本地已有镜像：沿用本地镜像并记警告，
+    ///   不把「装不上」升级成阻断失败——但必须留痕，否则又变成静默停旧补丁号。
     ///
     /// 注意：`primary_digest_for` 按镜像引用（仓库名）匹配 `repo_digests`，同一镜像存在
     /// 多个仓库条目时不会取错；Docker 的 `RepoDigests` 不含 tag，故无法按 tag 精确匹配。
@@ -516,44 +564,45 @@ impl AppState {
             .await
             .ok()
             .and_then(|i| i.primary_digest_for(image));
-        if let Some(local_digest) = &local {
-            if registered.is_empty() {
+        let (pull_ref, fallback) = match plan_image_pull(image, registered_digest, local.as_deref())
+        {
+            ImagePullPlan::Reuse(digest) => {
                 self.job_note(
                     job_id,
-                    &format!(
-                        "镜像 {image} 本地已存在（{local_digest}），回填 image_digest 并跳过拉取"
-                    ),
+                    &format!("镜像 {image} 已存在且与登记 digest 一致（{digest}），跳过拉取"),
                 )
                 .await;
-                return Ok(local_digest.clone());
+                return Ok(digest);
             }
-            if digest_sha256(local_digest) == registered {
-                self.job_note(
-                    job_id,
-                    &format!("镜像 {image} 已存在且与登记 digest 一致（{local_digest}），跳过拉取"),
-                )
-                .await;
-                return Ok(local_digest.clone());
+            ImagePullPlan::Pull { pull_ref, fallback } => (pull_ref, fallback),
+        };
+        if !registered.is_empty() {
+            match &local {
+                Some(local_digest) => {
+                    self.job_note(
+                        job_id,
+                        &format!(
+                            "镜像 {image} 与登记值漂移：本地 {local_digest}，登记 {registered_digest}；按登记 digest 拉取"
+                        ),
+                    )
+                    .await;
+                }
+                None => {
+                    self.job_note(
+                        job_id,
+                        &format!("本地无镜像 {image}，按登记 digest 拉取固定版本"),
+                    )
+                    .await;
+                }
             }
+        } else if let Some(local_digest) = &local {
+            // 有本地镜像也照拉：浮动 tag 的补丁号只有拉到才知道。
             self.job_note(
                 job_id,
-                &format!(
-                    "镜像 {image} 与登记值漂移：本地 {local_digest}，登记 {registered_digest}；按登记 digest 拉取"
-                ),
-            )
-            .await;
-        } else if !registered.is_empty() {
-            self.job_note(
-                job_id,
-                &format!("本地无镜像 {image}，按登记 digest 拉取固定版本"),
+                &format!("镜像 {image} 本地已存在（{local_digest}），仍按 tag 拉取以取最新补丁"),
             )
             .await;
         }
-        let pull_ref = if registered.is_empty() {
-            image.to_string()
-        } else {
-            pinned_image_ref(image, registered_digest)
-        };
         self.job_advance(
             job_id,
             "拉取镜像",
@@ -561,13 +610,25 @@ impl AppState {
             &format!("拉取镜像 {pull_ref}（首次可能较慢）"),
         )
         .await;
-        self.kernel_execute(
-            Verb::ImagePull,
-            None,
-            DockerParams::ImagePull(pull_ref.clone()),
-        )
-        .await
-        .map_err(|e| format!("拉取 {pull_ref} 失败：{e}"))?;
+        if let Err(e) = self
+            .kernel_execute(
+                Verb::ImagePull,
+                None,
+                DockerParams::ImagePull(pull_ref.clone()),
+            )
+            .await
+        {
+            // 只有「未固定 + 本地已有」才允许退让：固定 digest 的实例必须换回登记版本。
+            if let Some(local_digest) = fallback {
+                self.job_note(
+                    job_id,
+                    &format!("拉取 {image} 失败（{e}）；沿用本地镜像 {local_digest}"),
+                )
+                .await;
+                return Ok(local_digest);
+            }
+            return Err(format!("拉取 {pull_ref} 失败：{e}"));
+        }
         let digest = self
             .docker()
             .inspect_image(&pull_ref)

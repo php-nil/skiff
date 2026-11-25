@@ -59,7 +59,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::containers::exec_ws),
         )
         .route(
-            &format!("/{p}/jobs/{{id}}/logs/stream"),
+            &format!("/{p}/tasks/jobs/{{id}}/logs/stream"),
             get(handlers::jobs::logs_sse),
         );
 

@@ -39,6 +39,8 @@ pub fn web_schema(data: &Value, view: &str, query: &Value, logs: Option<&Value>)
         _ => "status",
     };
     let mut body = Vec::new();
+    // 页头主操作：只有状态视图有（启停 / 重启 / 安装）。
+    let mut actions = Vec::new();
     if !flag(&status, "/available") {
         let reason = {
             let r = text(&status, "/reason");
@@ -57,7 +59,7 @@ pub fn web_schema(data: &Value, view: &str, query: &Value, logs: Option<&Value>)
     }
 
     match view {
-        "status" => build_status(data, &status, &mut body),
+        "status" => build_status(data, &status, &mut body, &mut actions),
         "config" => build_config(data, &mut body),
         "logs" => build_logs(query, logs, &mut body),
         _ => build_modules(data, &mut body),
@@ -69,10 +71,10 @@ pub fn web_schema(data: &Value, view: &str, query: &Value, logs: Option<&Value>)
         "modules" => "nginx -V 编译参数与模块清单",
         _ => "OpenResty 运行状态、安装进度与容器运维",
     };
-    kit::page("Web 服务", subtitle, body)
+    kit::page_with_actions("Web 服务", subtitle, actions, body)
 }
 
-fn build_status(data: &Value, status: &Value, body: &mut Vec<Value>) {
+fn build_status(data: &Value, status: &Value, body: &mut Vec<Value>, actions: &mut Vec<Value>) {
     let container_state = text(status, "/container_state");
     body.push(json!({
         "type": "grid",
@@ -173,185 +175,214 @@ fn build_status(data: &Value, status: &Value, body: &mut Vec<Value>) {
     ));
 
     let install = data.get("install").cloned().unwrap_or(Value::Null);
-    if let Some(node) = install_node(&install) {
-        body.push(node);
-        let job_id = text(&install, "/job_id");
-        if !job_id.is_empty() {
-            body.push(kit::action_button(
-                "查看任务详情",
-                vec![json!({ "type": "skiffQueryNav", "props": { "path": format!("${{prefix}}/jobs/{job_id}"), "query": {} } })],
-                "text",
-            ));
-        }
-        // 步骤表按 2 秒自动刷新：旧实现在壳脚本里定时改 DOM，改成 `source.autoRefresh`
-        // 后由框架统一轮询，节点隐藏或离开页面时自动停止。
-        if flag(&install, "/running") {
-            let steps: Vec<Value> = install
-                .get("steps")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let _ = steps;
-            let mut table = kit::list_table(
-                json!([
-                    { "key": "name", "label": "步骤" },
-                    {
-                        "key": "state",
-                        "label": "状态",
-                        "text": "${state === 'ok' ? '完成' : state === 'running' ? '进行中' : state === 'failed' ? '失败' : '待执行'}"
-                    },
-                    { "key": "detail", "label": "说明" },
-                    { "key": "started_at", "label": "开始" }
-                ]),
-                &format!("{API_BASE}/web/install"),
-                "name",
-                json!(null),
-                kit::TableOpts {
-                    empty_text: Some("还没有步骤".to_string()),
-                    ..Default::default()
-                },
-            );
-            table["source"]["autoRefresh"] = json!(2000);
-            table["props"]["itemsPath"] = json!("data.steps");
-            table["props"]["pagination"] = json!(false);
-            table["props"]["paging"] = json!(null);
-            body.push(table);
-        }
-    }
+    let install_running = flag(&install, "/running");
+    let installed = !container_state.is_empty() && container_state != "missing";
+    let running = container_state == "running";
 
     if flag(data, "/can_admin") {
-        let installed = !container_state.is_empty() && container_state != "missing";
-        let running = container_state == "running";
-        let mut ops = Vec::new();
-        if !installed {
-            if !flag(&install, "/running") {
-                ops.push(web_button("安装 Web 服务", "install", "primary", "flat"));
-            }
-        } else {
-            ops.push(web_button(
+        // 启停与重启是日常运维动作，跟标题同一行放右上角；破坏性动作留在正文卡片。
+        if installed {
+            actions.push(web_button(
                 if running { "停止" } else { "启动" },
                 if running { "stop" } else { "start" },
                 "",
                 "tonal",
             ));
-            ops.push(web_button("重启", "restart", "", "tonal"));
-            ops.push(web_button("重新安装", "rebuild", "", "tonal"));
-            ops.push(web_button("删除容器", "delete", "danger", "tonal"));
+            actions.push(web_button("重启", "restart", "", "tonal"));
+        } else if !install_running {
+            actions.push(web_button("安装 Web 服务", "install", "primary", "flat"));
         }
-        if flag(&install, "/running") {
-            ops.push(kit::action_button(
-                "刷新安装进度",
-                vec![json!({ "type": "skiffQueryNav", "props": { "path": "${prefix}/sites/web", "query": {} } })],
-                "tonal",
-            ));
+    }
+
+    // 安装过程分两态：
+    // - 进行中 / 失败 / 中断 → 顶部一行状态（告警条）+ 步骤表 + 发起人小字；
+    // - 已完成 → 页尾一行摘要，不占首屏（见 `install_summary`）。
+    let succeeded = install_succeeded(&install);
+    if !succeeded {
+        if let Some(node) = install_alert(&install) {
+            body.push(node);
+            if !text(&install, "/job_id").is_empty() {
+                body.push(job_detail_button(&install));
+            }
+            if !steps_of(&install).is_empty() {
+                body.push(install_steps_table(install_running));
+            }
+            if let Some(meta) = install_meta(&install) {
+                body.push(meta);
+            }
+            if install_running && flag(data, "/can_admin") {
+                body.push(kit::action_button(
+                    "刷新安装进度",
+                    vec![json!({ "type": "skiffQueryNav", "props": { "path": "${prefix}/sites/web", "query": {} } })],
+                    "tonal",
+                ));
+            }
         }
+    }
+
+    if installed && flag(data, "/can_admin") {
         body.push(kit::card(
-            "容器运维",
+            "重新安装与删除",
             vec![
                 kit::text_line(
-                    "Web 服务（OpenResty）是站点依赖的基础容器；停止或删除会立即影响所有站点。语言运行环境在「运行环境」页单独管理。",
+                    "重新安装会按当前配置重建 OpenResty 容器；删除容器后所有站点立即不可访问。两者都保留配置与站点目录。语言运行环境在「运行环境」页单独管理。",
                 ),
-                kit::flex(8, ops),
+                kit::flex(
+                    8,
+                    vec![
+                        web_button("重新安装", "rebuild", "", "tonal"),
+                        web_button("删除容器", "delete", "danger", "tonal"),
+                    ],
+                ),
             ],
         ));
     }
+
+    // 完成态收敛成页尾一行摘要：安装过程细节进任务详情，不占首屏视觉重心。
+    if succeeded {
+        body.push(install_summary(&install));
+    }
 }
 
-fn install_node(install: &Value) -> Option<Value> {
-    let running = flag(install, "/running");
-    let error = text(install, "/error");
-    let has_steps = install
+/// 步骤清单；`steps` 缺失或为空时返回空切片。
+fn steps_of(install: &Value) -> &[Value] {
+    install
         .get("steps")
         .and_then(Value::as_array)
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
-    if !(running || !error.is_empty() || has_steps) {
-        return None;
-    }
-    let interrupted = flag(install, "/interrupted");
-    let (kind, title) = if running {
-        ("info", "正在安装 Web 服务")
-    } else if interrupted {
-        ("warning", "安装已中断")
-    } else if !error.is_empty() {
-        ("danger", "安装失败")
-    } else {
-        ("success", "安装已完成")
-    };
-    Some(kit::alert(kind, title, install_text(install)))
+        .map(Vec::as_slice)
+        .unwrap_or_default()
 }
 
-fn install_text(install: &Value) -> String {
-    let mut lines = Vec::new();
-    if flag(install, "/running") {
-        lines.push(format!(
-            "状态：{}（{}%）",
-            {
-                let p = text(install, "/phase_label");
-                if p.is_empty() {
-                    "准备中"
-                } else {
-                    p
-                }
-            },
-            install
-                .pointer("/progress")
-                .and_then(Value::as_i64)
-                .unwrap_or(0)
-        ));
+/// 安装是否已成功结束：非进行中、未中断、无错误，且确实留下步骤（从未安装过时为假）。
+fn install_succeeded(install: &Value) -> bool {
+    !flag(install, "/running")
+        && !flag(install, "/interrupted")
+        && text(install, "/error").is_empty()
+        && !steps_of(install).is_empty()
+}
+
+/// 进行中 / 失败 / 中断时的顶部告警；已完成不占顶部（见 [`install_summary`]）。
+fn install_alert(install: &Value) -> Option<Value> {
+    let (kind, title) = if flag(install, "/running") {
+        ("info", "正在安装 Web 服务")
     } else if flag(install, "/interrupted") {
-        lines.push("状态：已中断".to_string());
+        ("warning", "安装已中断")
     } else if !text(install, "/error").is_empty() {
-        lines.push("状态：失败".to_string());
-    } else if flag(install, "/done") {
-        lines.push("状态：已完成".to_string());
+        ("danger", "安装失败")
     } else {
-        lines.push("状态：待安装".to_string());
+        return None;
+    };
+    Some(kit::alert(kind, title, install_headline(install)))
+}
+
+/// 告警正文只放**一行**状态。
+///
+/// budding 的 alert 正文是单个文本节点（不吃 `\n`），多行拼装会挤成一大段——这正是
+/// 「安装进度挤成一坨」的老问题。步骤进表格、发起人进小字，告警只留结论。
+fn install_headline(install: &Value) -> String {
+    if flag(install, "/running") {
+        let phase = match text(install, "/phase_label") {
+            "" => "准备中",
+            label => label,
+        };
+        let progress = install
+            .pointer("/progress")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        return format!("状态：{phase}（{progress}%）");
     }
-    let error = text(install, "/error");
-    if !error.is_empty() {
-        lines.push(format!("失败原因：{error}"));
+    if flag(install, "/interrupted") {
+        return "状态：已中断（服务重启等原因），可重新安装".to_string();
     }
-    lines.push(format!(
-        "发起人：{}（{}） · 来源 IP：{}",
+    format!("失败原因：{}", text(install, "/error"))
+}
+
+/// 发起人 / 来源 IP / 开始时间：放步骤表下面一行小字。
+fn install_meta(install: &Value) -> Option<Value> {
+    let (by, ip, started) = (
+        text(install, "/created_by"),
+        text(install, "/requester_ip"),
+        text(install, "/started_at"),
+    );
+    if by.is_empty() && ip.is_empty() && started.is_empty() {
+        return None;
+    }
+    Some(kit::small_text(format!(
+        "发起人 {}（{}） · 来源 IP {} · 开始 {}",
+        kit::or_dash(by),
+        kit::or_dash(text(install, "/created_by_role")),
+        kit::or_dash(ip),
+        kit::or_dash(started)
+    )))
+}
+
+/// 已完成安装的摘要卡（页尾）：一行结果 + 任务详情入口。
+///
+/// 旧实现把「安装已完成」连同每一步明细塞进顶部全宽 success 告警，安装成功后首屏
+/// 被一大块绿色提示占住，而它其实是历史信息。改成低调摘要，过程要看就进任务详情。
+fn install_summary(install: &Value) -> Value {
+    let line = format!(
+        "{} · {} 步 · 耗时 {} · 发起人 {}（{}） · 结束 {}",
+        if flag(install, "/done") {
+            "已完成"
+        } else {
+            "已结束"
+        },
+        steps_of(install).len(),
+        kit::or_dash(text(install, "/duration")),
         kit::or_dash(text(install, "/created_by")),
         kit::or_dash(text(install, "/created_by_role")),
-        kit::or_dash(text(install, "/requester_ip"))
-    ));
-    lines.push(format!(
-        "开始：{} · 结束：{} · 耗时：{}",
-        kit::or_dash(text(install, "/started_at")),
         kit::or_dash(text(install, "/finished_at")),
-        kit::or_dash(text(install, "/duration"))
-    ));
-    if let Some(steps) = install.get("steps").and_then(Value::as_array) {
-        for step in steps {
-            let state = match text(step, "/state") {
-                "ok" => "完成",
-                "running" => "进行中",
-                "failed" => "失败",
-                _ => "待执行",
-            };
-            let detail = text(step, "/detail");
-            let started = text(step, "/started_at");
-            lines.push(format!(
-                "· {}：{}{}{}",
-                text(step, "/name"),
-                state,
-                if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!("（{detail}）")
-                },
-                if started.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{started}]")
-                }
-            ));
-        }
+    );
+    let mut body = vec![kit::small_text(line)];
+    if !text(install, "/job_id").is_empty() {
+        body.push(job_detail_button(install));
     }
-    lines.join("\n")
+    kit::card("最近一次安装", body)
+}
+
+/// 安装步骤表；`auto_refresh` 只在进行中开启（失败态是一次性快照，不必轮询）。
+fn install_steps_table(auto_refresh: bool) -> Value {
+    let mut table = kit::list_table(
+        json!([
+            { "key": "name", "label": "步骤" },
+            {
+                "key": "state",
+                "label": "状态",
+                "text": "${state === 'ok' ? '完成' : state === 'running' ? '进行中' : state === 'failed' ? '失败' : '待执行'}"
+            },
+            { "key": "detail", "label": "说明" },
+            { "key": "started_at", "label": "开始" }
+        ]),
+        &format!("{API_BASE}/web/install"),
+        "name",
+        json!(null),
+        kit::TableOpts {
+            empty_text: Some("还没有步骤".to_string()),
+            ..Default::default()
+        },
+    );
+    if auto_refresh {
+        // 进行中按 2 秒轮询：由框架统一驱动，节点隐藏或离开页面时自动停止。
+        table["source"]["autoRefresh"] = json!(2000);
+    }
+    table["props"]["itemsPath"] = json!("data.steps");
+    table["props"]["pagination"] = json!(false);
+    table["props"]["paging"] = json!(null);
+    table
+}
+
+/// 作业详情入口。作业早已收编到「任务审计 → 任务中心」，路径是
+/// `/tasks/jobs/<id>`；旧实现写 `/jobs/<id>`（已被删除的旧路径）。
+fn job_detail_button(install: &Value) -> Value {
+    let job_id = text(install, "/job_id");
+    kit::action_button(
+        "查看任务详情",
+        vec![
+            json!({ "type": "skiffQueryNav", "props": { "path": format!("${{prefix}}/tasks/jobs/{job_id}"), "query": {} } }),
+        ],
+        "text",
+    )
 }
 
 fn web_button(text: &str, op: &str, color: &str, variant: &str) -> Value {
@@ -603,4 +634,153 @@ fn build_modules(data: &Value, body: &mut Vec<Value>) {
         "模块",
         vec![kit::detail_lines("nginx -V", lines)],
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page_data(container_state: &str, install: Value) -> Value {
+        json!({
+            "status": { "available": true, "container_state": container_state },
+            "install": install,
+            "can_admin": true,
+            "config": {},
+            "modules": {},
+        })
+    }
+
+    fn action_labels(page: &Value) -> Vec<String> {
+        page["content"]["actions"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|b| b["props"]["text"].as_str().unwrap_or("").to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn card_titles(page: &Value) -> Vec<String> {
+        page["body"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|n| n["type"] == "card")
+                    .map(|n| n["props"]["title"].as_str().unwrap_or("").to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 安装完成后首屏不再出现整块绿色告警：结论收敛成页尾摘要卡，细节进任务详情。
+    #[test]
+    fn finished_install_collapses_to_footer_summary() {
+        let install = json!({
+            "job_id": "j1",
+            "running": false, "done": true, "interrupted": false, "error": "",
+            "duration": "16 秒", "created_by": "admin", "created_by_role": "admin",
+            "finished_at": "2026-11-24T20:10:00+08:00",
+            "steps": [{ "key": "check", "name": "检查 Docker", "state": "ok", "detail": "" }],
+        });
+        let page = web_schema(&page_data("running", install), "status", &json!({}), None);
+        let body = page["body"].as_array().expect("页面必须有正文");
+        assert!(
+            !body
+                .iter()
+                .any(|n| n["type"] == "alert" && n["props"]["type"] == "success"),
+            "完成态不得再占用顶部告警位"
+        );
+        let last = body.last().expect("摘要卡必须在页尾");
+        assert_eq!(last["props"]["title"], "最近一次安装");
+        let summary = last["content"]["body"].to_string();
+        assert!(summary.contains("已完成") && summary.contains("16 秒"));
+        assert!(
+            summary.contains("/tasks/jobs/j1"),
+            "任务详情入口必须指向 /tasks/jobs/<id>（旧 /jobs 路径已下线）"
+        );
+        // 启停与重启在页头，正文不再重复。
+        assert_eq!(action_labels(&page), vec!["停止", "重启"]);
+    }
+
+    /// 进行中仍然是顶部告警 + 轮询步骤表，且此时不提供「安装」入口。
+    #[test]
+    fn running_install_keeps_progress_alert_and_steps_table() {
+        let install = json!({
+            "job_id": "j2",
+            "running": true, "done": false, "interrupted": false, "error": "",
+            "phase_label": "拉取镜像", "progress": 30,
+            "steps": [{ "key": "pull", "name": "拉取镜像", "state": "running", "detail": "" }],
+        });
+        let page = web_schema(&page_data("missing", install), "status", &json!({}), None);
+        let body = page["body"].as_array().expect("页面必须有正文");
+        let alert = body
+            .iter()
+            .find(|n| n["type"] == "alert" && n["props"]["title"] == "正在安装 Web 服务")
+            .expect("进行中必须有顶部进度告警");
+        // 告警正文只有一行状态：多行明细会被 budding 的 alert 折叠成一段。
+        assert_eq!(alert["props"]["text"], json!("状态：拉取镜像（30%）"));
+        let table = body
+            .iter()
+            .find(|n| n["type"] == "table")
+            .expect("进行中必须给出步骤表");
+        assert_eq!(table["source"]["autoRefresh"], json!(2000));
+        assert_eq!(table["props"]["itemsPath"], json!("data.steps"));
+        assert!(card_titles(&page).iter().all(|t| t != "最近一次安装"));
+        assert!(
+            action_labels(&page).is_empty(),
+            "安装进行中不得再给「安装 Web 服务」入口"
+        );
+    }
+
+    /// 失败态：顶部 danger 告警 + 正文可点进任务详情，不出现完成摘要。
+    #[test]
+    fn failed_install_keeps_error_alert() {
+        let install = json!({
+            "job_id": "j3",
+            "running": false, "done": false, "interrupted": false,
+            "error": "宿主端口 80 已被占用",
+            "steps": [{ "key": "check", "name": "检查 Docker 与 80 端口", "state": "failed", "detail": "" }],
+        });
+        let page = web_schema(&page_data("missing", install), "status", &json!({}), None);
+        let body = page["body"].as_array().expect("页面必须有正文");
+        let alert = body
+            .iter()
+            .find(|n| n["type"] == "alert" && n["props"]["type"] == "danger")
+            .expect("失败必须有 danger 告警");
+        assert!(alert["props"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("宿主端口 80 已被占用"));
+        // 失败态的步骤表是一次性快照：不轮询，但要看得到哪一步炸了。
+        let table = body
+            .iter()
+            .find(|n| n["type"] == "table")
+            .expect("失败态也要给出步骤表");
+        assert!(
+            table["source"].get("autoRefresh").is_none(),
+            "失败态不该继续轮询"
+        );
+        assert!(
+            body.iter()
+                .any(|n| n["type"] == "button" && n["props"]["text"] == "查看任务详情"),
+            "失败态必须能进任务详情"
+        );
+        assert!(card_titles(&page).iter().all(|t| t != "最近一次安装"));
+        assert_eq!(action_labels(&page), vec!["安装 Web 服务"]);
+    }
+
+    /// 已安装但容器未运行：页头给「启动」，不再出现「停止」。
+    #[test]
+    fn stopped_container_offers_start_in_header() {
+        let page = web_schema(
+            &page_data("exited", json!({ "running": false, "steps": [] })),
+            "status",
+            &json!({}),
+            None,
+        );
+        assert_eq!(action_labels(&page), vec!["启动", "重启"]);
+        // 「重新安装 / 删除」留在正文卡片，不进页头。
+        assert!(card_titles(&page).iter().any(|t| t == "重新安装与删除"));
+    }
 }

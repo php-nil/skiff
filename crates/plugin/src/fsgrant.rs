@@ -1,6 +1,6 @@
 //! 宿主路径授权（`path:` 对象 grant）的唯一判定实现。
 //!
-//! 官方插件（files / nginx / monitor）需要在 `data/` 之外读写宿主文件。能力面
+//! 官方插件（monitor / ftp / sources）需要在 `data/` 之外读写宿主文件。能力面
 //! 仍然是同一条 `fs` 路由（权限串也不变：`fs:read` / `fs:write` / `fs:list` /
 //! `fs:mkdir` / `fs:remove` / `fs:rename`），但**绝对路径分支**额外要求
 //! 安装时确认过的 `path:` 对象授权根命中——「有 fs:read」和「能读宿主 /etc/nginx」
@@ -247,14 +247,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let www = dir.path().join("www");
         let data = www.join("skiff");
-        std::fs::create_dir_all(data.join("plugins/com.skiff.files")).unwrap();
+        std::fs::create_dir_all(data.join("plugins/com.skiff.demo")).unwrap();
         std::fs::create_dir_all(data.join("official")).unwrap();
         std::fs::write(data.join("skiff.db"), b"db").unwrap();
         std::fs::create_dir_all(www.join("sites")).unwrap();
 
         let data = std::fs::canonicalize(&data).unwrap();
         let db = std::fs::canonicalize(data.join("skiff.db")).unwrap();
-        let plugin = std::fs::canonicalize(data.join("plugins/com.skiff.files")).unwrap();
+        let plugin = std::fs::canonicalize(data.join("plugins/com.skiff.demo")).unwrap();
         let site = std::fs::canonicalize(www.join("sites")).unwrap();
 
         assert!(is_protected(&data, &data));
@@ -270,7 +270,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let www = dir.path().join("www");
         let data = www.join("skiff");
-        std::fs::create_dir_all(data.join("plugins/com.skiff.files/data")).unwrap();
+        std::fs::create_dir_all(data.join("plugins/com.skiff.demo/data")).unwrap();
         std::fs::write(data.join("skiff.db"), b"db").unwrap();
         std::fs::create_dir_all(www.join("normal")).unwrap();
 
@@ -289,7 +289,7 @@ mod tests {
         assert!(resolve(&roots, &db.display().to_string(), true).is_ok());
         assert!(is_protected(&data, &db));
 
-        let plugin_file = data.join("plugins/com.skiff.files/data/x");
+        let plugin_file = data.join("plugins/com.skiff.demo/data/x");
         assert!(resolve(&roots, &plugin_file.display().to_string(), true).is_ok());
         assert!(is_protected(&data, &plugin_file));
     }

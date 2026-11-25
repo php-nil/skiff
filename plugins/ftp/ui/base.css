@@ -35,10 +35,9 @@ html[data-theme="light"] {
 }
 body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
        background: var(--ui-bg); color: var(--ui-text); }
-h1 { font-size: 18px; margin: 0 0 4px; }
 h2 { font-size: 14px; margin: 18px 0 8px; }
 .sub { color: var(--ui-muted); font-size: 12px; margin: 0 0 12px; }
-/* 对齐内核 UI 基准 §2/§4：标题 + 副标题在左，主操作固定在右上角。 */
+/* 对齐内核 UI 基准 §2/§4：副标题在左，主操作固定在右上角；页面级标题由内核路径条给。 */
 .page-head { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .page-head > .sub { flex: 1 1 320px; margin: 0; }
 .page-head .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

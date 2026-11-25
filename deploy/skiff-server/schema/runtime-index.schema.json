@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skiff.example/schema/runtime-index.schema.json",
+  "title": "运行环境版本清单（skiff.server.runtime-index/v1）",
+  "description": "面板新建运行环境时的可选版本来源。路径固定为 channels/<channel>/runtime-index/<kind>.json（php / node / rust 各一份），由 build 从该渠道 runtimes 条目按 kind 分组生成；没有条目的类型不产出，面板取到 404 时回退内置副本（PHP）或目录大版本（Node.js / Rust）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "channel", "generated_at", "versions"],
+  "properties": {
+    "schema": { "const": "skiff.server.runtime-index/v1" },
+    "kind": { "enum": ["php", "node", "rust"] },
+    "channel": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "generated_at": { "type": "string", "minLength": 20, "maxLength": 20 },
+    "versions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version"],
+        "properties": {
+          "version": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "eol": { "type": ["string", "null"], "maxLength": 10 },
+          "default": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

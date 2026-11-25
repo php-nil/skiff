@@ -101,7 +101,7 @@ pub async fn read_json(req: Request<Body>) -> Value {
 
 /// 审计附加字段：命中的授权根 + 站点域名。
 ///
-/// 站点文件插件只拿 `path:/www/sites/<域名>/index`，能力面审计主体是 `plugin:<id>`；
+/// 站点内容目录只拿 `path:/www/sites/<域名>/...`，能力面审计主体是 `plugin:<id>`；
 /// 为了让定责可读，把「哪个授权根、哪个站点」写进 `detail`。这只影响审计文本，
 /// 不改变授权判定（越界仍由 `fsops::resolve` 拒绝）。
 fn audit_scope<H: CapabilityHost>(host: &H, id: &str, target: &str) -> String {

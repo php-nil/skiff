@@ -1,0 +1,9 @@
+{
+  "kind": "rust",
+  "version": "1.100.0",
+  "image": "rust:1.100.0-slim",
+  "image_digest": "sha256:3b199fd6db7d709274df56565b8f4003f9e30d7bfcff9d53148c86053b7855e2",
+  "eol": null,
+  "api_min": "1.0",
+  "default": true
+}

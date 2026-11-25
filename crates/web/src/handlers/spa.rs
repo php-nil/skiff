@@ -117,9 +117,7 @@ pub fn theme_css(theme: &skiff_app::theme::Theme) -> String {
 
 /// 可回落到壳页的页面前缀（不含入口根，根单独精确匹配）。
 /// 与 `docs/contract/URL_CONTRACT.md` §2.1 的表一一对应，增删必须同步契约与测试。
-const SHELL_PAGES: &[&str] = &[
-    "sites", "docker", "files", "plugins", "settings", "tasks", "jobs",
-];
+const SHELL_PAGES: &[&str] = &["sites", "docker", "files", "plugins", "settings", "tasks"];
 
 /// 路径是否命中壳页白名单（按路径段边界匹配）。
 pub fn is_shell_path(prefix: &str, path: &str) -> bool {
@@ -316,7 +314,11 @@ mod tests {
         assert!(is_shell_path("p", "/p/sites"));
         assert!(is_shell_path("p", "/p/sites/42/anything"));
         assert!(is_shell_path("p", "/p/files/a/b"));
-        assert!(is_shell_path("p", "/p/jobs/1/logs/x"));
+        assert!(is_shell_path("p", "/p/tasks/jobs/1/logs/x"));
+        assert!(
+            !is_shell_path("p", "/p/jobs/1/logs/x"),
+            "/jobs 已收编到 /tasks 下"
+        );
         // 前缀相同但不是整段：不得命中
         assert!(!is_shell_path("p", "/p/sitesfoo"));
         assert!(!is_shell_path("p", "/pp/sites"));

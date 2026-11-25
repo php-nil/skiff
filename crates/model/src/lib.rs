@@ -13,6 +13,7 @@
 
 use std::fmt;
 
+mod audit;
 mod cidr;
 mod container;
 mod error;
@@ -23,6 +24,7 @@ mod scope;
 mod site;
 pub mod url;
 mod verb;
+pub use audit::AuditCategory;
 pub use cidr::Cidr;
 pub use container::{
     short_id, Actor, ContainerSpec, Healthcheck, Mount, ObjectRef, PortMapping, ResourceLimits,

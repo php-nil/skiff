@@ -663,71 +663,68 @@ async fn login_rejects_tampered_token() {
     .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
-/// 站点文件插件启用后挂「网站」一级，与「工具 → 文件管理」并存、不抢位。
+/// 任务审计一级：计划任务 / 任务中心 / 审计日志同组；工具分组不再重复挂任务入口。
+/// viewer 无 `AuditRead`，只能看到前两项，但一级分组仍然保留。
 #[tokio::test]
-async fn site_files_plugin_menu_hangs_under_sites() {
+async fn task_audit_group_collects_tasks_jobs_and_audit() {
     let h = harness();
-    let manifest = format!(
-        r#"id = "com.skiff.files"
-name = "站点文件"
-version = "0.1.3"
-key_id = "{}"
-api = "1.2"
-requires = ["fs"]
-[[ui]]
-label = "站点文件"
-path = "main.html"
-[[menu]]
-id = "files"
-parent = "sites"
-label = "站点文件"
-order = 60
-icon = "file"
-view = "main"
-"#,
-        "0".repeat(64)
-    );
-    seed_declared_plugin(h.state.db().as_ref(), manifest, true);
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    // 菜单只由 `/ui/v1/menu` 下发（壳页不再渲染菜单 HTML）。
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&token), None).await;
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&admin), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).expect("menu 必须是 JSON");
     let groups = v["data"]["groups"].as_array().expect("groups 必须是数组");
-    let sites = groups
+    let tasks = groups
         .iter()
-        .find(|g| g["key"] == "sites")
-        .expect("网站一级必须存在");
-    let site_items = sites["items"].as_array().expect("网站一级必须有子项");
-    let files = site_items
+        .find(|g| g["key"] == "tasks")
+        .expect("任务审计一级必须存在");
+    assert_eq!(tasks["label"], "任务审计", "{body}");
+    let hrefs: Vec<&str> = tasks["items"]
+        .as_array()
+        .expect("任务审计必须有子项")
         .iter()
-        .find(|i| i["plugin_id"] == "com.skiff.files")
-        .expect("站点文件应挂在「网站」下");
-    assert_eq!(files["label"], "站点文件", "{body}");
-    assert!(
-        files["href"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("/p/plugins/com.skiff.files/"),
-        "站点文件入口应是原生插件页: {body}"
+        .filter_map(|i| i["href"].as_str())
+        .collect();
+    assert_eq!(
+        hrefs,
+        vec!["/p/tasks/scheduled", "/p/tasks/jobs", "/p/tasks/audit"],
+        "{body}"
     );
-    assert!(
-        !site_items.iter().any(|i| i["href"] == "/p/files"),
-        "站点文件不得与内核文件管理同组: {body}"
-    );
+
     let tools = groups
         .iter()
         .find(|g| g["key"] == "tools")
-        .expect("工具一级必须存在");
-    assert!(
-        tools["items"]
-            .as_array()
-            .expect("工具一级必须有子项")
-            .iter()
-            .any(|i| i["href"] == "/p/files"),
-        "内核「工具 → 文件管理」入口必须保留: {body}"
+        .expect("工具一级仍应存在");
+    let tool_hrefs: Vec<&str> = tools["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["href"].as_str())
+        .collect();
+    assert!(!tool_hrefs.contains(&"/p/tasks/scheduled"), "{body}");
+    assert!(!tool_hrefs.contains(&"/p/tasks/jobs"), "{body}");
+
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("menu 必须是 JSON");
+    let groups = v["data"]["groups"].as_array().expect("groups 必须是数组");
+    let tasks = groups
+        .iter()
+        .find(|g| g["key"] == "tasks")
+        .expect("viewer 仍能看到任务审计一级");
+    let hrefs: Vec<&str> = tasks["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["href"].as_str())
+        .collect();
+    assert_eq!(
+        hrefs,
+        vec!["/p/tasks/scheduled", "/p/tasks/jobs"],
+        "viewer 不得看到审计日志"
     );
 }
+
 #[tokio::test]
 async fn wrong_password_renders_error_and_audits() {
     let h = harness();
@@ -1683,10 +1680,10 @@ async fn uninstall_cleanup_removes_plugin_keys_from_user_prefs() {
         .set_user_pref(
             admin.id,
             "menu.prefs",
-            r#"{"v":1,"initialized":true,"hidden":["plugin/com.skiff.nginx/legacy"],"pinned":["plugin/com.skiff.nginx/legacy"],"order":{"sites":["plugin/com.skiff.nginx/legacy"]}}"#,
+            r#"{"v":1,"initialized":true,"hidden":["plugin/com.example.retired/legacy"],"pinned":["plugin/com.example.retired/legacy"],"order":{"sites":["plugin/com.example.retired/legacy"]}}"#,
         )
         .unwrap();
-    skiff_app::menu::cleanup_plugin_prefs(h.state.db().as_ref(), "com.skiff.nginx");
+    skiff_app::menu::cleanup_plugin_prefs(h.state.db().as_ref(), "com.example.retired");
     let raw = h
         .state
         .db()
@@ -1694,7 +1691,7 @@ async fn uninstall_cleanup_removes_plugin_keys_from_user_prefs() {
         .unwrap()
         .unwrap();
     assert!(
-        !raw.contains("com.skiff.nginx"),
+        !raw.contains("com.example.retired"),
         "卸载后偏好里不得残留该插件键: {raw}"
     );
 }
@@ -2273,8 +2270,7 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
 ///
 /// 规则：**每个**官方包要么声明至少一条可用的默认授权建议（`bin:` / `path:` /
 /// `container:` / `project:` / `plugin:`），要么在下表里**显式列名并写明原因**；新包既没默认授权、
-/// 又没登记时会直接红。站点文件是唯一「预置 `path:` 反而有害」的例外：站点域名打包时
-/// 未知，预置只能写成 `/www/sites` 这类跨站点根，因此只允许它为空且必须有可读提示。
+/// 又没登记时会直接红。
 /// cron 还必须声明 scheduler 能力（否则全新安装后列表 400）。
 #[tokio::test]
 async fn official_packages_declare_usable_install_defaults() {
@@ -2294,15 +2290,15 @@ async fn official_packages_declare_usable_install_defaults() {
             "monitor",
             include_str!("../../../plugins/monitor/manifest.toml"),
         ),
-        (
-            "files",
-            include_str!("../../../plugins/files/manifest.toml"),
-        ),
         ("cron", include_str!("../../../plugins/cron/manifest.toml")),
         ("ftp", include_str!("../../../plugins/ftp/manifest.toml")),
         (
             "firewall",
             include_str!("../../../plugins/firewall/manifest.toml"),
+        ),
+        (
+            "sources",
+            include_str!("../../../plugins/sources/manifest.toml"),
         ),
         (
             "testkit",
@@ -2328,14 +2324,6 @@ async fn official_packages_declare_usable_install_defaults() {
                 "{name} 的默认授权建议不可用（{h}），只接受 bin:/ path:/ container:/ project:/ plugin: 前缀"
             );
         }
-        if m.id == "com.skiff.files" {
-            assert!(
-                m.resource_hints.is_empty(),
-                "站点文件不得预置 path:（域名打包时未知，会放大成跨站点授权）: {:?}",
-                m.resource_hints
-            );
-            continue;
-        }
         if !m.resource_hints.iter().any(usable) {
             assert!(
                 NO_DEFAULT_GRANT.iter().any(|(id, _)| *id == m.id),
@@ -2343,13 +2331,6 @@ async fn official_packages_declare_usable_install_defaults() {
                 m.id
             );
         }
-    }
-
-    let files = skiff_pkgfmt::Manifest::parse(include_str!("../../../plugins/files/manifest.toml"))
-        .expect("files manifest 必须可解析");
-    let perms = files.permission_strings();
-    for p in ["fs:read", "fs:write", "fs:list", "fs:mkdir", "fs:rename"] {
-        assert!(perms.iter().any(|x| x == p), "files 缺少 {p}: {perms:?}");
     }
 
     let cron = skiff_pkgfmt::Manifest::parse(include_str!("../../../plugins/cron/manifest.toml"))
@@ -2647,9 +2628,19 @@ fn d3_plugin_ui_adapts_to_theme_message() {
             include_str!("../../../plugins/monitor/ui/health.js"),
         ),
         (
-            "files",
-            include_str!("../../../plugins/files/ui/main.html"),
-            include_str!("../../../plugins/files/ui/app.js"),
+            "monitor-network",
+            include_str!("../../../plugins/monitor/ui/network.html"),
+            include_str!("../../../plugins/monitor/ui/app.js"),
+        ),
+        (
+            "monitor-process",
+            include_str!("../../../plugins/monitor/ui/process.html"),
+            include_str!("../../../plugins/monitor/ui/app.js"),
+        ),
+        (
+            "sources-main",
+            include_str!("../../../plugins/sources/ui/main.html"),
+            include_str!("../../../plugins/sources/ui/app.js"),
         ),
         (
             "testkit-main",
@@ -2660,6 +2651,21 @@ fn d3_plugin_ui_adapts_to_theme_message() {
             "testkit-mount",
             include_str!("../../../plugins/testkit/ui/mount.html"),
             include_str!("../../../plugins/testkit/ui/mount.js"),
+        ),
+        (
+            "testkit-check",
+            include_str!("../../../plugins/testkit/ui/check.html"),
+            include_str!("../../../plugins/testkit/ui/app.js"),
+        ),
+        (
+            "testkit-group",
+            include_str!("../../../plugins/testkit/ui/group.html"),
+            include_str!("../../../plugins/testkit/ui/app.js"),
+        ),
+        (
+            "testkit-single",
+            include_str!("../../../plugins/testkit/ui/single.html"),
+            include_str!("../../../plugins/testkit/ui/app.js"),
         ),
     ] {
         assert!(
@@ -2688,6 +2694,40 @@ fn d3_plugin_ui_adapts_to_theme_message() {
         );
     }
 
+    // 共用 `ui/base.css` 的页面（ftp / firewall）：主题变量与页面底色在样式表里，
+    // 断言要落到样式表，否则「页面没有内联变量」会被误判成不合规。
+    for (name, pages, css) in [
+        (
+            "ftp",
+            [
+                include_str!("../../../plugins/ftp/ui/accounts.html"),
+                include_str!("../../../plugins/ftp/ui/runtime.html"),
+            ],
+            include_str!("../../../plugins/ftp/ui/base.css"),
+        ),
+        (
+            "firewall",
+            [
+                include_str!("../../../plugins/firewall/ui/rules.html"),
+                include_str!("../../../plugins/firewall/ui/fail2ban.html"),
+            ],
+            include_str!("../../../plugins/firewall/ui/base.css"),
+        ),
+    ] {
+        assert!(
+            css.contains(r#"html[data-theme="light"]"#)
+                && css.contains("color-scheme: dark;")
+                && css.contains("background: var(--ui-bg)"),
+            "{name} 的 base.css 必须提供深/浅两套变量且底色走变量"
+        );
+        for page in pages {
+            assert!(
+                page.contains(r#"href="base.css""#) && !page.contains("<h1"),
+                "{name} 的页面必须引用 base.css，且不渲染页面级标题（标题统一由内核提供）"
+            );
+        }
+    }
+
     // 工作台插件侧：上报内容高度，父页面才能消除内外双滚动。
     for (name, js) in [
         ("cron", include_str!("../../../plugins/cron/ui/app.js")),
@@ -2696,7 +2736,15 @@ fn d3_plugin_ui_adapts_to_theme_message() {
             "monitor",
             include_str!("../../../plugins/monitor/ui/app.js"),
         ),
-        ("files", include_str!("../../../plugins/files/ui/app.js")),
+        ("ftp", include_str!("../../../plugins/ftp/ui/app.js")),
+        (
+            "sources",
+            include_str!("../../../plugins/sources/ui/app.js"),
+        ),
+        (
+            "firewall",
+            include_str!("../../../plugins/firewall/ui/app.js"),
+        ),
         (
             "testkit",
             include_str!("../../../plugins/testkit/ui/app.js"),
@@ -2978,143 +3026,6 @@ fn plugin_ui_hides_builtin_delete_and_formats_traffic_bytes() {
     assert!(
         !monitor.contains("gb(s.net_tx * 1024)"),
         "不得再把字节当 KiB 换算后拼 GiB"
-    );
-}
-
-/// 文件管理插件 UI：CSP 只能自同源静态资源，页面必须提供现代文件管理器
-/// 的骨架（目录树/快捷入口/面包屑/多选列表/右键菜单/编辑器）与键盘操作。
-///
-/// 这里断言的是**随包内容**，不依赖浏览器：任何外链、内联脚本或缺失的
-/// 交互元素都会在 `cargo test` 阶段被挡住。
-#[test]
-fn files_ui_is_self_contained_and_exposes_modern_interactions() {
-    let html = include_str!("../../../plugins/files/ui/main.html");
-    let js = include_str!("../../../plugins/files/ui/app.js");
-
-    // 自包含：不得出现任何 scheme 形式的绝对地址（包内一律相对路径）。
-    for (name, src) in [("main.html", html), ("app.js", js)] {
-        assert!(
-            !src.contains("http://") && !src.contains("https://"),
-            "{name} 不得引用外链资源"
-        );
-        assert!(!src.contains("//cdn."), "{name} 不得引用 CDN");
-        assert!(
-            !src.contains("fonts.googleapis") && !src.contains("fonts.gstatic"),
-            "{name} 不得引用外链字体"
-        );
-    }
-
-    // 脚本必须全部外链自包内文件，不允许内联 <script>。
-    assert!(
-        !html.contains("<script>"),
-        "插件 UI 不得包含内联脚本（CSP script-src 'self' 会直接拒绝）"
-    );
-    for src in [
-        "vendor/highlight.min.js",
-        "vendor/languages/nginx.min.js",
-        "app.js",
-    ] {
-        assert!(
-            html.contains(&format!("<script src=\"{src}\"")),
-            "缺少随包脚本引用: {src}"
-        );
-    }
-
-    // 现代文件管理器骨架。
-    for id in [
-        "quick",
-        "tree",
-        "crumbs",
-        "list",
-        "ctx",
-        "dlg-new",
-        "dlg-jump",
-        "dlg-confirm",
-        "dlg-editor",
-        "gutter",
-        "ed-dirty",
-    ] {
-        assert!(
-            html.contains(&format!("id=\"{id}\"")),
-            "缺少必需节点 id=\"{id}\""
-        );
-    }
-    assert!(
-        html.contains(r#"role="listbox""#) && html.contains(r#"aria-multiselectable="true""#),
-        "文件列表必须是可多选的 listbox，键盘与读屏才能工作"
-    );
-    assert!(html.contains("未保存"), "编辑器必须有未保存（dirty）提示");
-    assert!(
-        html.contains("单次读写上限 <b>256 KiB</b>"),
-        "侧栏必须写明 256 KiB 读写上限"
-    );
-    assert!(
-        !html.contains("上传") && !html.contains("下载"),
-        "不得虚构后端不存在的能力（上传/下载）"
-    );
-
-    // 主题契约：缺省深色；父页面下发 skiff.theme 时写 html[data-theme]；
-    // iframe 比父脚本先就绪时主动 request 一次，旧插件不监听消息则保持深色。
-    assert!(
-        html.contains(r#"data-theme="dark""#),
-        "插件页缺省必须是深色（父面板未下发主题时不能闪白）"
-    );
-    assert!(
-        js.contains(r#"msg.type === "skiff.theme""#),
-        "app.js 必须监听父页面的 skiff.theme 消息"
-    );
-    assert!(
-        js.contains("skiff.theme.request"),
-        "app.js 必须主动向父页面索取一次主题，避免 iframe 先加载漏广播"
-    );
-    assert!(
-        js.contains(r#"setAttribute("data-theme""#),
-        "收到主题后必须写到 html[data-theme]（浅色覆盖由 CSS 令牌生效）"
-    );
-
-    // 真实交互：键盘、多选、重命名、删除确认、越权/超限提示。
-    for needle in [
-        r#"key === "ArrowDown""#,
-        r#"key === "ArrowUp""#,
-        r#"key === "Enter""#,
-        r#"key === "F2""#,
-        r#"key === "Delete""#,
-        r#"key === "Backspace""#,
-        "ev.ctrlKey || ev.metaKey",
-        "ev.shiftKey",
-    ] {
-        assert!(js.contains(needle), "app.js 缺少交互片段: {needle}");
-    }
-    assert!(
-        js.contains("var readOnly = !r.eof;"),
-        "超过 256 KiB（eof=false）必须进入只读模式"
-    );
-    assert!(
-        js.contains("超过 256 KiB") || html.contains("超过 256 KiB"),
-        "只读原因必须对用户可见"
-    );
-    assert!(
-        js.contains("无权访问") || html.contains("无权访问"),
-        "越权路径必须给出明确提示"
-    );
-
-    // 关闭回归：作者样式里的 display 会盖掉 UA 的 dialog:not([open]) { display:none }，
-    // 编辑器曾因此 close() 后整块留在页面上（三条关闭路径全部失效）。
-    assert!(
-        html.contains("dialog:not([open])"),
-        "必须显式让位给 UA 的隐藏规则，否则 close() 后对话框仍可见"
-    );
-    assert!(
-        html.contains(".editor-dialog[open] { display: flex"),
-        "编辑器的 flex 布局只能作用在打开态，关闭态交给 UA display:none"
-    );
-    assert!(
-        js.contains("ev.target === this"),
-        "点遮罩必须走同一关闭/确认路径，不能静默丢未保存内容"
-    );
-    assert!(
-        js.contains(r#"$("dlg-editor").addEventListener("cancel""#),
-        "Esc 必须接在编辑器对话框的 cancel 上"
     );
 }
 
@@ -3435,7 +3346,7 @@ async fn shell_fallback_serves_whitelisted_deep_links() {
         "/p/files/a/b",
         "/p/plugins/demo.plugin/view/deep",
         "/p/settings/deep",
-        "/p/jobs/1/logs/deep",
+        "/p/tasks/jobs/1/logs/deep",
     ] {
         let (status, ct, body) = get_ui(&h.app, uri, Some(&token), Some("text/html")).await;
         assert_eq!(status, StatusCode::OK, "{uri} 应回落壳页");
@@ -4281,6 +4192,28 @@ async fn ui_runtime_catalog_exposes_apk_mirrors_and_current_choice() {
     );
     assert_eq!(data["apk_mirror_current"]["fixed"], false);
 
+    // 版本清单默认就有内容：镜像源未配置（mirrors 为空）时用内置副本 / 目录大版本，
+    // 弹窗不必等网络。三类各一份，缺一份 Node/Rust 就没有下拉可选。
+    for kind in ["php", "node", "rust"] {
+        let versions = data["version_indexes"][kind]["versions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{kind} 必须带版本清单：{v}"));
+        assert!(!versions.is_empty(), "{kind} 的清单不能为空：{v}");
+        assert_eq!(data["version_indexes"][kind]["pending"], false);
+        assert_eq!(
+            data["version_indexes"][kind]["url"], "",
+            "没有镜像基址就不该拼出半截清单地址：{v}"
+        );
+    }
+    assert_eq!(
+        data["version_indexes"]["php"]["source"], "builtin",
+        "PHP 有内置副本：{v}"
+    );
+    assert_eq!(
+        data["version_indexes"]["node"]["source"], "catalog",
+        "Node.js / Rust 没有内置副本，回退目录大版本：{v}"
+    );
+
     // 用户此前固定过源：目录接口必须原样回传。
     let dir = h.data_dir.join("www/runtime/cache/apk");
     std::fs::create_dir_all(&dir).unwrap();
@@ -4862,7 +4795,7 @@ async fn audit_canonical_path_serves_native_shell() {
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
     for token in [&admin, &viewer] {
-        let (status, html) = get_html(&h.app, "/p/settings/audit", token).await;
+        let (status, html) = get_html(&h.app, "/p/tasks/audit", token).await;
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
     }
@@ -4904,6 +4837,18 @@ async fn ui_audit_filters_and_walks_signed_cursor() {
             )
             .unwrap();
     }
+    // 另一分类的记录：用来验证分类过滤与游标指纹。
+    h.state
+        .db()
+        .audit(
+            "admin",
+            "10.8.8.8",
+            "docker.containers.start",
+            "docker-needle",
+            "ok",
+            "seed",
+        )
+        .unwrap();
 
     // 权限与旧 SSR 同口径：viewer 无 AuditRead。
     let (status, _) = get_page(&h.app, "/ui/v1/audit", &viewer).await;
@@ -4919,6 +4864,25 @@ async fn ui_audit_filters_and_walks_signed_cursor() {
         "ts 应为 RFC3339 UTC：{body}"
     );
     assert_eq!(items[0]["action"], "site.delete", "按时间倒序");
+
+    // 分类过滤：站点分类下仍是 6 条，Docker 分类下该关键字为 0。
+    let (status, body) = get_page(&h.app, "/ui/v1/audit?q=audit-needle&cat=site", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["items"].as_array().unwrap().len(), 6, "{body}");
+    assert_eq!(v["data"]["category"], "site", "{body}");
+    let (status, body) = get_page(&h.app, "/ui/v1/audit?q=audit-needle&cat=docker", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["data"]["items"].as_array().unwrap().is_empty(), "{body}");
+    let (status, body) = get_page(&h.app, "/ui/v1/audit?q=docker-needle&cat=docker", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let item = &v["data"]["items"][0];
+    assert_eq!(item["category_label"], "容器与镜像", "{body}");
+    // 未知分类按「全部分类」处理，不报错。
+    let (status, body) = get_page(&h.app, "/ui/v1/audit?cat=nope", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // 首页只取 1 条，用返回的签名游标取下一页。
     let (status, body) = get_page(&h.app, "/ui/v1/audit?q=audit-needle&limit=1", &admin).await;
@@ -4945,6 +4909,16 @@ async fn ui_audit_filters_and_walks_signed_cursor() {
     let (status, body) = get_page(
         &h.app,
         &format!("/ui/v1/audit?q=other&limit=1&cursor={cursor}"),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("筛选条件"), "{body}");
+
+    // 换分类沿用旧游标：同样因筛选指纹不匹配被拒。
+    let (status, body) = get_page(
+        &h.app,
+        &format!("/ui/v1/audit?q=audit-needle&cat=site&limit=1&cursor={cursor}"),
         &admin,
     )
     .await;
@@ -5476,7 +5450,7 @@ async fn job_logs_serve_shell_for_html_and_json_for_scripts() {
     h.state
         .jobs()
         .log_lines(&job.id, "out", &["作业日志第一行".to_string()]);
-    let uri = format!("/p/jobs/{}/logs", job.id);
+    let uri = format!("/p/tasks/jobs/{}/logs", job.id);
 
     let (status, html) = get_html(&h.app, &uri, &admin).await;
     assert_eq!(status, StatusCode::OK, "{html}");
@@ -6286,7 +6260,7 @@ fn budding_boot_a_form_writes_are_declarative() {
     let jobs = include_str!("../src/handlers/ui/jobs_page.rs");
     for needle in [
         "\"assign\": \"job\"",
-        "\"url\": \"${prefix}/jobs/${job.data.id}\"",
+        "\"url\": \"${prefix}/tasks/jobs/${job.data.id}\"",
         "\"title\": \"取消作业\"",
     ] {
         assert!(jobs.contains(needle), "作业动作链缺失：{needle}");
@@ -6525,7 +6499,7 @@ fn budding_boot_job_logs_page_comes_from_server() {
     // 产出端：路由表登记隐藏路由，`page_source` 指到日志端点。
     let routes = include_str!("../src/handlers/ui/routes.rs");
     assert!(
-        routes.contains("\"/jobs/:id/logs\", \"作业日志\""),
+        routes.contains("\"/tasks/jobs/:id/logs\", \"作业日志\""),
         "路由表必须登记作业日志隐藏路由"
     );
     assert!(
@@ -6699,10 +6673,26 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         "if running { \"stop\" } else { \"start\" }",
         "{ \"type\": \"skiffWebEnv\", \"props\": { \"op\": op } }",
         "查看任务详情",
-        "fn install_node(install: &Value)",
+        "fn install_alert(install: &Value)",
+        "fn install_summary(install: &Value)",
+        "fn install_steps_table(auto_refresh: bool)",
+        "fn install_headline(install: &Value)",
     ] {
         assert!(web_page.contains(needle), "Web 服务操作入口缺失：{needle}");
     }
+    // 启停/重启在页头主操作区；完成态收敛成页尾摘要，不再占顶部告警位。
+    assert!(
+        web_page.contains("kit::page_with_actions(\"Web 服务\", subtitle, actions, body)"),
+        "状态页主操作必须走页头 content.actions"
+    );
+    assert!(
+        !web_page.contains("(\"success\", \"安装已完成\")"),
+        "完成态不得再用顶部 success 告警（改为页尾摘要）"
+    );
+    assert!(
+        web_page.contains("${{prefix}}/tasks/jobs/{job_id}"),
+        "任务详情入口必须指向 /tasks/jobs/<id>"
+    );
     assert!(
         web_page.contains(
             "let installed = !container_state.is_empty() && container_state != \"missing\";"
@@ -6827,9 +6817,14 @@ fn budding_boot_create_dialogs_keep_deep_links() {
         "width: 640",
         "submit_text: \"创建并安装\"",
         "\"name\": \"kind\"",
-        "\"name\": \"version\"",
+        // 版本下拉按类型一份：字段名与显示条件都按目录 key 生成（`version_php` /
+        // `version_node` / `version_rust`），加类型不改弹窗代码。语义断言见
+        // `runtimes_page` 单测（`php_versions_come_from_registry_index`）。
+        "\"name\": format!(\"version_{key}\")",
+        "\"visibleOn\": format!(\"${{kind === '{key}'}}\")",
+        "\"name\": \"version_custom\"",
+        "\"type\": \"skiffRuntimeVersions\"",
         "\"name\": \"apk_mirror\"",
-        "let initial = json!({ \"kind\": default_kind, \"apk_mirror\": default_mirror });",
     ] {
         assert!(
             runtimes_page.contains(needle),
@@ -7987,10 +7982,10 @@ async fn tasks_and_jobs_canonical_paths_serve_shell() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
     for uri in [
-        "/p/tasks",
-        "/p/tasks/builtin:db-vacuum",
-        "/p/jobs",
-        "/p/jobs/abc",
+        "/p/tasks/scheduled",
+        "/p/tasks/scheduled/builtin:db-vacuum",
+        "/p/tasks/jobs",
+        "/p/tasks/jobs/abc",
     ] {
         let (status, html) = get_html(&h.app, uri, &token).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
@@ -8712,7 +8707,7 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_key_set(
         &v["data"],
-        &["items", "keyword", "has_more", "next_cursor"],
+        &["items", "keyword", "category", "has_more", "next_cursor"],
         "GET /ui/v1/audit",
     );
     let row = v["data"]["items"]
@@ -8722,7 +8717,17 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     assert_key_set(
         row,
         &[
-            "id", "ts", "ts_label", "actor", "ip", "action", "target", "result", "detail",
+            "id",
+            "ts",
+            "ts_label",
+            "category",
+            "category_label",
+            "actor",
+            "ip",
+            "action",
+            "target",
+            "result",
+            "detail",
         ],
         "audit item",
     );
@@ -8894,7 +8899,12 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_key_set(
         &v["data"],
-        &["registry_mirror", "image_prefix", "can_admin"],
+        &[
+            "registry_mirror",
+            "image_prefix",
+            "runtime_index_url",
+            "can_admin",
+        ],
         "GET /ui/v1/settings/docker",
     );
 
@@ -9079,7 +9089,7 @@ async fn ui_routes_project_menu_with_hidden_details() {
         "/p/sites/:id",
         "/p/sites/:id/logs",
         "/p/docker/containers/:id/terminal",
-        "/p/jobs/:id/logs",
+        "/p/tasks/jobs/:id/logs",
     ] {
         assert!(
             paths.contains(&expected),
@@ -9140,4 +9150,19 @@ async fn ui_page_answers_where_the_schema_lives() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["data"]["special"], "terminal");
     assert!(v["data"]["schema_url"].is_null(), "{body}");
+}
+
+/// 版本取值与刷新入口在壳脚本里：字段名与动作名是前后端契约，静态锁住——否则后端改了
+/// 字段、前端悄悄取不到值，页面看起来「选了但装出旧版本」。
+#[test]
+fn budding_boot_runtime_version_sources() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for needle in [
+        "formText(v['version_' + kind]).trim();",
+        "skiffRuntimeVersions: runtimeVersionsRefresh,",
+        "'/runtimes/versions?refresh=true&kind=' + kind",
+        "var kinds = ['php', 'node', 'rust'];",
+    ] {
+        assert!(js.contains(needle), "运行环境版本来源缺失：{needle}");
+    }
 }

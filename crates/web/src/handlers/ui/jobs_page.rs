@@ -57,7 +57,7 @@ pub fn jobs_page_schema(prefix: &str) -> Value {
     );
     table["onEvent"] = json!({
         "rowClick": {
-            "actions": [{ "type": "navigate", "props": { "url": format!("{prefix}/jobs/${{id}}") } }]
+            "actions": [{ "type": "navigate", "props": { "url": format!("{prefix}/tasks/jobs/${{id}}") } }]
         }
     });
     schema_kit::page("作业中心", "列表只读；取消与重试在作业详情页", vec![table])
@@ -222,7 +222,7 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
                 "type": "link",
                 "props": {
                     "text": "查看完整日志（按需加载）",
-                    "href": format!("{prefix}/jobs/{}/logs", crate::util::encode_uri_component(&id))
+                    "href": format!("{prefix}/tasks/jobs/{}/logs", crate::util::encode_uri_component(&id))
                 }
             }]
         }
@@ -285,7 +285,7 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
                             },
                             {
                                 "type": "navigate",
-                                "props": { "url": "${prefix}/jobs/${job.data.id}" }
+                                "props": { "url": "${prefix}/tasks/jobs/${job.data.id}" }
                             }
                         ]
                     }
@@ -327,7 +327,7 @@ pub fn job_logs_schema(
             schema_kit::link(
                 "返回作业详情",
                 format!(
-                    "{prefix}/jobs/{}",
+                    "{prefix}/tasks/jobs/{}",
                     crate::util::encode_uri_component(job_id)
                 ),
             ),

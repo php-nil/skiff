@@ -302,6 +302,73 @@ fn manifest_of(files: &BTreeMap<String, Vec<u8>>, channel: &str) -> Result<Manif
     serde_json::from_slice(bytes).with_context(|| format!("解析 {path} 失败"))
 }
 
+/// 内置副本必须与已发布产物**字节一致**（`crates/app/assets/runtime-index/<kind>.json`）。
+///
+/// 内置副本是面板取不到镜像时的回退，靠 `generated_at` 防回滚；一旦它比产物新，远端会被
+/// 永久判「更旧」。手写这份文件迟早写错，所以让 `check` 拿产物比一遍，不一致即失败。
+///
+/// `builtin_dir` 里的 `<kind>.json`（只认 `php` / `node` / `rust`）逐个与产物同渠道同名文件
+/// 比对；产物有多个渠道时必须用 `channel` 指定比哪个。
+pub fn verify_builtin_index(
+    dist: &Path,
+    builtin_dir: &Path,
+    channel: Option<&str>,
+) -> Result<usize> {
+    let files = read_tree(dist)?;
+    let channels = channel_names(&files)?;
+    let target = match channel {
+        Some(name) => {
+            if !channels.iter().any(|existing| existing == name) {
+                bail!("产物里没有渠道 {name}（现有：{}）", channels.join(" / "));
+            }
+            name.to_string()
+        }
+        None if channels.len() == 1 => channels[0].clone(),
+        None => bail!(
+            "产物里有 {} 个渠道（{}），--builtin-index 必须配合 --channel 指定比哪个",
+            channels.len(),
+            channels.join(" / ")
+        ),
+    };
+
+    let mut entries = Vec::new();
+    for path in read_dir_sorted(builtin_dir)
+        .with_context(|| format!("读取内置副本目录失败: {}", builtin_dir.display()))?
+    {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(kind) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if crate::build::RUNTIME_INDEX_KINDS.contains(&kind) {
+            entries.push((name.to_string(), path));
+        }
+    }
+    if entries.is_empty() {
+        bail!(
+            "内置副本目录 {} 里没有 php / node / rust 清单",
+            builtin_dir.display()
+        );
+    }
+
+    for (name, path) in &entries {
+        let relative = format!("channels/{target}/runtime-index/{name}");
+        let artifact = files.get(&relative).ok_or_else(|| {
+            anyhow::anyhow!("产物缺少 {relative}，但内置副本有 {name}：内置副本不能超前于产物")
+        })?;
+        let builtin =
+            fs::read(path).with_context(|| format!("读取内置副本失败: {}", path.display()))?;
+        let (artifact_sha, builtin_sha) = (sha256_hex(artifact), sha256_hex(&builtin));
+        if artifact_sha != builtin_sha {
+            bail!(
+                "内置副本与产物不一致：{relative}\n  产物 {artifact_sha}\n  内置 {builtin_sha}\n用产物覆盖 crates/app/assets/runtime-index/{name} 后再发版"
+            );
+        }
+    }
+    Ok(entries.len())
+}
+
 fn channel_names(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<String>> {
     let mut names = BTreeSet::new();
     for key in files.keys() {

@@ -292,6 +292,63 @@ fn http_serves_conditional_and_range_requests() {
 }
 
 #[test]
+fn http_serves_runtime_index_at_fixed_path_only() {
+    let (_dir, root) = dist();
+    let index_dir = root.join("channels").join("stable").join("runtime-index");
+    std::fs::create_dir_all(&index_dir).unwrap();
+    std::fs::write(index_dir.join("php.json"), br#"{"versions":["8.5.13"]}"#).unwrap();
+    std::fs::write(index_dir.join("node.json"), br#"{"versions":["24.4.0"]}"#).unwrap();
+    // 不在白名单里的文件名（未实现的类型、备份、其它 JSON）必须 404。
+    std::fs::write(index_dir.join("other.json"), br#"{"versions":[]}"#).unwrap();
+    let port = start(root, None);
+
+    for (target, body) in [
+        (
+            "/channels/stable/runtime-index/php.json",
+            br#"{"versions":["8.5.13"]}"#.as_slice(),
+        ),
+        (
+            "/stable/runtime-index/php.json",
+            br#"{"versions":["8.5.13"]}"#.as_slice(),
+        ),
+        (
+            "/channels/stable/runtime-index/node.json",
+            br#"{"versions":["24.4.0"]}"#.as_slice(),
+        ),
+        (
+            "/stable/runtime-index/node.json",
+            br#"{"versions":["24.4.0"]}"#.as_slice(),
+        ),
+    ] {
+        let (head, got) = request(
+            port,
+            &format!("GET {target} HTTP/1.1\r\nHost: test\r\n\r\n"),
+        )
+        .unwrap();
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{target}: {head}");
+        assert_eq!(got, body, "{target}");
+        assert_eq!(
+            header_value(&head, "content-type"),
+            Some("application/json; charset=utf-8")
+        );
+    }
+
+    for target in [
+        // rust 清单文件在白名单里但磁盘上没有：仍按 404（面板回退目录大版本）。
+        "/channels/stable/runtime-index/rust.json",
+        "/channels/stable/runtime-index/other.json",
+        "/channels/stable/runtime-index/php.json.bak",
+    ] {
+        let (head, _) = request(
+            port,
+            &format!("GET {target} HTTP/1.1\r\nHost: test\r\n\r\n"),
+        )
+        .unwrap();
+        assert!(head.starts_with("HTTP/1.1 404"), "{target}: {head}");
+    }
+}
+
+#[test]
 fn http_head_is_bodyless_and_errors_are_plain() {
     let (_dir, root) = dist();
     let port = start(root, None);

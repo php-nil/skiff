@@ -23,6 +23,13 @@ const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 
 const JSON_FILES: [&str; 3] = ["manifest.json", "manifest.json.sig", "index.json"];
 
+/// 渠道级子目录里允许直出的 JSON：版本清单按类型一份（`runtime-index/<kind>.json`）。
+///
+/// 路径是面板契约的一部分（不配置地址、按固定路径取），所以这里必须放行；除此之外
+/// 渠道目录里仍只有三件套可读，未知子路径一律 404。
+const RUNTIME_INDEX_SUBDIR: &str = "runtime-index";
+const RUNTIME_INDEX_FILES: [&str; 3] = ["php.json", "node.json", "rust.json"];
+
 /// 白名单命中的资源种类。只有这两种路径会落到文件系统。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Kind {
@@ -535,25 +542,49 @@ fn resolve(root: &Path, target: &str) -> Option<(PathBuf, Kind)> {
             ))
         }
         ["channels", channel, file] => json_path(root, channel, file),
+        ["channels", channel, sub, file] if *sub == RUNTIME_INDEX_SUBDIR => {
+            runtime_index_path(root, channel, file)
+        }
         [channel, file] => {
             if *channel == "channels" || *channel == "blobs" || *channel == "api" {
                 return None;
             }
             json_path(root, channel, file)
         }
+        [channel, sub, file] if *sub == RUNTIME_INDEX_SUBDIR => {
+            if *channel == "channels" || *channel == "blobs" || *channel == "api" {
+                return None;
+            }
+            runtime_index_path(root, channel, file)
+        }
         _ => None,
     }
 }
 
 fn json_path(root: &Path, channel: &str, file: &str) -> Option<(PathBuf, Kind)> {
-    if !is_channel_name(channel) || !JSON_FILES.contains(&file) {
+    if !JSON_FILES.contains(&file) {
+        return None;
+    }
+    channel_dir(root, channel).map(|dir| (dir.join(file), Kind::Json))
+}
+
+fn runtime_index_path(root: &Path, channel: &str, file: &str) -> Option<(PathBuf, Kind)> {
+    if !RUNTIME_INDEX_FILES.contains(&file) {
+        return None;
+    }
+    channel_dir(root, channel).map(|dir| (dir.join(RUNTIME_INDEX_SUBDIR).join(file), Kind::Json))
+}
+
+/// 渠道目录必须存在且已发布（有 manifest.json）才对外提供任何文件。
+fn channel_dir(root: &Path, channel: &str) -> Option<PathBuf> {
+    if !is_channel_name(channel) {
         return None;
     }
     let channel_dir = root.join("channels").join(channel);
     if !channel_dir.join("manifest.json").is_file() {
         return None;
     }
-    Some((channel_dir.join(file), Kind::Json))
+    Some(channel_dir)
 }
 
 fn is_channel_name(name: &str) -> bool {

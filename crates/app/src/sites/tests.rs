@@ -450,6 +450,7 @@ fn local_extension_installer_is_materialized_and_kept_in_sync() {
         data_dir: dir.join("data"),
         nginx_image: String::new(),
         php_image: String::new(),
+        image_prefix: String::new(),
         port: 80,
         registry_mirror: String::new(),
     }
@@ -698,6 +699,7 @@ fn settings_at(root: &Path) -> SiteSettings {
         data_dir: root.join("data"),
         nginx_image: DEFAULT_NGINX_IMAGE.into(),
         php_image: DEFAULT_PHP_IMAGE.into(),
+        image_prefix: String::new(),
         port: DEFAULT_PORT,
         registry_mirror: String::new(),
     }
@@ -1684,6 +1686,52 @@ fn digest_normalizes_repo_digest_and_builds_pinned_ref() {
     assert_eq!(
         pinned_image_ref("php:8.5-fpm-alpine", ""),
         "php:8.5-fpm-alpine"
+    );
+}
+
+/// 浮动 tag（`php:8.5-fpm-alpine`）的新环境必须拉取：本地已有镜像不代表是最新补丁。
+///
+/// 2026-11-24 之前的实现「有本地就回填 digest 并跳过拉取」，PHP 8.5.13 发布后新装
+/// 仍是 8.5.12。拉取失败才回退本地镜像，只有未固定版本的实例允许这样退让。
+#[test]
+fn image_pull_plan_refreshes_floating_tag_and_pins_registered_digest() {
+    let image = "php:8.5-fpm-alpine";
+    // 未登记 digest + 本地已有：仍按 tag 拉取，本地 digest 只作失败回退。
+    assert_eq!(
+        plan_image_pull(image, "", Some("php@sha256:old")),
+        ImagePullPlan::Pull {
+            pull_ref: image.to_string(),
+            fallback: Some("php@sha256:old".to_string()),
+        }
+    );
+    // 未登记 + 本地没有：按 tag 拉取，无可回退。
+    assert_eq!(
+        plan_image_pull(image, "", None),
+        ImagePullPlan::Pull {
+            pull_ref: image.to_string(),
+            fallback: None,
+        }
+    );
+    // 登记 digest 与本地一致：复用，不再拉取（重建保持同一版本）。
+    assert_eq!(
+        plan_image_pull(image, "sha256:abc", Some("php@sha256:abc")),
+        ImagePullPlan::Reuse("php@sha256:abc".to_string())
+    );
+    // 登记 digest 与本地不一致：按登记 digest 拉取，且不允许回退到漂移的本地镜像。
+    assert_eq!(
+        plan_image_pull(image, "sha256:abc", Some("php@sha256:old")),
+        ImagePullPlan::Pull {
+            pull_ref: "php:8.5-fpm-alpine@sha256:abc".to_string(),
+            fallback: None,
+        }
+    );
+    // 登记了但本地没有：同样按登记 digest 拉取。
+    assert_eq!(
+        plan_image_pull(image, "sha256:abc", None),
+        ImagePullPlan::Pull {
+            pull_ref: "php:8.5-fpm-alpine@sha256:abc".to_string(),
+            fallback: None,
+        }
     );
 }
 

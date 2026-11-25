@@ -843,15 +843,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "skiff-plugin-files"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skiff-plugin-common",
- "skiff-sdk",
-]
-
-[[package]]
 name = "skiff-plugin-firewall"
 version = "0.1.0"
 dependencies = [

@@ -40,7 +40,7 @@ verbs = ["read", "manage", "run", "admin"]
 label = "计划任务"
 path = "list.html"
 
-# 菜单：内核「工具 → 计划任务」是面向所有登录用户的只读/管理页；本插件只提供
+# 菜单：内核「任务审计 → 计划任务」是面向所有登录用户的只读/管理页；本插件只提供
 # 一个功能页（ui/list.html），新建/编辑都在页内弹窗完成。**不要**再把「新建任务」
 # 声明成 L3 菜单项：它是按钮，不是页面入口。
 #
@@ -49,7 +49,7 @@ path = "list.html"
 # 有效视图（返回 404）。
 [[menu]]
 id = "jobs"
-parent = "tools"
+parent = "tasks"
 label = "任务编辑器"
 order = 20
 icon = "clock"

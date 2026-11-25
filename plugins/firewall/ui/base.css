@@ -40,7 +40,6 @@ body {
   background: var(--ui-bg);
   color: var(--ui-text);
 }
-h1 { font-size: 18px; margin: 0 0 4px; }
 h2 { font-size: 14px; margin: 16px 0 8px; }
 h3 { font-size: 13px; margin: 0 0 8px; }
 .sub { color: var(--ui-muted); font-size: 12px; margin: 0 0 12px; }

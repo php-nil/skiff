@@ -15,7 +15,6 @@
 | --- | --- | --- | --- |
 | `guard/` | `com.skiff.guard` | docker + fs + identity | 容器守护：每分钟巡检，`dead`/`restarting`/`unhealthy`（可选 `exited`）按冷却与小时预算重启 |
 | `monitor/` | `com.skiff.monitor` | fs（`path:/proc`、可选 `path:/etc/passwd`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲；进程视图（PID/用户/CPU/内存/启动时间/命令行，排序/筛选/分页）与网络视图（监听端口、连接状态、对端地址、套接字属主 uid），均为只读 `/proc` |
-| `files/` | `com.skiff.files` | fs + identity | 站点文件：仅 `/www/sites/<域名>/index` 内浏览/新建/删除/改名/编辑（256KiB 分页） |
 | `cron/` | `com.skiff.cron` | identity + interop + scheduler | 计划任务管理 UI：新建/编辑统一在弹窗内完成（基本信息 / 调度 / 高级分组），按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。调度与执行全在内核，插件只经 `scheduler` 能力面增删改查（不执行宿主 shell）；内置任务只可启停，越界任务在插件 RPC 层硬拦截 |
 | `firewall/` | `com.skiff.firewall` | **firewall（新增能力面）** + interop | 防火墙与 fail2ban：nftables（`inet skiff`）/iptables（`SKIFF` 链）规则查看、增删与端口放行；fail2ban 安装、jail 启停、封禁列表与解封。对外经 interop 提供 `com.skiff.firewall:fail2ban.*`，FTP 等插件按需调用；仅 Native 形态 |
 | `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** + interop | FTP 管理：站点账号增删改与启停、服务安装/配置/回收/重启；服务配置面板可改监听端口、被动端口范围、连接上限、TLS 模式与证书/私钥路径（保存后立即重载或安装后沿用）；服务配置以内核 `/etc/skiff/ftp-service.json` 为唯一真相；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；**不再安装或维护 fail2ban**，「启用 fail2ban 防护」是可选开关，经 interop 调 `com.skiff.firewall`；仅 Native 形态 |
@@ -30,13 +29,13 @@
 - `manifest.toml` 的 `key_id` 在源码里是 **64 个 0 的占位**：发布私钥只在打包机/CI secret，
   打包时 `skiff-plugin stamp` 在临时目录回填指纹（仓库里不含任何密钥指纹）。
 - 权限遵循最小化：guard 只要 `containers.list/inspect/restart`，
-  monitor/files 只读或按需读写，具体见各自 manifest。
+  monitor 只读 `/proc`，具体见各自 manifest。
 - 插件 UI 只经父页面 postMessage 桥取数（`skiff.rpc`），不持有面板凭据、不发同源请求。
   菜单由 manifest 的 `[[menu]]` 声明、内核渲染；`/{p}/plugins/{id}` 是内核信息与管理页，
   插件只负责 `/{p}/plugins/{id}/<view>` 加载的 `ui/<view>.html`。
 - **UI 资源全部同源随包分发**：插件 UI 的 CSP 是 `script-src 'self'; connect-src 'none'`，
-  CDN 与内联脚本都加载不了。第三方前端库（如 `files/ui/vendor/` 里的 highlight.js）
-  必须把文件 vendor 进 `ui/` 并在页面里用相对路径引用，同时保留其 LICENSE。
+  CDN 与内联脚本都加载不了。第三方前端库必须把文件 vendor 进 `ui/` 并在页面里用相对路径
+  引用，同时保留其 LICENSE。
 - **插件间跳转**：发 `parent.postMessage({type:"skiff.open", nonce, plugin:"com.skiff.<x>", path})`
   请面板切到另一插件界面（`path` 为定位建议，越权仍由目标插件 `path:` 授权根判定）。
   目标须是「已启用且有 UI 入口」的插件，否则父页面回 `skiff.open.result {ok:false}`。
@@ -57,11 +56,6 @@
 - **主题协议**：插件页缺省深色（`html[data-theme="dark"]`）；父面板切换主题时向 iframe 发
   `{type:"skiff.theme", theme:"light"|"dark"}`，插件写 `html[data-theme]` 由 CSS token 覆盖即可。
   iframe 先于父脚本就绪时主动发 `skiff.theme.request` 索取一次；不监听消息的老插件保持深色缺省。
-- **files 站点文件**：左目录树 + 快捷入口、可点面包屑、名称/大小/修改时间列表；支持
-  Ctrl/Cmd 点击多选、Shift 连选、方向键/Home/End/Enter/F2/Delete/Backspace/空格、右键菜单、
-  行内重命名、新建目录、编辑弹窗（行号 + 等宽 + 未保存提示）。只用 `list/read/write/remove/rename/mkdir`；
-  单次读写 256 KiB，超限只读第一页；保存是全量覆盖；不提供上传/下载。
-  入口在「网站 → 站点文件」，与内核「工具 → 文件管理」是两个不同页面。
 
 ## 菜单与槽位声明（P2）
 
@@ -80,7 +74,7 @@ path = "list.html"
 
 [[menu]]
 id = "jobs"
-parent = "tools"          # 只能是固定一级 id
+parent = "tasks"          # 只能是固定一级 id
 label = "任务编辑器"
 order = 20
 icon = "clock"
@@ -194,8 +188,8 @@ sh plugins/pack.sh --key /path/to/skiff-signing.key \
 
 ```sh
 ls /www/skiff/official
-skiff plugin install /www/skiff/official/com.skiff.files-0.1.3.wbpkg \
-    --resource path:/www/sites/example.com/index   # 交互逐条确认；非交互用 --yes --grant ...
+skiff plugin install /www/skiff/official/com.skiff.monitor-0.1.0.wbpkg \
+    --resource path:/proc   # 交互逐条确认；非交互用 --yes --grant ...
 ```
 
 各插件的授权要点：
@@ -211,8 +205,6 @@ skiff plugin install /www/skiff/official/com.skiff.files-0.1.3.wbpkg \
   只勾了 `plugin:` 却不给目标插件 `interop:call` 权限的一侧，内核按四道闸拒绝，不影响其他调用。
   `cron` 本身不需要 `fs`/`docker`：它只经内核 `scheduler` 能力面管理任务，**不执行宿主 shell**。
 - `guard`：逐个勾要守护的 `container:<name|id>` 或 `project:<p>`；未授权容器只展示不重启。
-- `files`：只勾站点内容目录 `path:/www/sites/<域名>/index`；插件会拒绝其它形态的授权根，
-  站点之外的路径一律 403。回收站/配额/上传下载请用内核「工具 → 文件管理」页。
 - `sources`：授权面比其他插件重，装前必须逐条看清——`path:/www/runtime/cache/apk`（写安装器源缓存）、`path:/etc/docker`（读写 `daemon.json`）、`bin:/usr/bin/systemctl`（reload）、`bin:/usr/bin/docker`（校验生效）、出网 `unrestricted`（测速要连用户自填的任意镜像域名，无法预列 IP）。不勾 `bin:` 时测速照常、应用会 403；不勾 `path:/etc/docker` 时镜像源只能看不能改。
 - `testkit`：勾 `path:/proc`（验证授权读与越界拒绝）；要验证 `interop:call` 时再勾
   `plugin:com.skiff.cron`。注意 cron 当前 `[interop].provides` 为空（调度已收归内核），

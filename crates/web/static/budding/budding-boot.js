@@ -818,6 +818,7 @@
         // 后者覆盖前者，镜像/卷/网络/容器写操作会被静默劫持到设置保存。
         skiffDockerSettingsWrite: dockerSettingsWrite,
         skiffRuntimeCreate: runtimeCreate,
+        skiffRuntimeVersions: runtimeVersionsRefresh,
         skiffRuntimeImages: runtimeImagesWrite,
         skiffRuntimeAction: runtimeAction,
         skiffRuntimeProbe: runtimeProbe,
@@ -1050,9 +1051,14 @@
   function search(args, ctx) {
     var q = args.q;
     if (q === undefined) q = formValues(ctx).q;
+    // 分类筛选（审计页）：未显式给 `cat` 时读表单下拉，重置按钮可显式传空串清掉。
+    var cat = args.cat;
+    if (cat === undefined && ctx) cat = formValues(ctx).cat;
     var params = new URLSearchParams();
     var text = String(q == null ? '' : q).trim();
     if (text) params.set('q', text);
+    var category = String(cat == null ? '' : cat).trim();
+    if (category) params.set('cat', category);
     if (args.cursor) params.set('cursor', String(args.cursor));
     var query = params.toString();
     window.location.href = String(args.base || location.pathname) + (query ? '?' + query : '');
@@ -1135,14 +1141,67 @@
   function runtimeCreate(args, ctx) {
     var v = formValues(ctx);
     var kind = formText(v.kind).trim();
+    // 版本来源两条：清单外手填优先，其次取当前类型那一份下拉（字段名 `version_<kind>`）。
+    // 每类各有一份下拉，只有当前类型那个是可见的，所以按 kind 取名即可。
+    var version =
+      formText(v.version_custom).trim() || formText(v['version_' + kind]).trim();
     return writePost('/runtimes', {
       kind: kind,
-      version: formText(v.version).trim(),
+      version: version,
       name: formText(v.name).trim(),
       // 非 PHP 不发该字段（null = 不改动），否则会用一个与安装无关的选择
       // 去改写全局 apk 源。
       apk_mirror: kind === 'php' ? formText(v.apk_mirror).trim() : null
     }, { ctx: ctx, args: args, fallbackMsg: '安装任务已提交' });
+  }
+
+  /// 刷新镜像服务的版本清单：三类各拉一次，再整页重载让新建弹窗拿到新选项。
+  ///
+  /// 串行而不并发：清单拉取是一条条内网请求，串行能保持提示信息与顺序可读。
+  function runtimeVersionsRefresh() {
+    var kinds = ['php', 'node', 'rust'];
+    var ok = [];
+    var missing = [];
+    var failed = [];
+    var chain = Promise.resolve();
+    kinds.forEach(function (kind) {
+      chain = chain.then(function () {
+        return fetchRawJson(apiBase + '/runtimes/versions?refresh=true&kind=' + kind)
+          .then(function (body) {
+            var data = (body && body.data) || {};
+            if (data.failed) {
+              failed.push(kind + '：' + (data.error || '拉取失败'));
+              return;
+            }
+            if (data.source === 'registry') {
+              ok.push(kind + ' ' + (data.versions || []).length + ' 个版本');
+              return;
+            }
+            // 服务端没发布该类型的清单（404）不是故障：其余类型照常刷新。
+            missing.push(kind);
+          })
+          .catch(function (e) {
+            failed.push(kind + '：' + ((e && e.message) || '刷新失败'));
+          });
+      });
+    });
+    return chain.then(function () {
+      if (failed.length) {
+        toast(failed[0], 'warning');
+        return;
+      }
+      if (!ok.length) {
+        toast(
+          '镜像服务未发布版本清单（' + missing.join(' / ') + '），仍用内置副本 / 目录大版本',
+          'warning'
+        );
+        return;
+      }
+      toast('版本清单已刷新：' + ok.join('，'), 'success');
+      setTimeout(function () {
+        location.reload();
+      }, 400);
+    });
   }
 
   function runtimeImagesWrite(args, ctx) {

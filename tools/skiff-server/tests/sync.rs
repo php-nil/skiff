@@ -106,6 +106,18 @@ fn sync_copies_missing_blobs_and_passes_self_check() -> Result<()> {
         assert!(mirror.path().join(path).is_file(), "缺少 {path}");
     }
     assert!(mirror.path().join("blobs/sha256").read_dir()?.count() >= 3);
+    // 版本清单也是镜像要对外提供的产物：字节与主站一致，不重新序列化。
+    // 条数按主站实际发布的类型数算（三类都有条目时就是 3 份），不写死。
+    let published = fs::read_dir(primary.path().join("channels/stable/runtime-index"))?.count();
+    assert!(published > 0, "主站产物里应带版本清单");
+    let runtime_index = "channels/stable/runtime-index/php.json";
+    assert_eq!(
+        fs::read(mirror.path().join(runtime_index))?,
+        fs::read(primary.path().join(runtime_index))?,
+        "{runtime_index} 必须与主站字节一致"
+    );
+    assert_eq!(report.runtime_index_written, published);
+    assert_eq!(report.runtime_index_removed, 0);
 
     // 再同步一次：全部复用、清单未变化。
     let again = sync::run(
@@ -117,6 +129,7 @@ fn sync_copies_missing_blobs_and_passes_self_check() -> Result<()> {
     assert_eq!(again.blobs_fetched, 0);
     assert_eq!(again.blobs_reused, 3);
     assert!(!again.manifest_written);
+    assert_eq!(again.runtime_index_written, 0, "字节没变不该重写");
     Ok(())
 }
 
@@ -151,6 +164,42 @@ fn resync_fetches_only_the_new_blob() -> Result<()> {
         mirror.path().join("blobs/sha256").read_dir()?.count() > old_blobs,
         "旧 blob 必须保留"
     );
+    Ok(())
+}
+
+#[test]
+fn stale_runtime_index_is_removed_when_source_stops_publishing_it() -> Result<()> {
+    let (signer, public_key) = signer()?;
+    let primary = tempfile::tempdir()?;
+    let mirror = tempfile::tempdir()?;
+    publish_primary(primary.path(), &signer)?;
+    sync::run(
+        &DirSource::new(primary.path()),
+        "stable",
+        mirror.path(),
+        &public_key,
+    )?;
+    let stale = mirror.path().join("channels/stable/runtime-index/php.json");
+    assert!(stale.is_file(), "首次同步应带上版本清单");
+    // 镜像里有几份清单：主站发布几种类型就有几份，主站停发后应被逐份删掉。
+    let published = fs::read_dir(mirror.path().join("channels/stable/runtime-index"))?.count();
+    assert!(published > 0, "首次同步应带上版本清单");
+
+    // 主站换成一份「不再发布版本清单」的新产物（seq 递增），镜像不能继续对外发旧清单。
+    let variant = tempfile::tempdir()?;
+    copy_dir(primary.path(), variant.path())?;
+    fs::remove_dir_all(variant.path().join("channels/stable/runtime-index"))?;
+    bump_release(variant.path(), &signer)?;
+
+    let report = sync::run(
+        &DirSource::new(variant.path()),
+        "stable",
+        mirror.path(),
+        &public_key,
+    )?;
+    assert_eq!(report.runtime_index_written, 0);
+    assert_eq!(report.runtime_index_removed, published);
+    assert!(!stale.exists(), "主站不发布的类型不能在镜像里留旧副本");
     Ok(())
 }
 

@@ -158,6 +158,8 @@ pub struct SiteSettings {
     pub data_dir: PathBuf,
     pub nginx_image: String,
     pub php_image: String,
+    /// 镜像前缀（可空）：非默认版本的应用镜像名需要自己拼，见 `runtime_catalog::image_for`。
+    pub image_prefix: String,
     pub port: u16,
     pub registry_mirror: String,
 }

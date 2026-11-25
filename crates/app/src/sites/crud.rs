@@ -532,6 +532,7 @@ impl AppState {
             data_dir: self.cfg.data_dir.clone(),
             nginx_image: pick(KEY_NGINX_IMAGE, DEFAULT_NGINX_IMAGE),
             php_image: pick(KEY_PHP_IMAGE, DEFAULT_PHP_IMAGE),
+            image_prefix: prefix.trim().trim_end_matches('/').to_string(),
             port,
             registry_mirror: db
                 .get_setting(KEY_MIRROR)

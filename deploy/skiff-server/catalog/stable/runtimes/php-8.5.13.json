@@ -1,0 +1,9 @@
+{
+  "kind": "php",
+  "version": "8.5.13",
+  "image": "php:8.5.13-fpm-alpine",
+  "image_digest": "sha256:51414d5291758fe27f58a64c7e8a078465d32cc7dcef7bda803f5b36019802e0",
+  "eol": "2029-12-31",
+  "api_min": "1.0",
+  "default": false
+}

@@ -671,6 +671,10 @@ pub fn docker_schema(data: &Value, images: &Value) -> Value {
                     "PHP 基础镜像标签：{}",
                     image_or_default(text(images, "/php_image"))
                 ),
+                format!(
+                    "版本清单地址（固定路径，只读）：{}（同目录下按类型取 php.json / node.json / rust.json）",
+                    or_unset(text(data, "/runtime_index_url"))
+                ),
                 "只有管理员可以修改 Docker 设置。".to_string(),
             ],
         ));

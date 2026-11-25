@@ -45,7 +45,7 @@ fn table_reload() -> Value {
 
 /// 任务列表页。
 pub fn tasks_page_schema(can_admin: bool, keyword: &str, prefix: &str) -> Value {
-    let base = format!("{prefix}/tasks");
+    let base = format!("{prefix}/tasks/scheduled");
     let mut body = vec![schema_kit::search_form(
         "关键字（任务 / id / 目标 / 来源）",
         keyword,
@@ -95,7 +95,7 @@ pub fn tasks_page_schema(can_admin: bool, keyword: &str, prefix: &str) -> Value 
     table["id"] = json!("tasks-table");
     table["onEvent"] = json!({
         "rowClick": {
-            "actions": [{ "type": "navigate", "props": { "url": format!("{prefix}/tasks/${{id}}") } }]
+            "actions": [{ "type": "navigate", "props": { "url": format!("{prefix}/tasks/scheduled/${{id}}") } }]
         }
     });
     if can_admin {
@@ -244,7 +244,7 @@ pub fn task_detail_schema(
                             task_request(&task.id, "delete", Some(json!({})), "任务已删除", "删除任务失败"),
                             {
                                 "type": "navigate",
-                                "props": { "url": "${prefix}/tasks" }
+                                "props": { "url": "${prefix}/tasks/scheduled" }
                             }
                         ]
                     }

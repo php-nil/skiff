@@ -755,7 +755,8 @@ impl AppState {
                 runtime_catalog::kind_label(&src.kind)
             ))
         })?;
-        let image = runtime_catalog::image_for(&src.kind, &src.version, &s.php_image);
+        let image =
+            runtime_catalog::image_for(&src.kind, &src.version, &s.php_image, &s.image_prefix);
         let cloned = self
             .db()
             .create_runtime(&NewRuntime {
@@ -946,7 +947,8 @@ impl AppState {
         )
         .map_err(|e| format!("写入 PHP-FPM 配置失败：{e}"))?;
 
-        let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);
+        let image =
+            runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image, &s.image_prefix);
         let image_digest = self
             .ensure_runtime_image(job_id, &image, &rt.image_digest)
             .await?;
@@ -1069,7 +1071,8 @@ impl AppState {
         fs.write_kernel(&dir.join("entry.sh"), rust_entry_script().as_bytes())
             .map_err(|e| format!("写入入口脚本失败：{e}"))?;
 
-        let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);
+        let image =
+            runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image, &s.image_prefix);
         let image_digest = self
             .ensure_runtime_image(job_id, &image, &rt.image_digest)
             .await?;
@@ -1201,7 +1204,8 @@ impl AppState {
         fs.write_kernel(&dir.join("entry.sh"), node_entry_script().as_bytes())
             .map_err(|e| format!("写入入口脚本失败：{e}"))?;
 
-        let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);
+        let image =
+            runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image, &s.image_prefix);
         let image_digest = self
             .ensure_runtime_image(job_id, &image, &rt.image_digest)
             .await?;
@@ -2237,9 +2241,16 @@ impl AppState {
         let def = runtime_catalog::kind_def(kind)
             .ok_or_else(|| SiteError::BadRequest(format!("未知运行环境类型：{kind}")))?;
         let version = version.trim();
+        // 页面提示「留空使用该类型默认版本」：大版本清单每类只有一个默认（首项），
+        // 补丁号版本必须显式给出，不做猜测。
+        let version = if version.is_empty() {
+            def.versions.first().copied().unwrap_or("")
+        } else {
+            version
+        };
         if !runtime_catalog::version_supported(kind, version) {
             return Err(SiteError::BadRequest(format!(
-                "{} 版本无效：请从版本下拉中选择（可选：{}）",
+                "{} 版本无效：可选大版本 {}；带补丁号的版本须落在大版本内（如 8.5.13 / 1.99.1）",
                 def.label,
                 def.versions.join(" / ")
             )));
@@ -2287,7 +2298,7 @@ impl AppState {
                 )));
             }
         }
-        let image = runtime_catalog::image_for(kind, version, &s.php_image);
+        let image = runtime_catalog::image_for(kind, version, &s.php_image, &s.image_prefix);
         let enabled = if kind == skiff_store::KIND_PHP {
             runtime_catalog::normalize_extensions(extensions)
         } else {

@@ -162,3 +162,69 @@ fn require_signature_flag_rejects_unsigned_dist() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn builtin_index_flag_compares_against_artifact_bytes() -> Result<()> {
+    let artifact = build(&catalog(), &schema(), &Signer::Unsigned)?;
+    let dist = tempfile::tempdir()?;
+    write(&artifact, dist.path())?;
+
+    // 内置副本目录：把产物里那份清单原样拷过去，视为「已回填」。
+    let builtin = tempfile::tempdir()?;
+    let published = dist.path().join("channels/stable/runtime-index/php.json");
+    fs::copy(&published, builtin.path().join("php.json"))?;
+
+    let catalog_dir = catalog();
+    let schema_dir = schema();
+    let args = [
+        "check",
+        "--catalog",
+        catalog_dir.to_str().unwrap(),
+        "--schema",
+        schema_dir.to_str().unwrap(),
+        "--dist",
+        dist.path().to_str().unwrap(),
+        "--builtin-index",
+        builtin.path().to_str().unwrap(),
+    ];
+    let ok = run(&args, &[]);
+    assert!(ok.status.success(), "stderr: {}", stderr(&ok));
+
+    // 内置副本改一个字节就必须失败，并指出两份摘要。
+    let mut bytes = fs::read(builtin.path().join("php.json"))?;
+    bytes.push(b'\n');
+    fs::write(builtin.path().join("php.json"), &bytes)?;
+    let bad = run(&args, &[]);
+    assert!(!bad.status.success(), "内置副本不一致必须失败");
+    let message = stderr(&bad);
+    assert!(
+        message.contains("内置副本与产物不一致"),
+        "错误必须点名不一致: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn builtin_index_requires_dist() -> Result<()> {
+    let builtin = tempfile::tempdir()?;
+    fs::write(builtin.path().join("php.json"), b"{}\n")?;
+    let output = run(
+        &[
+            "check",
+            "--catalog",
+            catalog().to_str().unwrap(),
+            "--schema",
+            schema().to_str().unwrap(),
+            "--builtin-index",
+            builtin.path().to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("--builtin-index 必须配合 --dist"),
+        "错误必须说明缺 --dist: {}",
+        stderr(&output)
+    );
+    Ok(())
+}

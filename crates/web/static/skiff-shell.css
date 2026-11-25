@@ -13,6 +13,27 @@
 /* budding 自带面包屑槽：`bar: false` 后仍会回落默认面包屑，与三级菜单重复。 */
 .bud-admin__crumbs { display: none !important; }
 
+/* --------------------------------------------------------------------------
+   侧栏顶部品牌标记
+
+   上游 `.bud-admin__mark` 渲染的是「品牌名首字母 + 强调色方块」（Skiff → `S`），
+   不是产品图标。这里换成入库的 `favicon.svg`（与浏览器标签页、登录页同一图形）：
+   URL 相对**样式表**解析，自动落到 `/<入口前缀>/static/favicon.svg`，CSS 里
+   不必拼前缀。选择器多两级是为了压过上游的 scoped 规则
+   `.bud-admin__mark[data-v-…]`（特异度 0,2,0）。
+   -------------------------------------------------------------------------- */
+.bud-admin .bud-admin__brand .bud-admin__mark {
+  background-color: transparent;
+  background-image: url("favicon.svg");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 26px 26px;
+  /* 首字母仍在 DOM 里（上游插槽默认内容），用字号归零藏掉，别用 display:none 之外的手段。 */
+  color: transparent;
+  font-size: 0;
+  letter-spacing: 0;
+}
+
 .skiff-subnav {
   position: sticky;
   top: 0;
@@ -104,10 +125,6 @@
    在短列表里像表格下浮着一行错字；数据一次取齐的列表不需要这个尾巴。
    -------------------------------------------------------------------------- */
 .bud-table-load-more-end { display: none !important; }
-
-/* 安装进度告警：webInstallText 用 \n 分行拼装，而 alert 的 text 默认吞掉换行
-   （就是「安装日志挤成一段」的来源），这里让每一步各占一行。 */
-.skiff-web-install { white-space: pre-line; }
 
 /* 界面设置预设色点：白色/奶油色在浅色卡片上需要描边才分得清。 */
 .skiff-swatch {

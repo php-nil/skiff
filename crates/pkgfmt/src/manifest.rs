@@ -177,7 +177,7 @@ pub struct UiEntry {
 }
 
 /// 固定一级菜单 id：插件只能挂到这些父级下，不能新增一级。
-pub const MENU_L1: &[&str] = &["sites", "tools", "plugins", "docker", "settings"];
+pub const MENU_L1: &[&str] = &["sites", "tasks", "tools", "plugins", "docker", "settings"];
 
 /// 内核内置图标集（v1）。插件只能引用这里的名字，禁止外链/HTML/SVG 字符串。
 pub const MENU_ICONS: &[&str] = &[
