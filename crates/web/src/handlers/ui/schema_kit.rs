@@ -86,6 +86,19 @@ pub fn row_button(text: &str, actions: Vec<Value>, color: &str) -> Value {
     json!({ "type": "button", "props": props, "onEvent": { "click": { "actions": actions } } })
 }
 
+/// 行按钮 + 自带 `onError`/`then` 的动作链（`chain` 直接作为 `click` 处理器）。
+///
+/// `row_button` 把动作包成 `{click:{actions:[…]}}`，数组元素必须是**带 type 的动作**；
+/// budding 编译器只允许「无 type 的壳对象」（`{actions/then/onError}`）出现在处理器位置本身，
+/// 不允许它做数组元素。需要失败分支的按钮因此要走这条：`chain` = 一个壳对象。
+pub fn row_button_chain(text: &str, chain: Value, color: &str) -> Value {
+    let mut props = json!({ "text": text, "variant": "text", "size": "small" });
+    if !color.is_empty() {
+        props["color"] = json!(color);
+    }
+    json!({ "type": "button", "props": props, "onEvent": { "click": chain } })
+}
+
 /// 卡片：标题 + 可选说明 + 正文节点。
 pub fn card(title: &str, body: Vec<Value>) -> Value {
     json!({ "type": "card", "props": { "title": title }, "content": { "body": body } })

@@ -457,37 +457,37 @@ pub fn trash_schema(data: &Value) -> Value {
             TableOpts::default(),
         );
         table["props"]["rowActions"] = json!([
-            kit::row_button(
+            // 恢复：先按 overwrite=false 试；失败由 onError 接管（弹覆盖确认 → 以
+            // overwrite=true 重试 → 刷新）。两条路径都要刷新，所以 `then` 与 `onError`
+            // 各自收尾。处理器必须是单个壳对象——数组元素只接受带 type 的动作。
+            kit::row_button_chain(
                 "恢复",
-                vec![
-                    // 动作组：先尝试 overwrite=false 恢复；失败时 onError 接管，
-                    // 弹出覆盖确认后以 overwrite=true 重试。
-                    json!({
-                        "actions": [trash_request(
+                json!({
+                    "actions": [trash_request(
+                        "restore",
+                        json!({ "id": "${id}", "overwrite": false }),
+                        "",
+                        ""
+                    )],
+                    "onError": [
+                        json!({
+                            "type": "confirm",
+                            "props": {
+                                "title": "恢复失败",
+                                "content": "目标已存在或恢复失败。是否覆盖现有对象后重试？",
+                                "color": "error"
+                            }
+                        }),
+                        trash_request(
                             "restore",
-                            json!({ "id": "${id}", "overwrite": false }),
-                            "",
-                            ""
-                        )],
-                        "onError": [
-                            json!({
-                                "type": "confirm",
-                                "props": {
-                                    "title": "恢复失败",
-                                    "content": "目标已存在或恢复失败。是否覆盖现有对象后重试？",
-                                    "color": "error"
-                                }
-                            }),
-                            trash_request(
-                                "restore",
-                                json!({ "id": "${id}", "overwrite": true }),
-                                "已覆盖恢复",
-                                "恢复失败"
-                            )
-                        ]
-                    }),
-                    kit::reload_page()
-                ],
+                            json!({ "id": "${id}", "overwrite": true }),
+                            "已覆盖恢复",
+                            "恢复失败"
+                        ),
+                        kit::reload_page()
+                    ],
+                    "then": [kit::reload_page()]
+                }),
                 "primary"
             ),
             kit::row_button(
@@ -671,4 +671,84 @@ fn enc(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// budding 编译器的硬规则：`actions` / `then` / `onError` / `elseActions` 是**动作数组**，
+    /// 每个元素都必须带非空 `type`；无 type 的壳对象只能放在处理器位置本身。
+    /// 2026-11-26 上机巡检发现回收站「恢复」按钮把壳对象塞进数组，整页 `CompileError`。
+    fn assert_typed_action_arrays(node: &Value, path: &str) {
+        const CHAIN_KEYS: [&str; 4] = ["actions", "then", "onError", "elseActions"];
+        match node {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    if CHAIN_KEYS.contains(&key.as_str()) {
+                        if let Value::Array(items) = value {
+                            for (idx, item) in items.iter().enumerate() {
+                                let typed = item
+                                    .get("type")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|t| !t.is_empty());
+                                assert!(
+                                    typed,
+                                    "{path}/{key}/{idx} 是动作数组元素，必须带非空 type：{item}"
+                                );
+                            }
+                        }
+                    }
+                    assert_typed_action_arrays(value, &format!("{path}/{key}"));
+                }
+            }
+            Value::Array(items) => {
+                for (idx, item) in items.iter().enumerate() {
+                    assert_typed_action_arrays(item, &format!("{path}/{idx}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn trash_row_actions_use_typed_actions_and_chain_handlers() {
+        let data = serde_json::json!({
+            "retention_days": 30,
+            "items": [{
+                "id": "trash-1",
+                "original_path": "/www/sites/a/index/x.txt",
+                "kind": "file",
+                "size": 12,
+                "files": 0,
+                "deleted_at": "2026-11-26T02:00:00Z",
+                "actor_type": "admin",
+                "actor_id": "admin",
+                "expires_at": "2026-12-26T02:00:00Z"
+            }]
+        });
+        let schema = trash_schema(&data);
+        assert_typed_action_arrays(&schema, "");
+
+        // 恢复按钮仍要保留失败分支：click 是壳对象（带 onError），不是动作数组。
+        let rows = schema
+            .pointer("/content/body")
+            .and_then(Value::as_array)
+            .expect("回收站页必须有正文");
+        let table = rows
+            .iter()
+            .find(|n| n.get("props").and_then(|p| p.get("rowActions")).is_some())
+            .expect("有条目时必须渲染表格行操作");
+        let restore = &table["props"]["rowActions"][0];
+        assert_eq!(restore["props"]["text"], "恢复");
+        let click = &restore["onEvent"]["click"];
+        assert!(
+            click.get("onError").is_some(),
+            "恢复失败要能弹覆盖确认：{click}"
+        );
+        assert!(
+            click.get("actions").is_some() && click.get("then").is_some(),
+            "成功与失败两条路径都要收尾：{click}"
+        );
+    }
 }
