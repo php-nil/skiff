@@ -167,6 +167,15 @@ impl NginxParams {
 /// 属于「保存成功但带告警」的静默路径。下限保留 1024，避免把 fd 限制压得过低。
 pub fn render_main_nginx_conf(p: &NginxParams) -> String {
     let rlimit_nofile = p.worker_connections.max(1024);
+    // `gzip_types` 空值必须整行省略：nginx 把 `gzip_types ;` 当语法错误
+    // （`invalid number of arguments`），而空值本身是合法语义（默认只压 text/html）。
+    // API 调用方漏传该字段时不能因此渲出一份非法主配置。
+    let gtypes = p.gzip_types.trim();
+    let gzip_types_line = if gtypes.is_empty() {
+        String::new()
+    } else {
+        format!("    gzip_types {gtypes};\n")
+    };
     format!(
         "# 由 Skiff 内核生成；手工修改请走「网站 → Nginx → 配置」，保存前会执行 nginx -t。\n\
          worker_processes {wp};\n\
@@ -186,7 +195,7 @@ pub fn render_main_nginx_conf(p: &NginxParams) -> String {
          \x20   keepalive_timeout {kt}s;\n\
          \x20   client_max_body_size {body};\n\
          \x20   gzip {gzip};\n\
-         \x20   gzip_types {gtypes};\n\
+         {gzip_types_line}\
          \x20   include /etc/nginx/conf.d/*.conf;\n\
          \x20   server {{\n\
          \x20       listen 127.0.0.1:8081;\n\
@@ -204,7 +213,6 @@ pub fn render_main_nginx_conf(p: &NginxParams) -> String {
         kt = p.keepalive_timeout,
         body = p.client_max_body_size.trim(),
         gzip = if p.gzip { "on" } else { "off" },
-        gtypes = p.gzip_types.trim(),
     )
 }
 
@@ -1304,6 +1312,29 @@ mod tests {
             render_main_nginx_conf(&small).contains("worker_rlimit_nofile 1024;"),
             "{}",
             render_main_nginx_conf(&small)
+        );
+    }
+
+    #[test]
+    fn main_conf_omits_empty_gzip_types_directive() {
+        // API 漏传 gzip_types 时 handler 会构造空串；渲成 `gzip_types ;` 会让
+        // nginx -t 直接失败（invalid number of arguments），保存被回滚。
+        let empty = NginxParams {
+            gzip_types: "   ".into(),
+            ..Default::default()
+        };
+        let conf = render_main_nginx_conf(&empty);
+        assert!(!conf.contains("gzip_types"), "{conf}");
+        assert!(conf.contains("gzip on;"), "{conf}");
+        // 非空值仍要原样写出。
+        let listed = NginxParams {
+            gzip_types: "text/plain".into(),
+            ..Default::default()
+        };
+        assert!(
+            render_main_nginx_conf(&listed).contains("    gzip_types text/plain;\n"),
+            "{}",
+            render_main_nginx_conf(&listed)
         );
     }
 
