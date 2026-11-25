@@ -6,42 +6,37 @@
 
 ## 5. 当前部署
 
-> **2026-11-25 晚：换到含 11-25 源码的新包，就地升级两跳 + 补完 MIRROR 上机验收（当前；包 `a0f27c8`，`sha256=2d0e29b7…`）**
-> - 背景：上一条记录用的是 11-24 的包，面板侧「三个版本清单」根本不存在（`/ui/v1/runtimes/versions` 被 `/runtimes/{id}` 吃掉）。本轮把 11-24 后半到 11-25 的积压改动提交、CI 转绿、出包，再就地升级沿用现场（不清库、不换前缀）。
-> - **提交与门禁**：`7918bac`（代码）/ `7e3146f`（文档）/ `f194751`（`eol` 按日期比对 + `--help`）/ `a0f27c8`（修 11-24 遗留的 9 项 `main_flow` 断言）。CI run `45616188710`（提交 `a0f27c8`）**全绿**；同一提交的 Release run `45616962452` 出包。
-> - **两跳升级**（都是 `sh install.sh --no-start < /dev/null`，不传 `--listen/--tls`）：`7e3146f` 包 12,538,394 B / `2c8297f0…` → `a0f27c8` 包 **12,538,544 B / `2d0e29b7…`**；两跳都 exit 0、`/etc/skiff/config.toml` 与升级前**逐字节相同**、`/www/skiff/official/` 收敛为 7 个包（手工清掉上一轮遗留的 `com.skiff.files-0.1.3.wbpkg`）、前缀仍是 `8au3xewy`、`/healthz` 200。
-> - **升级副作用（已修）**：第一跳后版本下拉把 13 个 PHP 版本全标「已 EOL」——清单 `eol` 是日期，面板按「非空即 EOL」解析，日期字段当布尔用会全量命中；`f194751` 改成与今天比对，第二跳后 `eol: []`、0 处「已 EOL」。注意面板下拉读本地缓存，升包后要点一次「刷新版本清单」才重算。
-> - **MIRROR 验收**（详见 [08-SELFHOST_MIRROR.md](../../TEST_MATRIX/08-SELFHOST_MIRROR.md) §2.1）：01~09 全部通过，含篡改摘要拒绝、异钥 `key_id` 拒绝、断源降级与新包的三类清单（PHP 13 / Node 9 / Rust 1，每分支 3 条）。
-
-> **2026-11-25 干净重装：本机当服务端（`skiff-server serve`）+ 测试机当客户端的安装对接轮（历史；包同 `c841074`，未出新包）**
-> - 背景：为验证「先装、再连镜像」这条链路，测试机现场（11-23 首装 + 两轮就地升级，前缀 `gk5y33tq`，库 `user_version=22`）整体备份后 **干净重装**；本轮**换包不换代**——仍用 11-24 的 amd64 包，只为验安装与目录对接，不带 2026-11-25 的源码改动（`runtime_index` 版本匹配修复、`/ui/v1/runtimes/versions` 端点均**不在**该包内）。
-> - **备份**（重装前，测试机 `/root/iter/backup-20261125/`）：`config.toml.bak`（7,048 B）、`skiff-data.tgz`（4,122,767 B，含库与插件数据）、`sites-old/`、`php-old/`、`runtime-old/`。
-> - **卸载**：`printf 'YES\n' | sh uninstall.sh --purge` → 退出 0；`/etc/skiff`、`/www/skiff`、`/usr/local/bin/skiff*`、unit 全部消失，`/www` 仅剩 `log`/`nginx`。
-> - **安装**（2026-11-25 19:18 HKT = 11:18 UTC）：`sha256sum -c` 通过（`c905859d…9451b2`）→ `sh install.sh --listen 0.0.0.0:18080 --tls off --no-start` exit **0** → 追加 `allow_insecure_http = true` 与 `[catalog]` 段 → `systemctl restart skiff`。`skiff.service` enabled+active；`/healthz` 200；日志：初始 admin 口令生成、官方公钥 `ed73de3e…cd47` 自动信任。
-> - **坐标变化**：入口前缀 **`gk5y33tq` → `8au3xewy`**；口令重置为 `/www/skiff/initial-admin.txt` 生成值（已同步 `/root/iter/admin-pw.txt`，0600，未改密）。坐标见 [01-ACCESS.md](01-ACCESS.md) §2/§3。
-> - **形态三配置**（同上一轮口径）：`listen = "0.0.0.0:18080"`、`tls_enabled = false`、`allow_insecure_http = true`（人工追加）。
-> - **新增 `[catalog]` 段**（人工追加，验对接用）：`enabled = true`、`channel = "stable"`、`mirrors = ["http://10.66.52.7:8080"]`、`public_key = "7a9cb5d3…da2b"`、`timeout_secs = 10`。出厂默认 `enabled = false`，不写这段就没有商店入口。
-> - **自检**：`skiff doctor` 六项全 ok（数据根 / 站点根 / 库 / 配置 / TLS 成对 / Docker socket），另加一条「未配置宿主挂载授权根」的安全提示；`/www/skiff/official/` 8 个官方包 + `public-key.txt` 在位；启动后自动建出 `php-8.5` 运行环境（Docker 29.7.2 在位）。
-> - **对接结果**：商店页 `message` = 「已从 http://10.66.52.7:8080 更新到 seq 1」，`key_configured=true`，`sections` 三类齐全（插件 1 / 应用模板 1 / 运行环境 23）；再刷新命中 304（「展示本地缓存」）；停掉镜像服务后为「镜像源不可达…Connection refused」，恢复后回到 304。逐项判定见 [04-ACCEPTANCE.md](04-ACCEPTANCE.md)，用例见 [TEST_MATRIX/08-SELFHOST_MIRROR.md](../TEST_MATRIX/08-SELFHOST_MIRROR.md)。
-> - **未覆盖**：`accept.sh` 全量（本轮只跑 `doctor` + 手工断言，未跑 B 组改密与 A6 权限位全表）；浏览器巡检；运行环境清单的三类来源（该包无 `versions` 端点，面板侧 404 —— 见 [TEST_LEDGER.md](../TEST_LEDGER.md)）。
+> **2026-11-26 还原后干净首装 + 三次就地升级（当前；包 `a915b6e`，`sha256=c038e313…`）**
+> - 背景：测试机还原为干净系统，按「重新发版 → 干净装 → 装插件/建环境/建站点 → 全量测 → 修缺陷 → 重出包 → 就地升级 → 再测」跑完整一轮；三个产品缺陷见 `docs/changes/2026-11-26.md`。
+> - **包序列**（都是 amd64 `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz`，覆盖同一 Release 资产）：
+>   干净首装 `92949ea` 12,538,527 B `6c246450…`（Release `45673872060`）→ `070ff1d` 12,539,101 B `87a828e5…`（`45678981070`，修 `gzip_types`）→ `7810675` 12,541,372 B `d7fb85d8…`（`45683912296`，修回收站 CompileError）→ **`a915b6e` 12,542,260 B `c038e313…`（`45688148056`，修文案与错误落地页）**。
+> - **干净首装**：preflight 8/8 PASS → `sh install.sh --listen 0.0.0.0:18080 --tls off --no-start` exit **0** → 追加 `allow_insecure_http` 与 `[catalog]` → `systemctl restart skiff`。`skiff.service` enabled+active、`/healthz` 200、前缀 **`5e3yz2yr`**、`skiff doctor` 六项 ok、`official/` 7 包 + `public-key.txt`、自动建出 `php-8.5`（Docker 29.7.2）。
+> - **三次就地升级**（都 `sh install.sh --no-start < /dev/null`，不传 `--listen/--tls`）：exit 0、`/etc/skiff/config.toml` 与升级前**逐字节相同**、前缀仍是 `5e3yz2yr`、`/healthz` 200、`official/` 保持 8 项（7 包 + 公钥）、已装插件与容器全保留。
+> - **能力面**：7 个官方插件（cron / firewall / ftp / guard / monitor / sources / testkit）全部已验签安装；`php-8.5`（`php:8.5.13-fpm-alpine`）running；OpenResty 已装；站点 `matrix.local`（PHP）/ `matrix-static.local`（静态）/ `matrix-proxy.local`（反代，上游 18081）三站 200，PHP 页 `PHP Version 8.5.13`。
+> - **自建镜像**：开发机 `serve --dist target/skiff-server/dist --listen 0.0.0.0:8080 --http`；测试机三类清单 `source=registry`、`failed=false`（PHP 13 / Node 9 / Rust 1）。`serve` 是前台进程，随开发机会话退出（Windows 无 systemd）；断源时测试机按设计降级（PHP→`builtin`、Node/Rust→`catalog`），重启服务后 `GET /ui/v1/runtimes/versions?kind=…&refresh=true` 回到 `registry`。
+> - **已知行为**：保存 PHP 运行参数 = 重启 PHP 容器，同环境站点约 3.2 秒 503（100 ms 采样 150 次、非 200 共 29 次）；`crates/docker/src/client.rs` 的自定义信号白名单决定了不做 `USR2` 热重载，文案已改为「重启 PHP 容器」并写明 503 窗口。
+> - **本轮验收**：`accept.sh` 47 PASS / 0 FAIL / 5 SKIP（SKIP 均为本次调用不适用）；`round.sh` 106、`round_ext.sh` 30、`round_ext2.sh` 20，全 0 FAIL；浏览器 44 路由 **44 PASS / 0 FAIL**；回收站恢复 / 覆盖恢复 / 彻底删除三条路径实测通过。
+> - 更早的部署轮次（2026-11-25 及以前）见 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md)。
 
 ## 6. Release 资产台账（当前资产；历史坐标见 03-DEPLOY_LOG.md）
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `45317927914`（dispatch `ref=main`，head `c841074`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-24 03:17 UTC。
-- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`c841074`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **当前资产来源**：Release run `45688148056`（dispatch `ref=main`，head `a915b6e`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-25 19:51 UTC（本机 11-26 03:51）。
+- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`a915b6e`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **本轮同一 Release 覆盖了四次**（`92949ea`→`070ff1d`→`7810675`→`a915b6e`），下表只列最后一次；前三次坐标见 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md)。
 
-| 资产 | 大小 | sha256 | 资产 id |
-| --- | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,923,388 B | `c905859dd6bdb72a48b0e85b7061f21f7476ffbcac194b49804fed2d459451b2` | （本轮） |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | — | （侧车，内容同上摘要） | （本轮） |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 12,388,716 B | （本轮仅 amd64 实测） | （本轮） |
-| `skiff-server-x86_64-unknown-linux-musl` | 3,941,088 B | （本轮未下载） | （本轮） |
-| `checksums.txt` | 434 B | （本轮未下载） | （本轮） |
+| 资产 | 大小 | sha256 |
+| --- | --- | --- |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,542,260 B | `c038e313c9c4bcabdfeaef1da61811cc245f8c3e95ccbad9e39f75c1dce0279b` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | 侧车，内容同上摘要（`d3d0f954…`） |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 11,974,674 B | `4fe4772dfc230c0fb3f983fcd3422a76f8da8e33c2e5d5b5d2efecaca306926f`（本轮仅 amd64 实测） |
+| `skiff-server-x86_64-unknown-linux-musl` | 4,031,200 B | `e8cde7ad42d427aa139dfe6a43d59f7e9e6612fe43d77143cd9aac4cc35a7fde`（本轮未下载） |
+| `skiff-server-aarch64-unknown-linux-musl` | 3,256,464 B | `0974d954…`（本轮未下载） |
+| `checksums.txt` | 434 B | `bfb03f6cf56565a8d2ab5ad70497a70d0ac80905da15a18296ffc470d56e1739` |
 
-- **下载与核对**：本轮走「测试机 curl 直连 GitHub Release → 侧车 `sha256sum -c` → 包内 `checksums.txt` 复核」。
-- **Release 触发方式**：开发机用 git credential manager 取 token 后 `Invoke-RestMethod -Uri .../actions/workflows/release.yml/dispatches -Method Post` 直接 dispatch（`git push` 已通，网络恢复）。
+- **下载与核对**：测试机 `curl` 直连 GitHub Release → 侧车 `sha256sum -c` → 包内 `checksums.txt` 复核（四次升级都做了双验，全 OK）。侧车声明的文件名带版本号，落盘改名会让 `sha256sum -c` 报 `FAILED open or read`——先按原名存再校验。
+- **Release 触发方式**：开发机用 git credential manager 取 token 后 `POST .../actions/workflows/release.yml/dispatches`（`version=0.1.0`、`publish=true`、`release_tag=v0.1.0`、`skip_plugins=false`）。
 
 ### 6.1 镜像侧产物（开发机 `serve` 托管，2026-11-25）
 
