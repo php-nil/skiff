@@ -17,7 +17,8 @@
 - **自建镜像（通过）**：三类清单 `source=registry`、`failed=false`（PHP 13 / Node 9 / Rust 1）。中途开发机 `serve` 随会话退出导致 `Connection refused`，测试机按设计降级（PHP→`builtin`、Node/Rust→`catalog`），重启后 `?refresh=true` 回到 `registry`——降级与恢复都符合预期。
 - **本批修掉的缺陷**：① 面板只改 `gzip on/off` 时不提交 `gzip_types`，内核渲出 `gzip_types ;`，`nginx -t` 失败并回滚保存；② 回收站「恢复」把壳对象当动作数组元素，整页 `CompileError`；③ PHP 配置保存文案写「重载 FPM」而实际重启容器（约 3.2 秒 503），且真实错误页被套上「该功能正在适配中」。
 - **已知行为（非缺陷）**：保存 PHP 运行参数 = 重启容器 → 同环境站点约 3.2 秒 503（采样 150 次、非 200 共 29 次），已在页面提示写明；`crates/docker/src/client.rs` 的自定义信号白名单决定不做 `USR2` 热重载（改动属策略决策，见 [TEST_LEDGER.md](../TEST_LEDGER.md)）。
-- **未做**：MIRROR-08/09 的篡改与异钥拒绝本轮未重跑（上一轮已过，镜像产物字节未变）；aarch64 仍未装机实测；`com.example.hello` 占位包（镜像里故意放的那个）依旧按设计被拒装。
+- **镜像侧（通过）**：MIRROR-08 篡改（等长改版本号）→「校验失败：索引摘要与 manifest 不符」；MIRROR-08 异钥 →「验签失败: 清单 key_id 与固定公钥不匹配」；两次都 `can_install=false` 且保留上次成功快照。MIRROR-09 `runtimes --channel stable` 4.3 秒、全「未变」、内置副本无变化。临时 8081/8082 服务与临时 dist 已清理，客户端配置按备份原样恢复。
+- **未做**：aarch64 仍未装机实测（只有 qemu 冒烟）；`com.example.hello` 占位包（镜像里故意放的那个）依旧按设计被拒装；长时间观测类（闲置 RSS / 并发登录）不进每轮。
 
 **2026-11-25 20:55 就地升级到 `a0f27c8` 包（12,538,544 B / `2d0e29b7…`）：MIRROR-01~09 全部通过，含面板侧三类清单**
 

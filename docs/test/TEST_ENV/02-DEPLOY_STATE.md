@@ -16,6 +16,7 @@
 > - **自建镜像**：开发机 `serve --dist target/skiff-server/dist --listen 0.0.0.0:8080 --http`；测试机三类清单 `source=registry`、`failed=false`（PHP 13 / Node 9 / Rust 1）。`serve` 是前台进程，随开发机会话退出（Windows 无 systemd）；断源时测试机按设计降级（PHP→`builtin`、Node/Rust→`catalog`），重启服务后 `GET /ui/v1/runtimes/versions?kind=…&refresh=true` 回到 `registry`。
 > - **已知行为**：保存 PHP 运行参数 = 重启 PHP 容器，同环境站点约 3.2 秒 503（100 ms 采样 150 次、非 200 共 29 次）；`crates/docker/src/client.rs` 的自定义信号白名单决定了不做 `USR2` 热重载，文案已改为「重启 PHP 容器」并写明 503 窗口。
 > - **本轮验收**：`accept.sh` 47 PASS / 0 FAIL / 5 SKIP（SKIP 均为本次调用不适用）；`round.sh` 106、`round_ext.sh` 30、`round_ext2.sh` 20，全 0 FAIL；浏览器 44 路由 **44 PASS / 0 FAIL**；回收站恢复 / 覆盖恢复 / 彻底删除三条路径实测通过。
+> - **镜像侧用例**：MIRROR-08/09 本轮也跑了——篡改 `index.json`（等长换 `8.5.13`→`8.5.19`）被拒（声明 `2921ccf4…` vs 实得 `9c65de52…`），换另一把密钥签的产物被拒（清单 `key_id=7c30dc6c…` vs 公钥 `707cede3…`），两次都 `can_install=false` 且保留上次快照；`runtimes --channel stable` 4.3 秒幂等（PHP/Node/Rust 全「未变 13·9·1」，内置副本无变化，工作区干净）。临时 8081/8082 镜像与临时 dist 已删、客户端 `config.toml` 已按备份原样恢复（与升级前逐字节相同）。
 > - 更早的部署轮次（2026-11-25 及以前）见 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md)。
 
 ## 6. Release 资产台账（当前资产；历史坐标见 03-DEPLOY_LOG.md）

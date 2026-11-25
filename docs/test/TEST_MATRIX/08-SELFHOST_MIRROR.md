@@ -40,7 +40,7 @@
 | MIRROR-08 | 篡改与伪造被拒 | `[上机]` | 复制 dist 到临时目录，改 `index.json` 一个字节（保持长度）后起第二个 `serve`，把 `mirrors` 指过去 → 刷新；再改回并重启 | 客户端拒绝该渠道并给出摘要/验签失败原因，**不**把新内容并入商店；改回后恢复 fresh。换一把无关公钥签的渠道同样被拒（`key_id` 不一致） | ☑通过（2026-11-25） | `crates/app/src/catalog/verify.rs`、`tools/skiff-server/src/sign.rs` |
 | MIRROR-09 | 版本清单刷新命令（发布侧） | `[本机]` | `skiff-server runtimes --channel stable --proxy <url> [--per-branch 3] [--prune] [--dry-run]` | 有全量条目时摘要复用、不联网；`--dry-run` 不联网不落盘；`--per-branch` 只接受 1..=4；某类全部解析失败即整体退出、旧条目与 `default` 不动 | ☑通过（2026-11-25） | `tools/skiff-server/src/runtimes.rs`、`tests/runtimes.rs` |
 
-## 2.1 本轮实测记录（2026-11-25 晚，包 `a0f27c8` / `2d0e29b7…`）
+## 2.1 本轮实测记录（2026-11-26，包 `a915b6e` / `c038e313…`；04~09 本轮重跑，01~03 沿用同一份 dist——产物字节未变，仅 `test` 侧重新取过）
 
 | 用例 | 实测输出 |
 | --- | --- |
@@ -51,8 +51,8 @@
 | MIRROR-05 | 首次刷新「已从 http://10.66.52.7:8080 更新到 seq 1」，`key_configured=true`、`allow_unsigned=false`、总条目 26（插件 1 / 应用模板 1 / 运行环境 23 / 升级 1）；再刷为「目录未更新（304），展示 … 的本地缓存」；镜像访问日志同一时刻出现 `manifest.json` / `.sig` / `index.json` 三条 GET |
 | MIRROR-06 | `versions?kind=php\|node\|rust&refresh=true` 均为 `source=registry`、`failed=false`、`generated_at=2026-11-25T10:07:00Z`（渠道时间）；PHP 13 条（`8.6.0`；`8.5.13/12/11`；`8.4.28/27/26`；`8.3.37/36/35`；`8.2.36/35/34`）、Node 9 条（`26.13.1/13.0/12.1`、`24.22.3/2/1`、`22.23.5/4/3`）、Rust 1 条（`1.100.0`）；面板弹窗三个下拉共 **23** 项、`已 EOL` **0** 处、`8.6.0（最新）`，提示行给出 `http://10.66.52.7:8080/channels/stable/runtime-index/{php,node,rust}.json` |
 | MIRROR-07 | 连续两次刷新都是「304 本地缓存」（`fetched_at` 随校验前移）；停 `serve` 后 store 报「镜像源不可达… Connection refused (os error 111)」且 `fetched_at` 冻在上次成功值，`versions` 报 `failed=true` 但仍返回缓存条目；恢复后回到 304 |
-| MIRROR-08 | 篡改 `index.json`（`8.5.13`→`8.5.19`，长度不变，摘要变 `48f24d21…`）后：`can_install=false`、「校验失败：索引摘要与 manifest 不符：声明 2921ccf4…，实得 48f24d21…；已拒绝该清单并保留上次成功快照」；换异钥产物（`key_id=c0d75726…`）：「验签失败: 清单 key_id 与固定公钥不匹配（清单 c0d75726…，公钥 707cede3…）」。两次改回后都回到 304 |
-| MIRROR-09 | `runtimes --channel stable`（不带 `--proxy`）**7.6 s** 完成，PHP/Node/Rust 均「新增 0 / 更新 0 / 未变 13·9·1」，内置副本「无变化」；`git status` 干净（幂等） |
+| MIRROR-08 | 篡改 `index.json`（`8.5.13`→`8.5.19`，长度不变，摘要变 `9c65de52…`）：`can_install=false`、「校验失败：索引摘要与 manifest 不符：声明 2921ccf4…，实得 9c65de52…；已拒绝该清单并保留上次成功快照」；换另一把密钥签的产物（清单 `key_id=7c30dc6c…`）：「验签失败: 清单 key_id 与固定公钥不匹配（清单 7c30dc6c…，公钥 707cede3…）」。两次都未被采用；临时 8081/8082 服务与临时 dist 已清理，客户端 `config.toml` 按备份恢复（与升级前逐字节相同） |
+| MIRROR-09 | `runtimes --channel stable`（不带 `--proxy`）**4.3 s** 完成，PHP/Node/Rust 均「新增 0 / 更新 0 / 未变 13·9·1」，内置副本「无变化」；`git status` 干净（幂等） |
 
 两条口径修正（实测才发现，已写进上表）：
 
