@@ -228,3 +228,21 @@ fn builtin_index_requires_dist() -> Result<()> {
     );
     Ok(())
 }
+
+/// `--help` 必须逐子命令可用：`parse` 把它当取值选项，曾经报「参数 --help 缺少取值」。
+#[test]
+fn subcommand_help_is_available() {
+    for sub in ["runtimes", "sync", "serve", "check", "publish"] {
+        let output = run(&[sub, "--help"], &[]);
+        assert!(
+            output.status.success(),
+            "{sub} --help 应成功，实际 stderr: {}",
+            stderr(&output)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(sub),
+            "{sub} --help 的输出必须提到该子命令: {stdout}"
+        );
+    }
+}

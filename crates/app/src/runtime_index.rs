@@ -23,6 +23,7 @@
 //!
 //! 条目只带面板真正消费的 `version` / `eol` / `default`：`image` / `image_digest` **有意不发**
 //! ——按 digest 锁定安装会把「镜像还没同步」变成硬安装失败，得单独设计失败面之后才出 v2。
+//! `eol` 是**日期**不是布尔（`2027-12-31` = 该分支到这天结束支持），过期才算 EOL。
 //!
 //! **内置副本只对 PHP 存在**（`assets/runtime-index/php.json`，是服务端产物的快照）：
 //! PHP 的补丁号差异直接影响扩展可用性，值得离线也列出来；Node.js / Rust 的可选版本是
@@ -98,7 +99,7 @@ pub struct VersionIndex {
     #[serde(default)]
     pub generated_at: String,
     pub versions: Vec<String>,
-    /// 已 EOL 的版本：页面标注并排到最后，正常版本仍可按原顺序选。
+    /// 已 EOL 的版本（清单 `eol` 日期已过期）：页面标注并排到最后，正常版本仍可按原顺序选。
     #[serde(default)]
     pub eol: Vec<String>,
     /// 镜像服务声明的默认版本；为空时页面预选首个可用项。
@@ -241,8 +242,10 @@ fn parse_index(kind: &str, expected_channel: &str, body: &str) -> Result<Parsed,
         serde_json::from_str(body).map_err(|e| format!("清单不是合法 JSON：{e}"))?;
     let mut tags: Vec<String> = Vec::new();
     let mut parsed = Parsed::default();
+    // EOL 判定要「与今天比」：清单里的 `eol` 是日期，未来日期表示仍受支持。
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     match &raw {
-        serde_json::Value::Array(rows) => collect_entries(rows, &mut tags, &mut parsed),
+        serde_json::Value::Array(rows) => collect_entries(rows, &mut tags, &mut parsed, &today),
         serde_json::Value::Object(map) => {
             if let Some(schema) = map.get("schema").and_then(|v| v.as_str()) {
                 // 未知主版本必须整份拒绝：字段语义可能已经变了，不猜着解析。
@@ -271,7 +274,7 @@ fn parse_index(kind: &str, expected_channel: &str, body: &str) -> Result<Parsed,
             }
             for key in ["results", "tags", "versions", "items"] {
                 if let Some(serde_json::Value::Array(rows)) = map.get(key) {
-                    collect_entries(rows, &mut tags, &mut parsed);
+                    collect_entries(rows, &mut tags, &mut parsed, &today);
                 }
             }
         }
@@ -302,7 +305,16 @@ fn parse_index(kind: &str, expected_channel: &str, body: &str) -> Result<Parsed,
 }
 
 /// 同时收集版本名与 v1 条目的附加字段（`eol` / `default`）。
-fn collect_entries(rows: &[serde_json::Value], out: &mut Vec<String>, parsed: &mut Parsed) {
+///
+/// `eol` 是**日期**（`YYYY-MM-DD`，该 cycle 的结束支持日）而不是布尔：只有已经过期
+/// 才算「已 EOL」。2026-11-25 上机发现这里按「非空即 EOL」处理，把清单里 13 个 PHP
+/// 版本（含刚发的 `8.6.0`）全标成了「已 EOL」——日期字段当布尔用会全量命中。
+fn collect_entries(
+    rows: &[serde_json::Value],
+    out: &mut Vec<String>,
+    parsed: &mut Parsed,
+    today: &str,
+) {
     for row in rows {
         match row {
             serde_json::Value::String(s) => out.push(s.clone()),
@@ -310,7 +322,8 @@ fn collect_entries(rows: &[serde_json::Value], out: &mut Vec<String>, parsed: &m
                 if let Some(serde_json::Value::String(s)) = map.get("version") {
                     out.push(s.clone());
                     if let Some(eol) = map.get("eol").and_then(|v| v.as_str()) {
-                        if !eol.is_empty() {
+                        // ISO 日期按字典序比较即可：未来日期 = 仍受支持，不进 EOL 集。
+                        if !eol.is_empty() && eol <= today {
                             parsed.eol.push(s.clone());
                         }
                     }
@@ -537,7 +550,7 @@ mod tests {
             {"version": "8.5.13", "default": true},
             {"version": "8.5.12"},
             {"version": "8.4.28"},
-            {"version": "8.3.37", "eol": "2027-12-31"}
+            {"version": "8.3.37", "eol": "2020-01-01"}
         ]
     }"#;
 
@@ -548,6 +561,24 @@ mod tests {
         assert_eq!(parsed.default.as_deref(), Some("8.5.13"));
         assert_eq!(parsed.eol, vec!["8.3.37"]);
         assert_eq!(parsed.generated_at, "2026-11-24T12:00:00Z");
+    }
+
+    /// `eol` 是日期：未来日期表示「到那天为止仍受支持」，不能标成已 EOL。
+    ///
+    /// 2026-11-25 上机回归：清单里每个条目都带 `eol`（如 `2030-12-31`），按「非空即
+    /// EOL」解析会把 13 个 PHP 版本全标成「已 EOL」，含刚发布的默认版本。
+    #[test]
+    fn future_eol_date_is_not_marked() {
+        let body = r#"{"schema": "skiff.server.runtime-index/v1", "kind": "php",
+            "channel": "stable", "generated_at": "2026-11-25T10:07:00Z",
+            "versions": [
+                {"version": "8.6.0", "eol": "2030-12-31", "default": true},
+                {"version": "8.5.13", "eol": "2029-12-31"},
+                {"version": "8.3.37", "eol": "2020-01-01"}
+            ]}"#;
+        let parsed = parse_index(KIND_PHP, "stable", body).expect("应能解析");
+        assert_eq!(parsed.eol, vec!["8.3.37"]);
+        assert_eq!(parsed.default.as_deref(), Some("8.6.0"));
     }
 
     #[test]

@@ -109,6 +109,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `skiff-server <子命令> --help` 也要出帮助：`parse` 把 `--help` 当成取值选项，
+    // 于是 `runtimes --help` 报「参数 --help 缺少取值」（2026-11-25 上机发现）。
+    if args.len() > 1 && args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        print!("{HELP}");
+        return Ok(());
+    }
     match args.first().map(String::as_str) {
         Some("gen") => gen(&args[1..]),
         Some("publish") => publish(&args[1..]),
