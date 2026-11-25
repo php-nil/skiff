@@ -1,6 +1,6 @@
-# 内核自身架构体检（七维 · 2026-11-21 第四轮复审）
+# 内核自身架构体检（七维 · 2026-11-25 第六轮复审）
 
-> 状态：首轮批次 A/B/C 已收口（2026-11-13 ～ 15）；2026-11-19 全面复审，2026-11-21 第三轮（复用面收口 + 静态产物清理）、第四轮（模块划分 / 职责边界 / 依赖关系 / 复用性 / 过度设计）、第五轮（§3 内核文件写通道收口）。本文件只保留结论、非问题清单、未闭环问题、搁置项与未验证项；已处理的清单随处理完即删（过程见 `docs/changes/`）。
+> 状态：首轮批次 A/B/C 已收口（2026-11-13 ～ 15）；2026-11-19 全面复审，2026-11-21 第三轮（复用面收口 + 静态产物清理）、第四轮（模块划分 / 职责边界 / 依赖关系 / 复用性 / 过度设计）、第五轮（§3 内核文件写通道收口）、第六轮（11-24~25 新增代码复扫 + 五维全量复核）。本文件只保留结论、非问题清单、未闭环问题、搁置项与未验证项；已处理的清单随处理完即删（过程见 `docs/changes/`）。
 > 范围：`crates/`（18 crate）、`xtask/`、`tools/skiff-server`；不含前端/模板/静态资源实现细节，不逐个点评官方插件；插件**体系**（manifest、签名、Supervisor、能力面划分）在范围内。
 > 与既有文档的关系：[ARCH_REVIEW.md](../archive/ARCH_REVIEW.md) 是历史六轮审查（只读存档）；[KERNEL_UI_BOUNDARY_AUDIT.md](KERNEL_UI_BOUNDARY_AUDIT.md) 是内核↔UI 边界专项（web 内部重复与错误映射口径在那边）。行号易腐化，只作结论参考。
 > 方法：逐 crate 读 `Cargo.toml` 与模块树、按关键词定位，关键结论核对源码；本机跑 `fmt`/`clippy --workspace`/`xtask check-channel` 编译级门禁，行为用例以 CI 为准。
@@ -14,6 +14,8 @@
 **2026-11-21 第四轮复审增量结论**：五维全量复扫（18 crate + 官方插件体系），分层禁令与四项单一来源**全部复核通过**，未发现新的绕过点。本轮收口三处**功能性缺陷**：FTP 插件站点身份与内核 `SITE_UID` 冲突（1000 vs 201000，导致站点文档根属主与容器内 PHP 进程不一致）、`/ui/v1/files` 的新建目录/改名漏归还站点身份（与遗留 `/{p}/files` 行为分叉）、loopback 旁路采信客户端可伪造的审计身份头；商店清单验签改走 `skiff-sign` 唯一实现；清理死代码与空抽象（`app/attention.rs` 195 行、`sched::Executor`、`plugin::FirewallHost` + 内核 `KernelHost`、`runtime_catalog` 三个零调用函数、`web/handlers/sites/crud.rs`）净 −364 行；重复实现收口（暂存文件清理两份合一、运行环境机型清单双份合一、`web` 层三处本地时间格式化合一）。新增搁置项 C11–C14（`commands/file.rs` 转发层根因、`web` 两套文件处理器并存、`dto.rs` 请求/响应混装 + 全局导出、`site_page.rs` 手写 Schema）。
 
 **2026-11-23 第五轮复核增量结论**：五维全量复扫（逐 crate 读 `Cargo.toml` + 通道/分层禁令源码核查），依赖关系、通道唯一、分层禁令与第四轮**完全一致，无新违规**；全仓 13 处 `#[allow(dead_code)]` 均有正当理由，无真死代码。收口 11-22 前端迁移批次引入的复用缺口：`reload_page()` / `or_dash()` 各三处重复定义收敛到 `schema_kit`（净 −24 行，补两例单测）；`site_page.rs` 已改用 `schema_kit` 构件（C14 部分改善）。新增体量观察：`routes.rs` 1128 行、`dto.rs` 1257 行、`main_flow.rs` 9106 行（C8/C9 阈值未触发但在涨）。同日收口 C12（两套文件处理器并存 → 单一路径 `/ui/v1/files/*`，见 §4 C12）。
+
+**2026-11-25 第六轮复审增量结论**：重点是 11-24~25 新增代码（`runtime_index.rs` / `AuditCategory` 审计分类 / 菜单「任务审计」一级重组 / `skiff-server runtimes`·`sync` 补同步）+ 五维全量复核。结论：分层禁令与四项单一来源**全部复核通过，无新违规**；`app`/`core` 直写扫描命中全部位于 `#[cfg(test)]`（含 `runtime_catalog.rs` 内 `sh -n` 测试）；`RUNTIME_INDEX_KINDS` 单一来源在 `skiff-server` 的 `build.rs`，`sync`/`runtimes`/`check` 均导入；审计分类的命名空间清单单一来源在 `skiff_model::AuditCategory`（`store` 的 SQL 过滤与 web 下拉都从这里取，SQL 侧只持有命名空间表达式编码，非第二份清单）。收口一处归属偏差：`AuditCategory::label` 的中文文案原放在 `skiff-model`，违反 AGENTS.md §4.1「纯枚举文案留 `web/src/labels.rs`」，已迁到 `crate::labels::audit_category`（行为不变，`fmt` + 定向 clippy 通过）。过热文件行数复核均未触发 C8/C9 重启条件：`tasks.rs` 2692（+8%）、`runtime_catalog.rs` 2110（+5%）、`menu.rs` 1922（+1%）、`routes.rs` 1171（+3.8%）、`dto.rs` 1296（+3%）；`main_flow.rs` 8745 行较第五轮回落。
 
 
 | 维度 | 结论 | 关键证据 |
@@ -54,6 +56,7 @@
 | N22 | `crates/store/src/db/` 14 个子模块的拆分依据不完全一致 | 9 个严格按表、5 个按业务域聚合从属表（`jobs`/`plugins`/`runtimes`/`sites`/`tasks`）、1 个按执行车道拆（`maintenance`，长持锁操作需要与短事务车道分开表达）。每处不一致都有明确领域理由。**不强行统一** |
 | N23 | `crates/core/src/commands.rs` 含站点属主对齐等业务实现 | `core` 是可执行 crate（无 lib target），CLI 命令天然在此；`sites_chown_index` 的递归遍历 + 属主对齐规则与 `app/src/sites/layout.rs` 的口径一致，迁移收益低于跨 crate 暴露成本。**暂不迁移** |
 | N24 | `crates/sdk/src/bin/skiff-plugin.rs` 的 `pack`/`stamp` 与 `crates/pkgfmt` 的打包能力重叠 | SDK CLI 面向插件作者（脚手架 + 一键打包），`pkgfmt` 是内核侧库；SDK 复用 `pkgfmt` 的实现而非复制。**不迁移** |
+| N25 | `skiff-server` 的 `HttpUpstream`（`upstream.rs`，代理 + Bearer 挑战 + 30s 超时）与 `app` 商店目录客户端的 `UreqTransport`（`catalog/fetch.rs`，条件请求 + 自定义 CA + 3s 建连）各封装一份 ureq | 两处需求形状不同（上游版本抓取 vs 条件 GET 目录拉取），分属发布工具与内核装配层；合并要么新增共享 crate，要么让 `skiff-server` 反向依赖 `skiff-app`。与 N15 同类的纯成本项。**保留观察，不列为待办** |
 
 ## 3. 未闭环问题
 
@@ -67,7 +70,7 @@
 
 - **C5 `plugin → axum` 解耦**。现状：能力实现（`crates/plugin`）直接以 axum 的请求/响应类型表达结果，HTTP 形状与命令编排混在一层。不做的原因：需先定义**传输无关**的能力面返回类型，会改动所有能力方法签名与两处调用方，当前没有第二种传输或第二个消费方，纯收益无法验证。**重启条件**（任一）：① 能力面接入第二种传输（SDUI/CLI/内部 RPC）；② 出现内核之外的第二个能力消费方；③ 新增能力时因 HTTP 形状被迫在 `plugin` 里写路由判断。届时先落「能力面返回类型」设计文档，再按能力族分批迁移。
 - **C6 `store/db.rs` 拆文件**。现状：迁移、查询与事务集中一个 1.2k 行文件。不做的原因：纯组织收益（零行为变化），且该文件是每次 schema 变更的冲突热点，无 schema 变更窗口里拆会产生无法用行为验证的大 diff。**重启条件**（任一）：① 下一次 schema 变更时顺带按「迁移 / 站点 / 运行环境 / 审计 / 设置」拆；② 两个以上会话同时改该文件；③ 单文件超过当前体量 1.5 倍。拆分时保持 `Db` 对外 API 不变。
-- **C8 `tasks.rs` / `runtime_catalog.rs` / `menu.rs` 拆分正名**。现状：`tasks.rs` 2.5k 行混仓储适配/tick 装配/内置执行体/scheduler 能力面/`serde_json::Value` 视图五件事；`runtime_catalog.rs` 2.0k 行装运行环境机型/apk 源/端口分配/PHP 扩展四类且与 `catalog/` 撞名（应属 sites 域，如 `sites/runtime_catalog.rs`）；`app/menu.rs` 1.9k 行把声明解析、排序、偏好写库与渲染模型混在一起；「store」一词三义（skiff-store / `catalog/store.rs` 缓存 / `commands/store.rs` 商店用例）。不做的原因同 C6：纯移动的大 diff 无行为验证面。**重启条件**（任一）：① 下次改 tasks 内置执行体或运行环境目录时顺带拆；② 三文件任一再涨 20%；③ 「store」一词多义引发实际混淆事故。拆分方案：`tasks/builtins.rs` + 视图挪 `views/`（改结构体）、runtime_catalog 归位改名、`catalog/store.rs`→`catalog/cache.rs`。（2026-11-23 补充观察：11-22 新增 `web/handlers/ui/routes.rs` 1128 行、`dto.rs` 1257 行，职责单一但偏大；若任一再涨 20% 提前触发拆分，同走「顺带拆」口径。）
+- **C8 `tasks.rs` / `runtime_catalog.rs` / `menu.rs` 拆分正名**。现状：`tasks.rs` 2.5k 行混仓储适配/tick 装配/内置执行体/scheduler 能力面/`serde_json::Value` 视图五件事；`runtime_catalog.rs` 2.0k 行装运行环境机型/apk 源/端口分配/PHP 扩展四类且与 `catalog/` 撞名（应属 sites 域，如 `sites/runtime_catalog.rs`）；`app/menu.rs` 1.9k 行把声明解析、排序、偏好写库与渲染模型混在一起；「store」一词三义（skiff-store / `catalog/store.rs` 缓存 / `commands/store.rs` 商店用例）。不做的原因同 C6：纯移动的大 diff 无行为验证面。**重启条件**（任一）：① 下次改 tasks 内置执行体或运行环境目录时顺带拆；② 三文件任一再涨 20%；③ 「store」一词多义引发实际混淆事故。拆分方案：`tasks/builtins.rs` + 视图挪 `views/`（改结构体）、runtime_catalog 归位改名、`catalog/store.rs`→`catalog/cache.rs`。（2026-11-23 补充观察：11-22 新增 `web/handlers/ui/routes.rs` 1128 行、`dto.rs` 1257 行，职责单一但偏大；若任一再涨 20% 提前触发拆分，同走「顺带拆」口径。2026-11-25 第六轮复核：tasks 2692 / runtime_catalog 2110 / menu 1922 / routes 1171 / dto 1296，均未触发 20% 阈值。）
 - **C9（2026-11-21）`crates/web/tests/main_flow.rs` 单文件 8.0k 行 / 145 个用例（`#[test]` + `#[tokio::test]` 实测）**。现状：登录、会话、RBAC、插件安装、`/ui/v1` 各页、DTO 冻结全在一个文件里，靠 banner 注释分区。不做的原因：纯移动的大 diff，且用例结果只能由 CI 验证，本机仅能保证编得过。**重启条件**（任一）：① 下次大改用例时顺带按主题拆 `tests/main_flow/{auth,plugins,sites,ui_dto}.rs`；② 单文件超 12k 行；③ 两个以上会话同时改该文件。
 - **C10（2026-11-21，规则已定）展示文案归属**。规则已写入 `AGENTS.md` §4.1：随视图结构变化的留 `app/src/views/*`，纯枚举留 `web/src/labels.rs`，带配色 class/视图语义的留 handler。现状三处（`views/*` 预拼、`labels.rs` 四类枚举、handler 状态文案）**维持不迁移**：统一任一方都要动 SSR+JSON 两个消费面，且没有行为收益可验证。**重启条件**（任一）：① 需要第二种语言 / 前端自渲染文案；② 同一文案两处改漏引发实际不一致；③ 接入第二个前端消费方。
 - **C11（2026-11-21 新增）`app/commands/file.rs` 446 行纯转发层**。现状：22 个 DTO + 22 个一行函数（`WriteFile{user,path,content}` → `fs.write(user,path,content)`，零信息量），存在的唯一理由是 `actions.rs` 的 `ActionSpec.command` 是**字符串**（注释明说「不参与编译期绑定」），需要 `NAMES` 常量表来满足动作漂移测试。根因是动作表用字符串指向命令，而非编译期绑定。**重启条件**（任一）：① 动作表改为「类型 → 命令」的编译期绑定（`ActionSpec` 泛型化或按资源分派枚举）；② 该文件行数再涨 30%；③ 新增资源组时发现必须同时维护 `NAMES` 字符串表。届时删除该层并把 `actions.rs` 的漂移测试改为直接校验 `admin_fs` 方法名。
