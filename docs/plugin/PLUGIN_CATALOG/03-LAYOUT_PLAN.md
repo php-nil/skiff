@@ -30,7 +30,6 @@ plugins/
 │   ├── src/main.rs
 │   └── ui/                 # containers.html / events.html + 随包 schema（默认原生渲染，?legacy=1 才走 iframe）
 ├── monitor/                # com.skiff.monitor
-├── files/                  # com.skiff.files
 ├── cron/                   # com.skiff.cron（调度收归内核：consumes / provides 均为空）
 ├── firewall/               # com.skiff.firewall（firewall 能力面 + provides fail2ban.*）
 ├── ftp/                    # com.skiff.ftp（consumes com.skiff.firewall:fail2ban.*，可选登录防护）
@@ -43,7 +42,7 @@ plugins/
 - crate 名 `skiff-plugin-<x>`；包内可执行名固定 `plugin`（`skiff-plugin pack` 按 `bin/{arch}/plugin` 收）。
 - id 用 `com.skiff.<x>`；版本独立 semver；`api` 按所用特性取最低值（`[[mount]]` 1.1 / `[[menu]]` 1.2 / 随包 schema 1.3，官方插件均已 1.3），内核并行兼容 N-1 主版本。
 - 插件 UI 只经父页面 postMessage 桥取数（`skiff.rpc` / `skiff.rpc.result`），不携带面板凭据、不发同源请求；`[[ui]].label` 直接进主界面顶栏菜单，插件间切换用面板级消息 `skiff.open`（只改地址，不授予能力）。
-- **第三方前端库必须 vendor 进 `ui/`**：插件 UI 的 CSP 是 `script-src 'self'; connect-src 'none'`，CDN 与内联脚本都加载不了（例：`plugins/files/ui/vendor/` 里的 highlight.js 11.9.0 + LICENSE）。
+- **第三方前端库必须 vendor 进 `ui/`**：插件 UI 的 CSP 是 `script-src 'self'; connect-src 'none'`，CDN 与内联脚本都加载不了。
 - **仓库里不含任何密钥的指纹**：manifest `key_id` 是 64 个 0 的占位，打包时才用 `skiff-plugin stamp --key` 在**临时目录**回填；私钥只在 CI secret 或离线发布机。
 
 ### 5.3 构建、签名与发布（已实现）
@@ -59,7 +58,7 @@ plugins/
 ### 5.4 开箱即用的三条交付线（1/3 已落地）
 
 1. **内置官方公钥**：命中内置指纹时显示「官方」徽章并免去手动导入（权限确认仍逐条）。**当前仍是缺口**：信任库只有 TOFU，发布包只带 `official/public-key.txt`，需要管理员手动导入。
-2. **随包携带（已落地）**：发布包内有 `official/`（8 个已签名 `.wbpkg` = 7 个官方插件 + testkit，另加 `public-key.txt`）；`install.sh` 复制到 `/www/skiff/official/`（0755），**不自动安装**。
+2. **随包携带（已落地）**：发布包内有 `official/`（7 个已签名 `.wbpkg` = 6 个官方插件 + testkit，另加 `public-key.txt`）；`install.sh` 复制到 `/www/skiff/official/`（0755），**不自动安装**。
 3. **面板「官方插件」列表 + 一键安装**：从本地官方源读取、离线可用、安装仍走权限确认对话框。**未做**（现在只能 `skiff plugin install` 或面板上传）。
 
 > 只把 `.wbpkg` 放 GitHub Release、让用户手动上传，不算「开箱即用」——第 3 条是下一步。

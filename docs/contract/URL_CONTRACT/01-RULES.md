@@ -42,8 +42,7 @@
 | `/{p}/files` | 文件管理 |
 | `/{p}/plugins` | 插件（`installed`、`discover`、`updates`、`store`；功能页 `/{p}/plugins/{id}`） |
 | `/{p}/settings` | 设置（`security`、`menu`、`ui`、`audit`） |
-| `/{p}/tasks` | 定时任务 |
-| `/{p}/jobs` | 任务中心 |
+| `/{p}/tasks` | 任务审计（计划任务 `scheduled`、任务中心 `jobs`、审计日志 `audit`） |
 
 - 白名单之外仍返回 404（HTML 或 JSON 由 `Accept` 决定），不得回落壳页。
 - `POST` 等写请求**永不回落**，即使 `Accept: text/html`。
@@ -54,7 +53,7 @@
 ## 3. 资源命名
 
 - 资源段用**复数、小写、中划线**：`containers`、`runtimes`、`settings`、`store`、`tasks`、`jobs`。
-- 页面按一级菜单分组落位：网站 `/{p}/sites/*`、Docker `/{p}/docker/*`、插件 `/{p}/plugins/*`、设置 `/{p}/settings/*`；分组段只用于页面，不改变 `/ui/v1` 接口的资源路径。
+- 页面按一级菜单分组落位：网站 `/{p}/sites/*`、Docker `/{p}/docker/*`、插件 `/{p}/plugins/*`、设置 `/{p}/settings/*`、任务审计 `/{p}/tasks/*`；分组段只用于页面，不改变 `/ui/v1` 接口的资源路径。
 - 标识段用资源的天然主键：容器/镜像 id、站点域名、运行环境 id（`php-8.5`）、任务 id、插件 id（含 `.`）。
 - 子资源用**单数**名词：`/{p}/sites/{id}/ssl`、`/{p}/sites/runtimes/{id}/config`、`/{p}/files/trash`。
 - 子资源下的集合仍用复数：`/{p}/sites/runtimes/{id}/extensions`。
@@ -81,7 +80,7 @@
 | 形态 | 形状 | 示例 |
 | --- | --- | --- |
 | 列表 / 详情 | `GET /ui/v1/{资源}[/{id}]` | `/ui/v1/containers`、`/ui/v1/jobs/{id}` |
-| 日志尾随（SSE） | `GET /{p}/{资源}/{id}/logs/stream` | `/{p}/jobs/{id}/logs/stream` |
+| 日志尾随（SSE） | `GET /{p}/{资源}/{id}/logs/stream` | `/{p}/tasks/jobs/{id}/logs/stream` |
 | 终端（WS） | `POST /{p}/containers/{id}/exec/ticket` 换一次性票据，再 `GET /{p}/containers/{id}/exec?ticket=` | §6.2 |
 
 ## 5. 动作命名
@@ -139,7 +138,7 @@
 | DELETE / PUT / PATCH | **不使用** | 统一 POST + 末段动词，避免代理与表单兼容问题 |
 
 - 写操作一律 POST 到 `/ui/v1/*` 的动词端点（如 `POST /ui/v1/sites/{id}/delete`），没有页面级表单提交。
-- 长连接：`GET /{p}/containers/{id}/logs/stream`（SSE）、`GET /{p}/jobs/{id}/logs/stream`（SSE）、`GET /{p}/containers/{id}/exec`（WS，需先 `POST /{p}/containers/{id}/exec/ticket` 换一次性票据）。
+- 长连接：`GET /{p}/containers/{id}/logs/stream`（SSE）、`GET /{p}/tasks/jobs/{id}/logs/stream`（SSE）、`GET /{p}/containers/{id}/exec`（WS，需先 `POST /{p}/containers/{id}/exec/ticket` 换一次性票据）。
 - 失败回执：`/ui/v1/*` 一律 JSON 信封（`{"error":{code,message}}`），不在 URL 里表达成败，也不做 PRG 跳转。
 - `/ui/v1/*` 的写操作一律 POST + CSRF；未认证引导与登录为 `GET /ui/v1/auth/login` 与 `POST /ui/v1/auth/login`（登录用签名 CSRF token + 来源判定，CSRF 放 JSON 体 `csrf` 字段）；`POST /ui/v1/session/logout`、`settings/password`、`settings/totp/setup`、`settings/totp/enable` 为认证类入口（登录态自服务，仍校验 `x-csrf-token` 与本人会话）。
 - `/ui/v1/*` 未认证返回 401 JSON，不做 303；已认证但权限不足返回 403 JSON。
@@ -163,6 +162,9 @@
     `/{p}/totp*`、`POST /{p}/plugins/install`（multipart 上传）一并删除。
   - 2026-11-23：`/{p}/files/*` 遗留文件处理器（22 路由，含 `page`/`trash_shell`/`quotas_shell` 壳页与 `tree`）、
     `/{p}/files/api/*` 308 兼容；JSON 全收口到 `/ui/v1/files/*`，页面改壳页回落（C12 收口）。
+  - 2026-11-24：`/{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}`、`/{p}/jobs/{id}/logs`、
+    `/{p}/settings/audit`（收编为 `/{p}/tasks/scheduled`、`/{p}/tasks/jobs`、`/{p}/tasks/audit`；SSE 同步迁到
+    `/{p}/tasks/jobs/{id}/logs/stream`）。
 
 
 ## 8. 查询参数

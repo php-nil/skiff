@@ -18,7 +18,7 @@
 | `data/trash/` | 内核回收站 | 仅内核 |
 
 - 站点域名从路径推导（`/www/sites/<domain>/...`），写入审计自动填 `site` 字段；即使插件被授权的是父目录 `/www/sites`，也按实际路径归属到具体站点。
-- 站点文件被插件修改时，审计主体是 `plugin:<id>`，`target` 保留完整路径，详情页可按站点过滤。
+- 站点内容被插件（如 `sources`/`guard` 之类获授 `path:` 的插件）修改时，审计主体是 `plugin:<id>`，`target` 保留完整路径，详情页可按站点过滤。
 - **属主例外**：插件经 `fs` 写宿主路径后，内核默认保留原有属主；唯一例外是路径命中
   `/www/sites/<domain>/index/` 子树（`skiff_model::is_site_index_path`），写完用 `lchown`
   归还统一身份 `skiff-web` 201000:201000（不跟随符号链接）。这样站点内容无论由建站、
@@ -27,7 +27,7 @@
 
 ### 8.2 站点页与内核写接口
 
-- P1 站点页文件浏览保持**只读**（现有 `?tab=dir`）；管理员要写，走内核「文件管理」页（`/{p}/files`，第一步已上线）或受控的站点文件编辑接口。
+- P1 站点页文件浏览保持**只读**（现有 `?tab=dir`）；管理员要写，走内核「文件管理」页（`/{p}/files`）。
 - 新增管理员写接口时必须走本契约操作面，不直接 `std::fs::write`；否则审计与原子性会分叉。
 
 ### 8.3 站点删除与回收站
@@ -48,10 +48,9 @@
 | 授权根容量 | `/{p}/fs/grants` | Admin（规划中） | 每个 `path:` 根占用/配额/回收站占用 |
 
 - 深链：`/{p}/files`、`/{p}/files/trash`、`/{p}/files/quotas`（`core/files` 及其 L3）；站点详情页的「文件」入口可深链到按 `site=<domain>` 过滤的审计流。配额管理仍是「工具」下的独立二级入口。
-- 目录归属按 [`docs/contract/MENU_CONTRACT.md`](../MENU_CONTRACT.md) 的三级模型：文件管理是内核固定二级（稳定键 `core/files`），回收站与配额是其 L3（`core/files/trash`、`core/files/quotas`）；三个页面都由 budding 壳页渲染同一套标签栏标签栏，不引入第二套菜单机制。
+- 目录归属按 [`docs/contract/MENU_CONTRACT.md`](../MENU_CONTRACT.md) 的三级模型：文件管理是内核固定二级（稳定键 `core/files`），回收站与配额是其 L3（`core/files/trash`、`core/files/quotas`）；三个页面都由 budding 壳页渲染同一套标签栏，不引入第二套菜单机制。
 - 部署形态：`SKIFF_FORM=docker`（1Panel 受限形态，能力面只有 docker/identity，见 §5.4）不提供内核 fs——「工具 → 文件管理 / 回收站 / 配额管理」入口不渲染；直达壳页仍渲染，`/ui/v1/files*` 数据端点一律 403「当前部署形态不提供文件管理能力」（判定单一来源：`crates/web/src/middleware.rs::check_fs_capability`；C12 收口后页面层不再挂门禁，权限统一在数据层判定）。
 - 恢复/彻底删除/清空：POST + CSRF + 二次确认；结果内联提示（成功/冲突/父目录缺失/失败条目）。
-- 站点文件插件（`com.skiff.files`）保留在「网站」菜单，只服务 `path:/www/sites/<域名>/index`：默认入口为壳页原生 schema（浏览 + 文本编辑/保存），旧完整工作台仅接受显式 `?legacy=1`；全盘管理、上传、回收站与配额仍只在 `core/files`，不提供第二套语义。插件未安装/未启用或当前形态没有 fs 能力时，`/{p}/plugins/com.skiff.files/main` 301 到 `/{p}/files`。
 
 ## 10. API 形态
 

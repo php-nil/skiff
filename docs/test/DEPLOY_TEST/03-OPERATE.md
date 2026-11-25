@@ -106,10 +106,10 @@ skiff plugin install /root/demo-0.1.0.wbpkg --yes \
 skiff plugin list
 ```
 
-**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 8 个已签名的包 = 7 个官方插件（guard/monitor/files/cron/ftp/firewall/sources）+ `com.skiff.testkit` 架构测试台（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包），装机时已复制到 `/www/skiff/official/`：
+**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 7 个已签名的包 = 6 个官方插件（guard/monitor/cron/ftp/firewall/sources）+ `com.skiff.testkit` 架构测试台（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包），装机时已复制到 `/www/skiff/official/`：
 
 ```sh
-ls /www/skiff/official            # com.skiff.{guard,monitor,cron,firewall,ftp,sources,testkit}-0.1.0.wbpkg + com.skiff.files-0.1.3.wbpkg + public-key.txt
+ls /www/skiff/official            # com.skiff.{guard,monitor,cron,firewall,ftp,sources,testkit}-0.1.0.wbpkg + public-key.txt
 # public-key.txt 不需要手动导入：首次启动会自动写入信任库（见 §2.11 注）
 # 仅在公钥缺失/指纹不符时，才需显式执行：
 #   skiff trust import /www/skiff/official/public-key.txt --label official
@@ -120,10 +120,6 @@ skiff plugin install /www/skiff/official/com.skiff.monitor-0.1.0.wbpkg --yes
 # 容器守护：manifest 已声明权限；容器对象按需显式追加
 skiff plugin install /www/skiff/official/com.skiff.guard-0.1.0.wbpkg --yes \
   --resource container:nginx
-
-# 文件管理：默认授权 path:/www（resource_hints 预勾选），装完即可浏览；
-# 想缩小范围就显式覆盖，例如 --resource path:/var/www
-skiff plugin install /www/skiff/official/com.skiff.files-0.1.3.wbpkg --yes
 
 # 计划任务：manifest 已声明 scheduler:read/manage/run/admin 与 interop:call；
 # 要调度别的插件再追加 --resource plugin:<id>

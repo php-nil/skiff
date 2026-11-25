@@ -259,7 +259,7 @@ object-src 'none'; frame-ancestors 'self'
 **何时废弃 `ui/index.html`**
 
 1. 当前阶段（`api <= 1.1` 的包）继续支持 `ui/index.html`，内核按 `main` 回落。
-2. 官方 7 插件 + testkit（8 个包）已全部迁移到 `ui/schema/<view>.json`（`api = "1.3"`）；同名 `ui/<view>.html` 仅保留给 legacy SSR（`?legacy=1`）继续验证 iframe 沙箱与 postMessage 桥，不再作为面板内入口。新包不得再以 `index.html` 作为默认视图。
+2. 官方 6 插件 + testkit（7 个包）已全部迁移到 `ui/schema/<view>.json`（`api = "1.3"`）；同名 `ui/<view>.html` 仅保留给 legacy SSR（`?legacy=1`）继续验证 iframe 沙箱与 postMessage 桥，不再作为面板内入口。新包不得再以 `index.html` 作为默认视图。
 3. 当内核声明不再兼容 API 1.x（`SUPPORTED_API_MAJOR` 移除 1）时，同步删除 legacy `[[ui]]` 合成与 `main → index.html` 回落；届时安装期直接拒绝旧包。
 
 ## 6. 与菜单契约的衔接

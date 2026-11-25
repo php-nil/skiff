@@ -122,7 +122,7 @@ roles = ["admin", "operator", "viewer"]
 
 - `Manifest` 目前只有 `[[ui]]`（`UiEntry { label, path, icon }`）与 `deny_unknown_fields`，没有 `menu` / `mount`。
 - 导航数据由 `crates/app/src/menu.rs::build` 产出、`crates/web/src/handlers/ui/menu.rs` 以 JSON 下发（`GET /ui/v1/menu`）；菜单 DOM 由 budding 运行时渲染，内核不再出模板。
-- 一级固定为 概览 / 网站 / Docker / 工具 / 设置（见 `docs/impl/MENU_*`）与 `/ui/v1/menu` 的实际下发顺序。
+- 一级固定为 概览 / 网站 / Docker / 插件 / 任务审计 / 工具 / 设置（见 `docs/impl/MENU_*`）与 `/ui/v1/menu` 的实际下发顺序。
 - 插件页：详情 `/{p}/plugins/{id}` 交壳页；功能页 `/{p}/plugins/{id}/{view}` 有 schema 原生渲染，否则 `?legacy=1` 走 iframe。
 - 设置拆为 `/{p}/settings/{security,menu,ui,audit}`；Docker 设置归 `/{p}/docker/settings`。
 
@@ -146,15 +146,15 @@ roles = ["admin", "operator", "viewer"]
 | `core/plugins/discover` | `/{p}/plugins/discover` | |
 | `core/plugins/updates` | `/{p}/plugins/updates` | |
 | `core/plugins/store` | `/{p}/plugins/store` | 目录启用时才出现；确认页 `/{p}/plugins/store/confirm` |
-| `core/tasks` | `/{p}/tasks` | |
-| `core/jobs` | `/{p}/jobs` | |
+| `core/tasks/scheduled` | `/{p}/tasks/scheduled` | 任务审计一级 |
+| `core/tasks/jobs` | `/{p}/tasks/jobs` | 任务审计一级 |
+| `core/tasks/audit` | `/{p}/tasks/audit` | 任务审计一级；仅 operator / admin |
 | `core/files` | `/{p}/files` | 回收站 / 配额是其 L3：`/{p}/files/trash`、`/{p}/files/quotas` |
 | `core/settings/security` | `/{p}/settings/security` | |
 | `core/settings/menu` | `/{p}/settings/menu` | |
 | `core/settings/ui` | `/{p}/settings/ui` | |
-| `core/settings/audit` | `/{p}/settings/audit` | 仅 operator / admin |
 | `plugin/<id>/<l2>[/<l3>]` | `/{p}/plugins/<id>/<view>` | 有 schema 由壳页原生渲染；`?legacy=1` 才是 iframe 工作台，与 RPC 同权限（非管理者 403） |
-| 旧「应用」菜单 | 解散 | cron/monitor/guard → `工具`，files → `网站`（站点文件）；插件信息页由壳页 `/{p}/plugins/{id}` 承载 |
+| 旧「应用」菜单 | 解散 | cron → `任务审计`，monitor/guard 等 → `工具`；插件信息页由壳页 `/{p}/plugins/{id}` 承载 |
 
 兼容策略：
 
@@ -168,8 +168,7 @@ roles = ["admin", "operator", "viewer"]
 
 | 插件 | L1 | 插件菜单（`id` / 名称） | L3 视图 | 固定页槽位 | 批次 |
 |---|---|---|---|---|---|
-| `com.skiff.files` | 网站 `sites` | `files` 站点文件 | 无（单视图 `main`） | — | B3 |
-| `com.skiff.cron` | 工具 `tools` | `jobs` 任务编辑器 | 无（单视图 `list`；新建/编辑是页内弹窗，**不声明 L3**） | — | B3 |
+| `com.skiff.cron` | 任务审计 `tasks` | `jobs` 任务编辑器 | 无（单视图 `list`；新建/编辑是页内弹窗，**不声明 L3**） | — | B3 |
 | `com.skiff.monitor` | 工具 `tools` | `monitor` 主机监控 | 总览 / 历史采样 / 进程 / 网络（`overview`/`history`/`process`/`network`） | `overview.health` | B2 |
 | `com.skiff.guard` | 工具 `tools` | `guard` 容器守护 | 容器 / 事件（`containers`/`events`） | — | B3 |
 | `com.skiff.firewall` | 工具 `tools` | `firewall` 防火墙 | 防火墙规则 / fail2ban（`rules`/`fail2ban`） | — | 已上线（0.1.0，未验收） |
@@ -180,7 +179,7 @@ roles = ["admin", "operator", "viewer"]
 说明：
 
 - 网站一级由内核自带（网站列表 / 运行环境 / Web 服务），原 `com.skiff.nginx` 已内核化，不再声明插件菜单。
-- `files` 挂「网站」（站点级文件），其余全部挂「工具」，不再作为一级或二级「应用」的平铺项。
+- `files` 挂「网站」（站点级文件），cron 挂「任务审计」，其余插件挂「工具」，不再作为一级或二级「应用」的平铺项。
 - L3 的 `view` 必须对应真实存在的 `ui/<view>.html`；没有对应视图就先不声明，避免假标签。
 
 ### 7.4 分批

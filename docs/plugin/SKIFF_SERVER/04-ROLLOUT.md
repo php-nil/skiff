@@ -30,9 +30,9 @@ P0 只落**服务端产物这一侧**：源数据 → 校验 → 静态产物树
 | 路径 | 内容 |
 |---|---|
 | `deploy/skiff-server/catalog/` | 源数据：`<channel>/channel.json` + `plugins/` `apps/` `runtimes/` `upgrades/` 四类条目 JSON，`assets/` 下有对应原始资产 |
-| `deploy/skiff-server/schema/` | 8 份 JSON Schema：`channel` / `plugin` / `app` / `runtime` / `upgrade` / `index` / `manifest` / `signature` |
+| `deploy/skiff-server/schema/` | 9 份 JSON Schema：`channel` / `plugin` / `app` / `runtime` / `runtime-index` / `upgrade` / `index` / `manifest` / `signature` |
 | `tools/skiff-server/` | 纯 Rust 实现（零原生 C 依赖，故不放进依赖 `zstd`/`rusqlite` 的 `xtask`）；根 workspace 成员 |
-| `target/skiff-server/dist/` | `gen` 的输出目录（不入库）：`channels/<name>/{manifest.json,manifest.json.sig,index.json}` + `blobs/sha256/<hex>` + `schema/` |
+| `target/skiff-server/dist/` | `gen` 的输出目录（不入库）：`channels/<name>/{manifest.json,manifest.json.sig,index.json,runtime-index/<kind>.json}` + `blobs/sha256/<hex>` + `schema/` |
 
 源数据形态与产物形态不同：源条目用 `asset` 指向 `catalog/assets/...`，生成器读文件后派生 `*_sha256` / `*_url` / `size` 并移除 `asset`；产物侧若仍带 `asset` 视为非法。
 
@@ -73,6 +73,7 @@ cargo run -p skiff-server -- check --dist target/skiff-server/dist --require-sig
 | 项 | 状态 | 说明 |
 |---|---|---|
 | 签名流水线 | 已接（§14） | `publish` 从环境变量取种子、发布前用固定公钥自检；上传步骤待托管方案（§15）定后落地 |
-| 镜像同步 | 已做（§14） | `sync` 按内容寻址只补缺失 blob、`seq` 单调、同步后自检并带步骤号报错 |
+| 镜像同步 | 已做（§14） | `sync` 按内容寻址只补缺失 blob、`seq` 单调、同步后自检并带步骤号报错；版本清单随同步落镜像（主站停发的类型删本地残留） |
+| 运行环境版本刷新 | 已做（§14.4） | `runtimes` 从上游取版本与 EOL、每个分支默认保留最近三个版本、按镜像摘要写 catalog 条目，并回填内置副本；镜像仓库不可达时整体不写 |
 | 客户端接入 | P1 只读 + P2 插件安装 + P3 升级只读已完成 | 拉取/验签/缓存/回退/只读商店页见 §11；插件从目录安装见 §12；内核升级提示与下载见 §13；应用模板/运行环境安装、blob 本地缓存与内置公钥仍未接 |
 | 增量索引 | 未做 | 按 §2.4 属 P4 |

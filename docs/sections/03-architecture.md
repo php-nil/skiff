@@ -75,7 +75,7 @@ skiff-core (单进程 · systemd · 宿主机)
 > 「内核自己直接 syscall / spawn」——这样行为天然有记录（文件写进 `audit`、执行进 `jobs`），
 > 不必为每个功能逐条设计权限。`firewall` / `ftp` 两条专用能力面保留但冻结，新功能一律走 `exec`。
 >
-> **内核之外一律插件**（唯一例外是已内核化的「网站」）。文件管理器/防火墙管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs`/`exec` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置。网站（站点列表 / 运行环境 / 设置）已于 2026-11-04 从 `com.skiff.nginx` 插件迁入内核，内核直接编排 nginx + PHP-FPM 容器；站点备份由内核 `scheduler` 内置任务驱动。官方 7 个插件已落地：`guard` 走 `docker` 与 `fs`，`files` / `monitor` 走 `fs`，`cron` 走 `interop` 与 `scheduler`，`firewall` 走 `exec`，`ftp` 走冻结的 `ftp` 能力面（另需 `exec` / `interop`），`sources` 走 `fs` 与 `exec`（见 [PLUGIN_CATALOG.md](../plugin/PLUGIN_CATALOG.md)）。
+> **内核之外一律插件**（例外是已内核化的「网站」与「文件管理」）。防火墙管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs`/`exec` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置。网站（站点列表 / 运行环境 / 设置）已于 2026-11-04 从 `com.skiff.nginx` 插件迁入内核，内核直接编排 nginx + PHP-FPM 容器；站点备份由内核 `scheduler` 内置任务驱动。文件管理（`core/files` → `AdminFs` → `skiff-fs`）留在内核：它要全盘访问，且回收站、配额是内核状态，授权范围不可枚举，做成插件只能复制一套更弱的实现（判定见 [PLUGIN_CATALOG/02-PLUGINS.md](../plugin/PLUGIN_CATALOG/02-PLUGINS.md) §4.5）；对应的 `com.skiff.files`（站点文件）插件已于 2026-11-24 删除，只留内核一套。官方 6 个插件已落地：`guard` 走 `docker` 与 `fs`，`monitor` 走 `fs`，`cron` 走 `interop` 与 `scheduler`，`firewall` 走 `exec`，`ftp` 走冻结的 `ftp` 能力面（另需 `exec` / `interop`），`sources` 走 `fs` 与 `exec`（见 [PLUGIN_CATALOG.md](../plugin/PLUGIN_CATALOG.md)）。
 
 ## 3.4 Web UI 导航结构与信息架构（最终版）
 
@@ -87,10 +87,11 @@ skiff-core (单进程 · systemd · 宿主机)
 |---|---|---|---|
 | 概览 | —（直接链接） | `/{p}` | 行动面板：健康块 + 按影响排序的待办 + 异常容器 + 最近审计 |
 | 网站 | 网站列表 / 运行环境 / Web 服务 | `/{p}/sites/list`、`/{p}/sites/runtimes`、`/{p}/sites/web` | **内核自带**（1Panel 风格的站点闭环：环境安装、建站、启停、删除、日志）；Web 服务底层当前为 OpenResty，菜单与路由不绑定软件名；原 `com.skiff.nginx` 插件已内核化 |
-| 工具 | 各「已启用且有 UI 入口」插件的 `[[ui]].label` | `/{p}/plugins/{id}` | 只列已启用插件；未启用/无 UI 不出现死入口；**0 项时显示可行动空态**；固定顺序 文件→任务→监控→守护 |
+| 工具 | 文件管理（含回收站 L3）/ 配额管理 + 各「已启用且有 UI 入口」插件的 `[[ui]].label` | `/{p}/files`、`/{p}/plugins/{id}` | 只列已启用插件；未启用/无 UI 不出现死入口；**0 项时显示可行动空态** |
+| 任务审计 | 计划任务 / 任务中心 / 审计日志 | `/{p}/tasks/scheduled`、`/{p}/tasks/jobs`、`/{p}/tasks/audit` | 内核固定的运维追溯闭环；审计日志仅 operator / admin 可见，支持按分类筛选 |
 | Docker | 容器 / 镜像 / 网络 / 卷 / 设置 | `/{p}/docker/containers`、`/{p}/docker/images`、`/{p}/docker/networks`、`/{p}/docker/volumes`、`/{p}/docker/settings` | 名称保持「Docker」；设置页承载镜像加速源与镜像前缀 |
 | 插件中心 | —（直接链接） | `/{p}/plugins/installed` | 页内「发现 / 已安装 / 可更新 / 商店」四个 tab；启停、更新、卸载只在插件卡片上 |
-| 设置 | 安全设置 / 菜单 / 界面 / 审计日志 | `/{p}/settings/security`、`/{p}/settings/menu`、`/{p}/settings/ui`、`/{p}/settings/audit` | 四项都是独立页面，不再用页内锚点冒充二级 |
+| 设置 | 安全设置 / 菜单 / 界面 | `/{p}/settings/security`、`/{p}/settings/menu`、`/{p}/settings/ui` | 三项都是独立页面，不再用页内锚点冒充二级 |
 
 配套口径：
 

@@ -21,6 +21,7 @@
 | J 站点压测 / K FTP / L 后台端口与 TLS | [TEST_MATRIX/05-PERF_FTP_PANEL.md](TEST_MATRIX/05-PERF_FTP_PANEL.md) | PERF-xx、FTP-xx、PANEL-xx |
 | M 防火墙与进程网络 / N 任务中心作业 | [TEST_MATRIX/06-FIREWALL_JOBS.md](TEST_MATRIX/06-FIREWALL_JOBS.md) | FW-xx、JOB-xx |
 | O 商店目录 / P 发布面 API / 附 | [TEST_MATRIX/07-STORE_API.md](TEST_MATRIX/07-STORE_API.md) | STORE-xx、API-xx、待核对项结论 |
+| Q 自建镜像（本机托管 → 测试机安装对接） | [TEST_MATRIX/08-SELFHOST_MIRROR.md](TEST_MATRIX/08-SELFHOST_MIRROR.md) | MIRROR-xx |
 
 ## 维护约定
 

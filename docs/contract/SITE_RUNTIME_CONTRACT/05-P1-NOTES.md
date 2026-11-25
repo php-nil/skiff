@@ -21,16 +21,24 @@
   - 容器缺失/未安装 → `8.5` +「未安装」；
   - 容器存在但元数据读不到 → `8.5` +「版本未读取」；
   - **容器停止但容器仍存在时照常显示镜像真实版本**（已知事实，不因未运行回退）。
-- **唯一保留的 exec**：抽屉「实测版本」按钮，用户主动点击才执行 `php -r 'echo PHP_VERSION;'`
+- **唯一保留的 exec**：详情页「实测版本」按钮，用户主动点击才执行 `php -r 'echo PHP_VERSION;'`
   （2 秒超时），显示结果与时间戳，并注明「仅代表当前运行中的容器」。
 - **digest 落库**：安装/重建拉完镜像后从 `ImageInspect.repo_digests` 取 manifest digest 写入
-  `site_runtimes.image_digest`；该值参与「本地已有→跳过拉取 / 与登记值不一致→按 digest 重拉 /
-  新环境回填」判定（`ensure_runtime_image`），不只是展示。
+  `site_runtimes.image_digest`；该值参与拉取判定（`ensure_runtime_image` → `plan_image_pull`），
+  不只是展示。口径（2026-11-24 修订）：
+  - **未登记 digest（新环境）→ 一定按 tag 拉取**。目录里的 tag 是浮动的，本地已有镜像只代表
+    「上次拉到的那一版」；跳过拉取会让新装的 PHP 永远停在旧补丁号（8.5.13 发布后仍装 8.5.12）。
+    镜像已最新时 `pull` 只做 manifest 校验，开销很小。
+  - 登记 digest 与本地一致 → 跳过拉取（同一实例重建保持同一版本，可复现）。
+  - 登记 digest 与本地不一致（tag 漂移）→ 按登记 digest 拉取固定版本并提示，不回退到本地镜像。
+  - 浮动 tag 拉取失败（离线 / 镜像源不可达）且本地已有镜像 → 沿用本地镜像并记一条警告，
+    不把装机升级成阻断失败；固定 digest 的实例没有这条退路。
   **实现口径**：`ImageInfo::primary_digest_for(image)` 按镜像引用的**仓库名**匹配
   `repo_digests`（归一化 `docker.io` / `index.docker.io` 别名与 Docker Hub `library/` 前缀），
   命中不到才退回首个 `@sha256:` 条目。Docker 的 `RepoDigests` 条目本身不含 tag，因此无法按
   tag 精确匹配；同一本地镜像打多个仓库时按仓库名取对应 digest，避免取错仓库导致误判漂移。
-  登记镜像与容器实际 `image_id` 对应镜像不一致时，抽屉提示「登记镜像与容器镜像不一致」，只提示不自动修。
+  登记镜像与容器实际 `image_id` 对应镜像不一致时，列表与详情页提示「登记镜像与容器镜像不一致」，只提示不自动修。
+  已装旧补丁号的实例不会因本口径自动升版（它的 digest 已登记）；要取最新补丁需删除该运行环境重装。
 
 ### 11.2 镜像来源结论与 1Panel 对比
 
@@ -81,14 +89,13 @@
     `app/` 是唯一代码目录；站点目录不写脚手架，绑定站点不改变工作目录。
   - 脚手架只在文件缺失时写入，已存在的用户代码在重建/克隆时原样保留。
 - 站点绑定：站点类型 `runtime`，vhost 生成 `proxy_pass http://<container_ip>:<port>`（不是 `fastcgi_pass`）；
-  解绑入口在抽屉「站点」页签，删除环境仍受「存在绑定站点即拒绝」约束。
+  解绑入口在详情页「站点」子视图，删除环境仍受「存在绑定站点即拒绝」约束。
 - Node.js 已接入，见 §11.6；Go 仍未接入，保持不出现目录项与安装入口。
 
-### 11.4 详情抽屉与扩展管理
+### 11.4 详情页与扩展管理
 
-- **抽屉宽度**：`width: min(840px, 92vw)`，`max-width: 840px`；`max-width: 720px` 时整宽 `100vw`（窄屏）；
-  内容区在 `min-width: 980px` 时两栏，窄屏单栏。头部与底部操作固定，中间内容滚动。
-- **页签**：`基础信息 / 扩展 / 配置 / 日志 / 站点`，沿用 `.workbench-tabs`，抽屉内切换不整页刷新。
+- **形态**：详情是独立页 `/{p}/sites/runtimes/<id>`，子视图 `基础信息 / 配置 / 扩展 / 站点 / 管理 / 日志`
+  由壳页横向菜单切换（地址段驱动，服务端按 `?tab=` 返回该子视图的 schema 与数据）；不再有右侧抽屉。
 - **扩展矩阵（只做 delta）**：
   - 基线 `PHP_EXTENSIONS` 全集按分类（数据库 / 图片 / 加密 / 缓存 / 其他）展示，支持搜索与分类过滤；
   - 版本 delta 用 `since / core_until / pecl_only_since`：8.4 起 `imap` / `oci8` / `pdo_oci` / `pspell`
@@ -124,7 +131,7 @@
 | 版本显示 | 已知显示补丁号；容器缺失 → 目标 + 未安装；元数据缺失 → 目标 + 版本未读取；停止但存在 → 仍显示真实版本 |
 | 缓存 | 同 image_id 只 inspect 一次；image_id 变化重新 inspect；失败 60 秒负缓存；列表渲染路径 0 次 exec |
 | Rust | 创建 → 安装异步任务 → 端口监听 → 站点绑定 `runtime` → 反代返回内容；无 Docker 时验证失败链路与渲染 |
-| 抽屉 | 宽度 `min(840px, 92vw)`；五页签可切换；扩展搜索/分类过滤 |
+| 详情页 | 六个子视图可切换；按子视图只渲染当前块；扩展搜索/分类过滤 |
 | 扩展矩阵 | 8.3 imap 可选、8.4/8.5 不可用；alpine oci8 不可用；mbstring/sodium 不产生编译步骤；PECL 失败回传真 stderr |
 | Node.js | 创建 → 安装异步任务 → HTTP 健康检查 → 站点绑定 `runtime` → vhost 反代返回内容；配置变更触发重建；无 Docker 时验证失败链路与渲染 |
 
@@ -181,7 +188,7 @@
 
 - **展示**：`extensions_for(version, base_image)` 只返回可用项；不可用项不渲染（不灰显、不占位）。
   三版本 × 两基座的可显示项数量见下文实测；50 项全集与 `since/core_until/pecl_only_since` 矩阵不变。
-- **多选安装/卸载**：抽屉扩展页签是一张表单，`name=ext` 多值 + `op=install|uninstall`；
+- **多选安装/卸载**：详情页「扩展」子视图是一张表单，`name=ext` 多值 + `op=install|uninstall`；
   新建弹窗同样多选，随环境创建任务一次提交。
 - **二次确认**：前端拦截提交，列出本次扩展名、是否重启容器、是否触发编译；`extension_is_heavy`
   的重项标注「预计 2–5 分钟（需编译）」。确认后才 POST。
@@ -217,7 +224,7 @@
 | --- | --- |
 | Web 行独立 | 列表首行固定 `web`；安装/删除不影响任一 PHP/Node.js/Rust 行状态 |
 | 基础环境移除 | 页面无「基础环境」文案与 `runtime-base-install`；无 `/sites/env/install` 路由 |
-| 扩展不可用项 | PHP 8.5 抽屉不出现 `imap`；无「当前不可用」灰显文案 |
+| 扩展不可用项 | PHP 8.5 详情页「扩展」子视图不出现 `imap`；无「当前不可用」灰显文案 |
 | 多选 + 确认 | 勾选多项 → 确认弹窗列出名称/重启/编译与重项耗时 → 单个 `extensions-batch` 请求 |
 | 批量后端 | 一个任务串行执行，`RuntimeJob.ext_keys` 为多值，日志合流，只重启一次 |
 | 安装器版本 | 随包脚本 `IPE_VERSION=2.13.2`（非 master），sha256 与常量一致 |
@@ -265,7 +272,7 @@
 
 | 用例 | 口径 |
 | --- | --- |
-| 非 PHP 分流 | Node.js / Rust / Go 详情抽屉无「扩展」页签与 PHP 配置/文件区块；直达 URL 同样不出现；Node.js 显示启动命令/健康检查/环境变量表单 |
+| 非 PHP 分流 | Node.js / Rust / Go 详情页无「扩展」子视图与 PHP 配置/文件区块；直达 URL 同样不出现；Node.js 显示启动命令/健康检查/环境变量表单 |
 | Node.js 站点默认文件 | 新建后站点 `index/` 只有 `package.json` + `server.js`，无 `index.php`；vhost 为 `proxy_pass` |
 | Rust 站点默认文件 | 新建后站点 `index/` 只有 `Cargo.toml` + `src/main.rs`，无 `index.php`；静态站为 `index.html`，反代无文件 |
 | 校验失败 | 写入非法 ini → 返回 400 类错误并提示原因，磁盘文件与 FPM 状态不变 |

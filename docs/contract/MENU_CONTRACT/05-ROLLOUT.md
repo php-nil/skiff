@@ -17,8 +17,9 @@
 | `sites` | 网站 | 分组 | 内核固定：网站列表 / 运行环境 / Web 服务（不依赖插件） |
 | `docker` | Docker | 分组 | 概览 / 容器 / 镜像 / 网络 / 卷 / 编排 / 设置（概览、编排、设置 P3，`route_available=false` 前不渲染） |
 | `plugins` | 插件 | 分组 | 已安装 / 发现 / 可更新 |
-| `tools` | 工具 | 分组 | 插件声明；无提供者显示空态 |
-| `settings` | 设置 | 分组 | 安全设置 / 菜单设置 / 界面 / 审计日志 |
+| `tasks` | 任务审计 | 分组 | 内核固定：计划任务 / 任务中心 / 审计日志（审计仅 operator / admin） |
+| `tools` | 工具 | 分组 | 内核固定：文件管理（含回收站 L3）/ 配额管理；其余由插件声明 |
+| `settings` | 设置 | 分组 | 安全设置 / 菜单设置 / 界面 |
 
 内置图标集（v1）：`dot`、`overview`、`globe`、`docker`、`plug`、`tools`、`settings`、`file`、`clock`、`activity`、`shield`、`container`、`image`、`network`、`disk`、`archive`、`list`、`user`、`lock`。
 

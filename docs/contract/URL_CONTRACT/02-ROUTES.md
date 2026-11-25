@@ -20,8 +20,8 @@
 | 卷 | `/{p}/docker/volumes` | `GET /ui/v1/volumes`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove` |
 | Compose | `/{p}/docker/compose` | `GET /ui/v1/compose`、`POST /ui/v1/compose/validate`、`POST /ui/v1/compose/up`、`POST /ui/v1/compose/down`、`POST /ui/v1/compose/{project}/{action}` |
 | 站点 | `/{p}/sites/list`、`/{p}/sites/new`、`/{p}/sites/{id}`、`/{p}/sites/web`、`/{p}/sites/web/logs` | `GET /ui/v1/sites`（`with_schema=true` 时附带页面 `schema`）、`GET /ui/v1/sites/{id}?tab=`（响应带 `data` + 服务端 `schema`）、`GET /ui/v1/sites/{id}/logs?part=&tail=&q=`；`POST /ui/v1/sites`、`POST /ui/v1/sites/batch`、`POST /ui/v1/sites/{id}/default`、`/domains`、`/config`、`/policy`、`/ssl`、`/backup`、`/delete`、`/ui/v1/sites/{id}/{action}`（站点路径统一用主键，主域名只作展示与删除确认） |
-| Web 服务 | 无独立页（站点页内承载） | `GET /ui/v1/web`、`GET /ui/v1/web/install`、`GET /ui/v1/web/logs`、`POST /ui/v1/web/config`、`POST /ui/v1/web/params` |
-| 运行环境 | `/{p}/sites/runtimes`、`/{p}/sites/runtimes/{id}`、`/{p}/sites/runtimes/{id}/logs` | 读：`GET /ui/v1/runtimes`、`/runtimes/catalog`、`/runtimes/images`、`/runtimes/{id}`、`/runtimes/{id}/logs?tail=`；写：`POST /ui/v1/runtimes`、`/runtimes/images`、`/runtimes/{id}/config`、`/config-file`、`/node-config`、`/port`、`/publish`、`/clone`、`/pecl`、`/probe`、`/extensions`、`/extensions/batch`、`/extensions/{key}/{op}`、`/action/{action}`、`/sites/{domain}/unbind` |
+| Web 服务 | `/{p}/sites/web`（状态 / 配置 / 日志 / 模块） | `GET /ui/v1/web?view=status|config|logs|modules&with_schema=true`、`GET /ui/v1/web/install`、`GET /ui/v1/web/logs`、`POST /ui/v1/web/config`、`POST /ui/v1/web/params`；生命周期（安装 / 启停 / 重启 / 重建 / 删除）复用 `POST /ui/v1/runtimes/web/action/{op}` |
+| 运行环境 | `/{p}/sites/runtimes`、`/{p}/sites/runtimes/{id}`、`/{p}/sites/runtimes/{id}/logs` | 读：`GET /ui/v1/runtimes`、`/runtimes/catalog`、`/runtimes/versions?kind=php[&refresh=true]`（kind 另支持 `node` / `rust`）、`/runtimes/images`、`/runtimes/{id}`、`/runtimes/{id}/logs?tail=`；写：`POST /ui/v1/runtimes`、`/runtimes/images`、`/runtimes/{id}/config`、`/config-file`、`/node-config`、`/port`、`/publish`、`/clone`、`/pecl`、`/probe`、`/extensions`、`/extensions/batch`、`/extensions/{key}/{op}`、`/action/{action}`、`/sites/{domain}/unbind` |
 | 文件 | `/{p}/files`（壳页回落；形态门禁 `fs_capability` 挂在 `/ui/v1/files` 子路由） | JSON 全在 `/ui/v1/files/*`：`GET ?path=`、`/read`、`/download`；`POST /{write,mkdir,rename,remove,copy,chmod,chown,archive,extract,upload}`；`tree` 已下线（无消费方） |
 | 回收站 | `/{p}/files/trash`（壳页回落；`FILE_TRASH_READ` 在数据端点判定） | `GET /ui/v1/files/trash/list`（`with_schema=true` 附页面骨架）、`POST /ui/v1/files/trash/{restore,purge,clear}` |
 | 配额 | `/{p}/files/quotas`（壳页回落；`FILE_QUOTA_READ` 在数据端点判定） | `GET /ui/v1/files/quotas/list`（`with_schema=true` 附页面骨架）、`POST /ui/v1/files/quotas/{set,cancel,scan}` |
@@ -29,9 +29,9 @@
 | 商店 | `/{p}/plugins/store`、`/{p}/plugins/store/confirm` | `GET /ui/v1/store`、`POST /ui/v1/store/plugins/{id}/install`（返回确认数据）、`POST /ui/v1/store/upgrades/{version}/download`（落暂存）、`POST /ui/v1/plugins/confirm`（凭令牌最终安装） |
 | 设置 | `/{p}/settings/security`、`/{p}/settings/menu`、`/{p}/settings/ui` | 读 `GET /ui/v1/settings`、`/settings/menu`、`/settings/docker`、`/settings/ui`；写 `POST /ui/v1/settings/menu`、`/settings/docker`、`/settings/ui`、`/settings/panel`、`/settings/password`、`/settings/totp/setup`、`/settings/totp/enable`、`/settings/keys`、`/settings/keys/{id}` |
 | Docker 设置 | `/{p}/docker/settings` | 复用 `GET /ui/v1/settings/docker`、`POST /ui/v1/settings/docker` |
-| 审计 | `/{p}/settings/audit`（budding 原生只读列表） | `GET /ui/v1/audit?q=&limit=&cursor=`（签名 keyset 游标）；`AuditRead` 权限不变，viewer 403 且菜单不可见 |
-| 定时任务 | `/{p}/tasks`、`/{p}/tasks/{id}` | `GET /ui/v1/tasks`、`GET /ui/v1/tasks/{id}`、`POST /ui/v1/tasks/{id}/toggle`、`/run`、`/delete` |
-| 任务中心 | `/{p}/jobs`、`/{p}/jobs/{id}`、`/{p}/jobs/{id}/logs` | `GET /ui/v1/jobs`、`GET /ui/v1/jobs/{id}`（含 `logs`）、`POST /ui/v1/jobs/{id}/cancel`、`/retry`；`GET /{p}/jobs/{id}/logs/stream`（SSE 尾随） |
+| 审计 | `/{p}/tasks/audit`（任务审计一级；budding 原生只读列表） | `GET /ui/v1/audit?q=&cat=&limit=&cursor=`（`cat` 为动作分类，见 `skiff_model::AuditCategory`；签名 keyset 游标绑定关键字 + 分类）；`AuditRead` 权限不变，viewer 403 且菜单不可见 |
+| 定时任务 | `/{p}/tasks/scheduled`、`/{p}/tasks/scheduled/{id}` | `GET /ui/v1/tasks`、`GET /ui/v1/tasks/{id}`、`POST /ui/v1/tasks/{id}/toggle`、`/run`、`/delete` |
+| 任务中心 | `/{p}/tasks/jobs`、`/{p}/tasks/jobs/{id}`、`/{p}/tasks/jobs/{id}/logs` | `GET /ui/v1/jobs`、`GET /ui/v1/jobs/{id}`（含 `logs`）、`POST /ui/v1/jobs/{id}/cancel`、`/retry`；`GET /{p}/tasks/jobs/{id}/logs/stream`（SSE 尾随） |
 | 壳页回落 | `GET /{p}` 与 `GET /{p}/{白名单前缀}[/{rest}]`（仅 `Accept: text/html`；白名单见 §2.1） | — |
 | 静态资源 | — | `GET /{p}/static/{path}` |
 | 图标 | — | `GET /favicon.ico`（无前缀、无鉴权；复用 `static/favicon.svg`，`image/svg+xml` + `public, max-age=86400`） |

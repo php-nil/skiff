@@ -4,7 +4,23 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-24 11:30 `c841074`：budding 1.8.7 同步 + 页头主操作迁移 + SUBVIEWS 双源合一 + writePost 模板 + 干净首装）
+## 8. 最近一次验收结论（截至 2026-11-25 19:30：本机当服务端 + 测试机安装对接轮）
+
+**2026-11-25 19:18 干净重装：安装链路通过，商店目录对接通过，运行环境清单面板侧未覆盖（旧包无端点）**
+
+- **前置**：测试机现场（11-23 首装 + 两轮升级）整体备份到 `/root/iter/backup-20261125/`（`config.toml.bak`、`skiff-data.tgz` 4.1 MB、`sites-old/`、`php-old/`、`runtime-old/`），再 `printf 'YES\n' | sh uninstall.sh --purge`。卸载后 `/etc/skiff`、`/www/skiff`、`/usr/local/bin/skiff*`、unit 全无，`/www` 仅剩 `log`、`nginx`。
+- **服务端（开发机）**：`publish` 签名产物（`seq=1`、`key_id=707cede3…ac2`、`index.json` 8,303 B、23 条运行环境、三类清单）→ `check --require-signature --builtin-index crates/app/assets/runtime-index` 报「校验通过 + 内置副本一致：1 份」→ `serve --dist … --listen 0.0.0.0:8080 --http --access-log .workbuddy/server-access.log`。本机自检：三件套 + 三类清单 200、`/api/x` 404、`If-None-Match` 304；测试机 `curl` 均 200（60 ms）。
+- **安装（通过）**：`sha256sum -c` 通过（`c905859d…9451b2`）→ `sh install.sh --listen 0.0.0.0:18080 --tls off --no-start` exit **0** → 追加 `allow_insecure_http` 与 `[catalog]` → `systemctl restart skiff`。`skiff.service` enabled+active、`/healthz` 200、前缀 **`8au3xewy`**、`skiff doctor` 六项 ok、`official/` 8 个包 + `public-key.txt` 在位、自动建出 `php-8.5` 运行环境（Docker 29.7.2）。
+- **登录**：`GET /ui/v1/auth/login` 取 `csrf_token` → `POST /ui/v1/auth/login` JSON **200**（`redirect_to=/8au3xewy`）；旧表单路径 `POST /{p}/login` 已返回 405，登录命令要按 JSON 端点写。
+- **目录对接（通过）**：`GET /ui/v1/store?with_schema=true` →
+  - `message` = 「已从 http://10.66.52.7:8080 更新到 seq 1」，`fetched_at=2026-11-25T11:19:38Z`，`key_configured=true`、`allow_unsigned=false`；
+  - `sections` 三类齐全：插件 1、应用模板 1、运行环境 **23**（PHP 13 / Node 9 / Rust 1，`8.5.13/12/11`、`24.22.3/2/1`、`26.13.1/13.0/12.1` 等每分支 3 条）；
+  - 镜像侧访问日志同一时刻出现 `manifest.json` / `manifest.json.sig` / `index.json` 三条 GET。
+- **条件请求与降级（通过）**：再次 `refresh=1` → 「目录未更新（304），展示 … 的本地缓存」，`fetched_at` 不变；停掉开发机 `serve` 后 → 「镜像源不可达，正在使用本地缓存；… Connection refused (os error 111)」，条目仍在；恢复 `serve` 后 → 回到 304，条目未丢。
+- **未覆盖 / 限制**：
+  - **运行环境清单面板侧**：该包无 `GET /ui/v1/runtimes/versions`（请求被 `/ui/v1/runtimes/{id}` 吃掉，返回「运行环境不存在：versions」），三类清单的「面板取到并展示」要在含 2026-11-25 改动的**新包**上重跑 MIRROR-06；服务端侧三类清单 200 已验。
+  - `accept.sh` 全量未跑（本轮只做 `doctor` + 手工断言），A6 权限位全表、B 组改密链路待下一轮随新包补。
+  - MIRROR-08（篡改/伪造被拒）、MIRROR-09（`runtimes` 命令回归）本轮未执行。
 
 **2026-11-24 11:24 干净首装 `c841074`：accept.sh 48 PASS / 0 FAIL / 4 SKIP，权限位全对，B 组完整链路通过**
 

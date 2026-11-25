@@ -23,7 +23,7 @@ skiff-plugin stamp --dir my-plugin --key k    # 用私钥派生的指纹回填 m
 - **官方示范插件是 `plugins/` 下的 7 个**（`guard` / `monitor` / `files` / `cron` / `ftp` / `firewall` / `sources`，见 [`plugins/README.md`](../../plugins/README.md)）：脚手架、签名、打包、权限声明、分页读写、cron tick、interop provides 全链路可对照抄。原 `nginx` 插件已内核化为「网站」，不再作为插件示范；`guard` 走的是「`containers.restart` + `fs`」，**没有**用 `containers.exec`（exec 属 M3 门禁）；目标容器仍须由 admin 显式授予 `container:<NAME>` grant，插件不能凭标签自行认领。
 - 对外发布（无论什么渠道）必须附两样东西：**权限清单** + **签名指纹**（供用户导入公钥时核对）。
 - 多架构是发布者的责任：`bin/` 下缺哪个架构，该架构上就拒装（不静默降级）。
-- 发布包自带官方插件：`deploy/pack-release.sh --plugin-key <私钥>` 会把 8 个已签名 `.wbpkg`（7 个官方插件 + testkit）放进 `official/`，不给私钥且未 `--skip-plugins` 时拒绝出包（[`docs/ops/CI.md`](../ops/CI.md) §4）。
+- 发布包自带官方插件：`deploy/pack-release.sh --plugin-key <私钥>` 会把 7 个已签名 `.wbpkg`（6 个官方插件 + testkit）放进 `official/`，不给私钥且未 `--skip-plugins` 时拒绝出包（[`docs/ops/CI.md`](../ops/CI.md) §4）。
 
 ## 4.5 用户侧如何部署
 

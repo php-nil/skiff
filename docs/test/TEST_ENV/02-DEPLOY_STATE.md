@@ -6,22 +6,17 @@
 
 ## 5. 当前部署
 
-> **2026-11-24 测试机还原后干净首装 + budding 1.8.7 同步 + 页头主操作迁移 + SUBVIEWS 双源合一 + writePost 模板（当前；HEAD `c841074`）**
-> - 背景：测试机还原为干净 T0（uptime 5 min，无 `/etc/skiff`、无 `/www/skiff`，18080 空闲，Docker 29.7.2 在位，时钟 UTC 已同步，磁盘 114 GB 可用）。L1 门禁 `cargo fmt --all --check` + `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` 均 exit 0。
-> - **首装**（2026-11-24 11:24 HKT = 03:24 UTC）：`sh install.sh` exit **0**；`skiff.service` active；前缀 **`gk5y33tq`**；`/healthz` 200（`{"docker":"available","status":"ok","uptime_secs":10}`）。
-> - **形态三配置**（install.sh 只写 loopback + `allow_insecure_http`，以下人工追加）：
->   - `listen = "0.0.0.0:18080"`（默认 loopback，改为外网直连）
->   - `tls_enabled = false`（直接明文监听，形态三必需；缺省启动会因非 loopback + 无 TLS 被拒）
->   - `allow_insecure_http = true`（让 accept.sh 判 dev 档、跑通 B 组 Cookie 断言）
->   - `allow_reduced_sandbox = true`（插件沙箱降级开关，landlock/cgroups 未实现）
->   - `entry_prefix = "gk5y33tq"`（硬编码，避免重装时随机变化）
-> - **首装资产**：Release run `45317927914`（dispatch `ref=main`，head `c841074`，`publish=true`），amd64 包 **12,923,388 B**，`sha256=c905859dd6bdb72a48b0e85b7061f21f7476ffbcac194b49804fed2d459451b2`（侧车 + 包内 `checksums.txt` 双重校验）。
-> - **accept.sh**：`--group all --password W8UdMRcTHTCbgKVb --pkg-dir /root/iter/skiff-night/skiff-0.1.0-x86_64-unknown-linux-musl` → **48 PASS / 0 FAIL / 4 SKIP**（PF3 未传 `--now` 时钟偏差、PF4 装后端口、A3 未传 `--install-exit`、B4 未开限流）。
-> - **权限位**（A6 全对）：`/www/skiff` 711 root:root、`plugins` 711、`backup` 700、`skiff.db` 600 root:skiff-plugins、`/etc/skiff/config.toml` 644、`/run/skiff` 711 root:skiff-plugins、`kernel.sock` 660 root:skiff-plugins、`initial-admin.txt` 600 root:skiff-plugins。
-> - **B 组认证**：CSRF→登录 200 + `redirect_to=/gk5y33tq`（默认不强制改密）→ 错误口令 401「用户名或口令不正确」→ 改密成功 + `initial-admin.txt` 删除 + 旧会话 303 → 新会话 200。
-> - **D0 Docker**：Docker 29.7.2 已装可用 → `--check-only` exit 0 且不改动 daemon.json → 已装不重装。
-> - **重启自恢复**（A9/A10）：`systemctl restart skiff` 后 3s 内 healthz 200；`kill -9` PID 后 2s systemd 拉起新进程，healthz 恢复 200。
-> - **登录**：`admin`，初始口令见 `/www/skiff/initial-admin.txt`（`W8UdMRcTHTCbgKVb`）；`/root/iter/admin-pw.txt`（0600）已保存。
+> **2026-11-25 干净重装：本机当服务端（`skiff-server serve`）+ 测试机当客户端的安装对接轮（当前；包同 `c841074`，未出新包）**
+> - 背景：为验证「先装、再连镜像」这条链路，测试机现场（11-23 首装 + 两轮就地升级，前缀 `gk5y33tq`，库 `user_version=22`）整体备份后 **干净重装**；本轮**换包不换代**——仍用 11-24 的 amd64 包，只为验安装与目录对接，不带 2026-11-25 的源码改动（`runtime_index` 版本匹配修复、`/ui/v1/runtimes/versions` 端点均**不在**该包内）。
+> - **备份**（重装前，测试机 `/root/iter/backup-20261125/`）：`config.toml.bak`（7,048 B）、`skiff-data.tgz`（4,122,767 B，含库与插件数据）、`sites-old/`、`php-old/`、`runtime-old/`。
+> - **卸载**：`printf 'YES\n' | sh uninstall.sh --purge` → 退出 0；`/etc/skiff`、`/www/skiff`、`/usr/local/bin/skiff*`、unit 全部消失，`/www` 仅剩 `log`/`nginx`。
+> - **安装**（2026-11-25 19:18 HKT = 11:18 UTC）：`sha256sum -c` 通过（`c905859d…9451b2`）→ `sh install.sh --listen 0.0.0.0:18080 --tls off --no-start` exit **0** → 追加 `allow_insecure_http = true` 与 `[catalog]` 段 → `systemctl restart skiff`。`skiff.service` enabled+active；`/healthz` 200；日志：初始 admin 口令生成、官方公钥 `ed73de3e…cd47` 自动信任。
+> - **坐标变化**：入口前缀 **`gk5y33tq` → `8au3xewy`**；口令重置为 `/www/skiff/initial-admin.txt` 生成值（已同步 `/root/iter/admin-pw.txt`，0600，未改密）。坐标见 [01-ACCESS.md](01-ACCESS.md) §2/§3。
+> - **形态三配置**（同上一轮口径）：`listen = "0.0.0.0:18080"`、`tls_enabled = false`、`allow_insecure_http = true`（人工追加）。
+> - **新增 `[catalog]` 段**（人工追加，验对接用）：`enabled = true`、`channel = "stable"`、`mirrors = ["http://10.66.52.7:8080"]`、`public_key = "7a9cb5d3…da2b"`、`timeout_secs = 10`。出厂默认 `enabled = false`，不写这段就没有商店入口。
+> - **自检**：`skiff doctor` 六项全 ok（数据根 / 站点根 / 库 / 配置 / TLS 成对 / Docker socket），另加一条「未配置宿主挂载授权根」的安全提示；`/www/skiff/official/` 8 个官方包 + `public-key.txt` 在位；启动后自动建出 `php-8.5` 运行环境（Docker 29.7.2 在位）。
+> - **对接结果**：商店页 `message` = 「已从 http://10.66.52.7:8080 更新到 seq 1」，`key_configured=true`，`sections` 三类齐全（插件 1 / 应用模板 1 / 运行环境 23）；再刷新命中 304（「展示本地缓存」）；停掉镜像服务后为「镜像源不可达…Connection refused」，恢复后回到 304。逐项判定见 [04-ACCEPTANCE.md](04-ACCEPTANCE.md)，用例见 [TEST_MATRIX/08-SELFHOST_MIRROR.md](../TEST_MATRIX/08-SELFHOST_MIRROR.md)。
+> - **未覆盖**：`accept.sh` 全量（本轮只跑 `doctor` + 手工断言，未跑 B 组改密与 A6 权限位全表）；浏览器巡检；运行环境清单的三类来源（该包无 `versions` 端点，面板侧 404 —— 见 [TEST_LEDGER.md](../TEST_LEDGER.md)）。
 
 ## 6. Release 资产台账（当前资产；历史坐标见 03-DEPLOY_LOG.md）
 
@@ -40,3 +35,17 @@
 
 - **下载与核对**：本轮走「测试机 curl 直连 GitHub Release → 侧车 `sha256sum -c` → 包内 `checksums.txt` 复核」。
 - **Release 触发方式**：开发机用 git credential manager 取 token 后 `Invoke-RestMethod -Uri .../actions/workflows/release.yml/dispatches -Method Post` 直接 dispatch（`git push` 已通，网络恢复）。
+
+### 6.1 镜像侧产物（开发机 `serve` 托管，2026-11-25）
+
+这套产物是**发布侧**，不属于 Release 资产；由开发机 `publish` 生成，测试机从它取数。
+
+| 项 | 值 |
+| --- | --- |
+| 产物目录 | 开发机 `target/skiff-server/dist`（18 个文件：`channels/stable/*` 4 个 + `runtime-index/*` 3 个 + `blobs/sha256/*` 3 个 + `schema/*` 8 个） |
+| 发布命令 | `SKIFF_SIGNING_KEY=<seed> SKIFF_SERVER_PUBLIC_KEY=<pub> skiff-server publish --catalog deploy/skiff-server/catalog --schema deploy/skiff-server/schema --out target/skiff-server/dist` |
+| 渠道清单 | `channel=stable`、`seq=1`、`generated_at=2026-11-25T10:07:00Z`（与 `catalog/stable/channel.json` 一致） |
+| 签名 | `manifest.key_id=707cede37fad5c348298ac466c726e248dc7e416dd697e20fbf75de04c441ac2`（= sha256(公钥 `7a9cb5d3…da2b`)）；Ed25519 detached，`manifest.json.sig` 244 B |
+| 索引 | `index.json` 8,303 B、`sha256=2921ccf4b45e3e6db210922c5135a244d077277ca39f2fdc03e1076e0f10df61`；条目 plugins 1 / apps 1 / runtimes 23 / upgrades 1 |
+| 版本清单（不签名） | `runtime-index/php.json` 1,030 B `5871e1cd…`；`node.json` 777 B `60af05e0…`；`rust.json` 214 B `19a13fd7…`（每份都是产物同一份字节，`check --builtin-index` 对 php 报「内置副本一致：1 份」） |
+| 发布二进制 | 开发机 `target/debug/skiff-server.exe` 12,793,856 B `sha256=f8f9d2acc20da88d3d5afe89b7f2d6613cbb1cc196c8f425568b2f273167983b`（Windows 构建，仅本机演练用；正式分发用 Release 里的 musl 静态二进制） |

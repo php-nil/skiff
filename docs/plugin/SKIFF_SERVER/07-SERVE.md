@@ -186,7 +186,9 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
 | `/channels/<channel>/manifest.json` | `channels/<channel>/manifest.json` | 规范路径，客户端现行拼接 |
 | `/channels/<channel>/manifest.json.sig` | 同名 | 分离签名 |
 | `/channels/<channel>/index.json` | 同名 | 索引 |
+| `/channels/<channel>/runtime-index/<kind>.json` | 同名 | 版本清单（面板按固定路径取；`<kind>` 白名单只有 `php` / `node` / `rust`，其它文件名一律 404） |
 | `/<channel>/manifest.json` 等三件 | `channels/<channel>/…` | **短别名**，与规范路径等价（兼容「渠道目录 `/stable/`」写法） |
+| `/<channel>/runtime-index/<kind>.json` | `channels/<channel>/runtime-index/<kind>.json` | 版本清单的短别名 |
 | `/blobs/sha256/<hex64>` | `blobs/sha256/<hex64>` | 内容寻址，`hex64` 必须是小写 64 位十六进制 |
 | `/api/**` | — | 只属于 §17 的发布面（独立子命令 `skiff-server api`，R0/R1 已实施）；`serve` 不实现也不代理，**一律 404**，不属于本契约 |
 | 其他（`/`、目录、`schema/`、`catalog/`、未知文件） | — | 404；不列目录、无入口页 |
@@ -196,7 +198,8 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
 - **不支持 `cur` / `latest` 别名**：客户端已按渠道名固定路径；别名会让同一 URL 的 ETag/缓存语义随「当前最新」
   漂移，也无法与 `seq` 单调校验建立稳定对应。需要「跟随最新」时由运维改客户端 `channel`，或由发布流程
   同步复制产物，而不是让服务端维护可变指针。
-- 三个 JSON 与签名必须同渠道同版本；服务端不校验其内部一致性（那是 `check`/`sync` 的职责），也不改写内容。
+- `manifest.json` / `manifest.json.sig` / `index.json` 必须同渠道同版本；`runtime-index/<kind>.json` 由同渠道 `runtimes/` 条目按 kind 生成，**不参与签名**。`serve` 不校验、也不改写其内容（生成时已由 `build` 按 `runtime-index.schema.json` 校验；`check` 只统计 `index.runtimes` 条目数，不读这几份文件；`sync` 的自检会校验它同步的那几份）。
+- `skiff-server sync` 在步骤 5/6 一并同步这三份清单：主站有哪几份就留哪几份，字节与主站一致（不重新序列化）。主站返回 404/410 视为「该类未发布」，**删掉镜像本地残留**，否则下游会长期对外发一份过期清单；其它状态码与网络错误仍是失败，不会被当成「主站撤了这份文件」。
 
 ### 16.3 方法、条件请求与响应头
 
@@ -252,14 +255,17 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
   改变 304/416 判定属于破坏性变更，必须同步升级客户端与本节。
 - **客户端依赖点**（少而硬）：`GET {base}/channels/{channel}/manifest.json` → 验签 → `index.json`
   （摘要/大小对齐）→ `blobs/sha256/<hex>`（sha256 与 size 校验）。除此之外不依赖本服务的任何行为。
-- 本契约变更必须同时改：本节、`tools/skiff-server/src/serve.rs`、`crates/app/src/catalog` 与
-  `docs/test/TEST_MATRIX.md` 的 STORE 条目；`serve` 的实现细节不是规范，本节才是。
+- **版本清单不是硬依赖**：`channels/<channel>/runtime-index/<kind>.json` 取不到（未发布/404/网络不通）时
+  面板回退**内置副本（PHP）或目录大版本（Node.js / Rust）**，只提示来源与原因，不阻断新建运行环境——所以它不进签名链，也不算客户端依赖点。
+- 本契约变更必须同时改：本节、`tools/skiff-server/src/serve.rs`、`crates/app/src/runtime_index.rs`（路径拼接与解析）、
+  `crates/app/src/catalog`（镜像基址来源）与 `docs/test/TEST_MATRIX.md` 的 STORE 条目；`serve` 的实现细节不是规范，本节才是。
 
 ### 16.6 测试覆盖
 
 - `tools/skiff-server/tests/serve.rs`：真实 TCP 上覆盖条件请求 304、单区间 206 与 416、`404`（含 `/api/`、
   目录、未知文件）、`405`、`HEAD` 无 body、路径穿越与非法 blob 名拒绝、`--http` 明文与默认 https 的启动差异；
-  访问日志另覆盖「一请求一行」与裸 `--access-log` 落 stderr。
+  另覆盖版本清单的两个路径（`/channels/<ch>/runtime-index/<kind>.json` 与其短别名）200、白名单外文件名
+  （`other.json` / `php.json.bak`）与磁盘缺失的 `rust.json` 均 404；访问日志再覆盖「一请求一行」与裸 `--access-log` 落 stderr。
 - `serve.rs` 单测覆盖日志行本身：`status=304 bytes=0 cache=inm`、`status=206 … range=0-3`、`status=405`；
   未开启时不创建文件、不产生输出；启动后日志目录消失（写失败）时响应仍完整。
 - TLS 链路：进程内生成自签 CA + 服务器证书（`rcgen`），`serve` 以 https 启动后用 ureq 指定该 CA 建连成功，

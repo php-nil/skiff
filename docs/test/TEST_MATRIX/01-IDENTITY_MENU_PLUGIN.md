@@ -37,7 +37,7 @@ curl -ks -o /dev/null -w 'api_noauth=%{http_code}\n' "$B/api/v1/docker/container
 
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
 | --- | --- | --- | --- | --- | --- | --- |
-| MENU-01 | 一级菜单固定六项且顺序稳定 | `[本机]` 菜单常量单测；`[上机]` 已登录 | `cargo test -p skiff-app menu --locked`；或 `curl -ks -b "$J" "$B/ui/v1/menu"` 统计 `data.groups` | 概览、网站、Docker、插件、工具、设置六项，顺序固定；`overview` 不可隐藏 | □通过 / □失败 | `crates/app/src/menu.rs`（L1 常量）、`crates/web/src/handlers/ui/menu.rs` |
+| MENU-01 | 一级菜单固定七项且顺序稳定 | `[本机]` 菜单常量单测；`[上机]` 已登录 | `cargo test -p skiff-app menu --locked`；或 `curl -ks -b "$J" "$B/ui/v1/menu"` 统计 `data.groups` | 概览、网站、Docker、插件、任务审计、工具、设置七项，顺序固定；`overview` 不可隐藏 | □通过 / □失败 | `crates/app/src/menu.rs`（L1 常量）、`crates/web/src/handlers/ui/menu.rs` |
 | MENU-02 | 二级/三级由 manifest 声明，停用即消失 | `[上机]` 装有 cron、guard、monitor 等插件 | 打开首页记二级项；停用 monitor；刷新；再启用 | monitor 的二级项消失，其余不变；重新启用后恢复 | □通过 / □失败 | `crates/app/src/menu.rs`、`crates/plugin`、`plugins/*/manifest.toml` |
 | MENU-03 | 深链与信息页入口均可直达 | `[上机]` 已登录，插件已启用 | 访问 `/$P`、`/$P/plugins/com.skiff.monitor`、`/$P/plugins/com.skiff.monitor/monitor?legacy=1`、`/$P/plugins/com.skiff.monitor/nope?legacy=1`、`/$P/not-exist` | `/`、插件信息页、`?legacy=1` 工作台均 200 且侧栏高亮一致（`/plugins/<id>` 是信息页，不是工作台）；未知视图 404；白名单外路径 404 | □通过 / □失败 | `crates/app/src/menu.rs`、`crates/web/src/handlers/plugins.rs`、`crates/web/src/handlers/spa.rs` |
 | MENU-04 | 布局 left/top 按用户持久化 | `[上机]` admin 与第二个账号 | 菜单设置分别选 left、top，各刷新两次；第二账号打开首页 | 两种布局均保持；第二账号看到默认布局，不受 admin 影响 | □通过 / □失败 | `crates/app/src/menu.rs`、`handlers/ui/menu.rs`、`user_prefs`。`[待补入口]` 无建号入口：面板只有设置页的改密，无用户 CRUD 路由与页面；需补「用户管理」后再验多用户隔离 |
@@ -70,18 +70,16 @@ curl -ks -b "$J" "$B/ui/v1/menu" | grep -c '"key"'   # 一级分组与二级项�
 | PLUGIN-07 | 标题归属：插件不能覆盖内核标题 | `[上机]` 已装任意插件 | 打开插件 UI 页，检查 `<title>` 与工作台标题；在插件脚本里尝试改 `document.title` 后刷新 | 页面标题由内核注入；插件脚本的 `document.title` 赋值被标题守卫覆盖回内核标题 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`（`inject_title_guard`） |
 | PLUGIN-08 | 概览健康槽位的提供者解析 | `[上机]` monitor 启用 | 打开概览；停用 monitor；再启用 | `GET /ui/v1/overview` 的 `health_plugin` 在使用时等于 `com.skiff.monitor`，停用时为 null 且 `health_reason` 给出「已停用/未安装」可读原因；重新启用后恢复 | □通过 / □失败 | `crates/web/src/handlers/ui/overview.rs`、`crates/app/src/menu.rs`、`crates/plugin` |
 | PLUGIN-09 | RPC 成功、业务错误与授权拒绝 | `[上机]` 已装 testkit | 调 `/$P/plugins/com.skiff.testkit/rpc` 的 `ping`、`fail`、`fs_read` 越界路径与无授权方法 | `ping` 200；`fail` 400 且含 `-32602`；`fs_read /etc/passwd` 403；无授权方法 400 且审计 result=fail | □通过 / □失败 | `crates/plugin/src/rpc.rs`、`capability.rs`、`plugins/testkit`、`crates/web/src/handlers/plugins.rs`（内核 403/404/409 透传，其余 400） |
-| PLUGIN-10 | 卸载清理菜单/路由但保留 data、清空授权 | `[上机]` 已装 files 且有数据文件与授权 | 卸载 files；看 `/www/skiff/plugins/com.skiff.files/data`；重装 | 菜单与 `/$P/plugins/<id>` 消失；data 文件原样保留；授权清空，重装需重新确认 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`crates/app`、`plugins/README.md` |
-| PLUGIN-11 | 重装/升级保留既有授权，新增声明不自动授予 | `[上机]` 已装 files，装时只勾选部分权限并手授路径 | 记下详情页授权项；上传同版本包覆盖重装；再上传更高版本；查看授权与确认页 | 重装/升级均直接安装、不再弹确认页；授权项与原来一致；manifest 新增声明不被自动授予 | □通过 / □失败 | `crates/plugin/src/install.rs`、`crates/web/src/handlers/plugins.rs`、`crates/core/src/commands.rs` |
+| PLUGIN-10 | 卸载清理菜单/路由但保留 data、清空授权 | `[上机]` 已装 monitor 且 `data/` 有采样文件与授权 | 卸载 monitor；看 `/www/skiff/plugins/com.skiff.monitor/data`；重装 | 菜单与 `/$P/plugins/<id>` 消失；data 文件原样保留；授权清空，重装需重新确认 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`crates/app`、`plugins/README.md` |
+| PLUGIN-11 | 重装/升级保留既有授权，新增声明不自动授予 | `[上机]` 已装 monitor，装时只勾选部分权限并手授 `path:/proc` | 记下详情页授权项；上传同版本包覆盖重装；再上传更高版本；查看授权与确认页 | 重装/升级均直接安装、不再弹确认页；授权项与原来一致；manifest 新增声明不被自动授予 | □通过 / □失败 | `crates/plugin/src/install.rs`、`crates/web/src/handlers/plugins.rs`、`crates/core/src/commands.rs` |
 | PLUGIN-12 | 内置任务删除的 RPC 状态与文案 | `[上机]` 已装 cron | 调 `cron/rpc`，`{"method":"remove","params":{"id":"builtin:db-vacuum"}}` | HTTP 400（命令层与插件 RPC 统一按业务/参数错误返回）；正文保留「内置任务不可删除（只能停用）」；不得出现「请确认计划任务持有 scheduler 权限」 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`plugins/cron/src/main.rs` |
 
 最小回归命令：
 
 ```bash
-for id in com.skiff.guard com.skiff.monitor com.skiff.files com.skiff.cron; do
+for id in com.skiff.guard com.skiff.monitor com.skiff.cron; do
   printf '%s ' "$id"; curl -ks -b "$J" -o /dev/null -w '%{http_code}\n' "$B/$P/plugins/$id"
 done
-curl -ks -b "$J" -o /dev/null -w 'ui=%{http_code}\n' "$B/$P/plugins/com.skiff.files/ui/index.html"
-curl -ksI -b "$J" "$B/$P/plugins/com.skiff.files/ui/index.html" | grep -i 'content-security-policy'
 curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/com.skiff.monitor/nope"
 ```
 
@@ -98,5 +96,5 @@ curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/co
 | PLUGIN-07 | ☑通过 | 未知视图页 200 且注入标题守卫脚本，`document.title` 被覆盖回内核标题 |
 | PLUGIN-08 | ☑通过 | 启用出 `overview.health` 槽位与固定标题；停用回落 `health-grid`；与 PLUGIN-04 同轮复验 |
 | PLUGIN-09 | ☑通过 | `ping` 200；`fail` 400 含 `-32602`；越界 `fs_read` 400；无授权方法 400 且审计 `result=fail` |
-| PLUGIN-10 | ☑通过 | 卸载后菜单、信息页、路由消失；`/www/skiff/plugins/com.skiff.files/data` 原样保留；重装后数据仍在 |
+| PLUGIN-10 | ☑通过 | 卸载后菜单、信息页、路由消失；data 目录原样保留；重装后数据仍在（当轮以 files 插件实测，该插件已删除，本行编号口径不变） |
 | PLUGIN-12 | ☑关闭（2026-11-15 复验，状态口径修正为 400） | `remove builtin:db-vacuum` 经插件 RPC 返回 **400** `shape.invalid`「内置任务不可删除（只能停用）」；同一动作走 `POST /ui/v1/tasks/builtin:db-vacuum/delete` 也是 **400** 与同一正文——命令层把 `BuiltinProtected` 归为业务错误（`TaskCommandError::Failed → BadRequest`），插件 RPC 层同一口径，**不再是 403**；正文未追加 scheduler 授权提示。`scheduler` 能力面路由自身的 403 仅用于「执行期回调 / 缺授权」，不经过这两个入口。「未装官方包不被自动安装」由 `crates/plugin/src/official.rs` 单测覆盖 |

@@ -30,7 +30,7 @@
 | 路径解析拒绝相对路径、`..`、NUL；读操作 canonicalize 后检查授权根 | `crates/plugin/src/fsops.rs:82-151` |
 | 授权根必须是绝对路径、无 `..`；创建看父目录、读取看目标 | `crates/plugin/src/fsgrant.rs:75-124` |
 | 删除禁止删授权根本身；改名禁止覆盖目标、禁止在 `data/` 与宿主路径间搬运 | `crates/plugin/src/capability.rs:263-339` |
-| `files` 插件依赖这些 verbs，按 256 KiB 分页读写 | `plugins/files/manifest.toml:1-21`、`plugins/files/src/main.rs:131-187` |
+| 官方插件按需申请 verbs（`guard` read/write/list、`monitor` read/list、`sources` read/write、`testkit` read/list），按 256 KiB 分页读写 | `plugins/guard/manifest.toml:32-33`、`plugins/monitor/manifest.toml:29-30`、`plugins/sources/manifest.toml:29-30`、`plugins/testkit/manifest.toml:23-24` |
 | 内核站点页只有**只读**目录浏览（`?tab=dir`），无写入接口 | `crates/app/src/sites.rs:331-349,770-812` |
 | 站点删除是整目录 `remove_dir_all`，没有回收站 | `crates/app/src/sites.rs:2523-2558` |
 | 审计表只有 `ts/actor/ip/action/target/result/detail` | `crates/store/src/model.rs:28-38`、`crates/store/src/db/audit.rs:7-24` |
@@ -181,8 +181,8 @@
 - 导出：CSV（P2），P1 只提供页面与分页 API。
 - 审计写入失败不阻断文件操作（best-effort），但记内核 `tracing::error`；安全事件（deny）写入失败时仍继续拒绝请求。
 
-### 4.4 站点文件插件的审计取舍（2026-11-12）
+### 4.4 站点目录授权下的审计取舍
 
-- 站点级插件（`com.skiff.files`）只申请 `path:/www/sites/<域名>/index`，不申请 `/www/sites` 或 `/`；走能力面时主体固定是 `plugin:<id>`。这是**有意取舍**：用「主体不是管理员」换取「不跨站点授权」，避免一个插件拿到全部站点内容。
+- 插件只应申请**范围可枚举**的授权根（如 `path:/www/sites/<域名>/index`），不申请 `/www/sites` 或 `/`；走能力面时主体固定是 `plugin:<id>`。这是**有意取舍**：用「主体不是管理员」换取「不跨站点授权」。
 - 能力面对 `fs.*` 的审计在 `detail` 追加 `grant=<命中的授权根> site=<域名>`（能从路径推导时）；不新增 DB 列、不改审计表结构。非站点路径不写 `site`。
-- 插件侧 `remove` 是**永久删除**，内核页 `remove` 默认进回收站：两者 action 相同，因此插件 UI 文案与审计 `detail` 必须写明「永久删除」，避免被误读为可撤回。
+- 全盘文件管理不适用本节：它是内核管理员客户端（`AdminFs` → `skiff-fs`），主体是登录用户，回收站/配额/归档都是内核语义。

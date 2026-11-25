@@ -32,6 +32,7 @@
   5. 回归（与上一轮逐步对齐）：publish 缺私钥 / 公私钥不匹配 / 正常发布（seq=1、index 摘要一致、blob 全匹配）/ `--prev` seq 未递增均一致；sync 首次（复用 0 / 新增 3）、重复（复用 3 / 新增 0）、预置 1 个 blob（复用 1 / 新增 2）、seq 回退（步骤 3/6）、源 blob 篡改（步骤 4/6，镜像无 `manifest.json`）均一致；`check mirror1 --require-signature --public-key` 通过。
   - 该提交同时新增 `tools/skiff-server/tests/cli.rs` 4 条旗标用例（真实子进程断言）；同提交 CI **11 success + 1 skipped**（跳过项为 `编译（x86_64 musl 静态）`，不触发内核打包路径），`商店清单（skiff-server check）` 与 `单测（Linux/Windows）` 均 success。
 - **无法验证**：测试机上的 CLI 实测（无 `rustc` / `cargo` / `skiff-server`，且约定不为测试机装工具链）；Linux 目标二进制行为（未交叉编译；本轮以 Windows 产物验证同一套库与 CLI 逻辑）。
+- **2026-11-25 补充**：签名发布链（`publish` → `check --require-signature --builtin-index`）与 `serve --http` 托管已在开发机实测，结果与产物摘要见 [02-DEPLOY_STATE.md](02-DEPLOY_STATE.md) §6.1，步骤与预期见 [TEST_MATRIX/08-SELFHOST_MIRROR.md](../TEST_MATRIX/08-SELFHOST_MIRROR.md) MIRROR-01/02。测试机仍无 Rust 工具链，Linux 版 `skiff-server` 未在本机跑过——「测试机直接跑 Release 里的 musl 静态二进制」尚未验。
 
 ## 10. 数据、备份与清理
 

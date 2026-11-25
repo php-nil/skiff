@@ -265,7 +265,7 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 | 管理客户端 | `crates/app/src/admin_fs.rs` | 管理员主体调用原语；数据根硬拒；审计落 `audit` 表；256 KiB 编辑上限 |
 | Web 页面/API | `crates/web/src/handlers/ui/files.rs` | 页面 `/{p}/files*`（壳页回落），JSON 全在 `/ui/v1/files/*`（含上传/下载/回收站/配额）；Admin + CSRF；形态门禁 `fs_capability` 挂子路由 |
 | 页面外壳 | `crates/web/static/budding/budding-boot.js`（`files` 页） | 平铺目录 + 面包屑，数据全走 `/ui/v1/files*`；无独立样式表 |
-| 菜单/权限 | `app/menu.rs`、`handlers/ui/files.rs` | 内置 `core/files`（L3：回收站 / 配额）；站点文件插件 `com.skiff.files` 挂在「网站」下（站点级授权根） |
+| 菜单/权限 | `app/menu.rs`、`handlers/ui/files.rs` | 内置 `core/files`（L3：回收站 / 配额）；admin 且非受限形态才下发，viewer 与 `SKIFF_FORM=docker` 均无入口 |
 
 ### 8.2 语义与边界
 
@@ -273,7 +273,7 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 - **编辑上限**：读、写都限制 256 KiB；超限文件只读并禁用保存，避免「读到一半再保存」截断原文件。二进制（非 UTF-8）返回 `fs.unsupported`，页面提示并保留原编辑内容。
 - **写语义**：`write` 走 `WriteMode::Replace` 原子替换；`rename` 默认不覆盖；`remove` 第一步 `permanent = true`（永久删除），第二步改 `false` 接 SQLite 回收站，**路由与页面不需要改**。
 - **审计**：`DbAuditSink` 把 `AuditEvent` 压成 `detail` JSON 写现有 `audit` 表（`actor=用户名`、`ip=web`、`action=fs.*`），本轮不建 `fs_audit` 表；回收站/配额的持久化仍在第二步。
-- **站点文件插件**：`com.skiff.files` 保留「网站」菜单入口，但只申请站点内容目录（`/www/sites/<域名>/index`），默认入口是壳页原生 schema（浏览 + 文本编辑/保存），旧工作台仅 `?legacy=1`；未安装/未启用或没有 fs 能力时 `/{p}/plugins/com.skiff.files/main` 返回 **301** 到 `/{p}/files`（注意 axum `Redirect::permanent` 是 308，已手写 301）。
+- **不做第二套实现**：全盘文件管理只在内核（`core/files` → `AdminFs` → `skiff-fs`）。插件能力面的 `fs` 动词只有 `read/write/list/mkdir/remove/rename`，且单次 256 KiB 分页、拿不到回收站与配额状态，因此没有「站点文件」类插件页——文件管理只有内核这一套。
 - **错误提示**：API 统一 `{ok:false,error:{code,message}}`，HTTP 状态取 `FsError::http_status()`；前端按 `code` 显示且保存失败不清空 textarea。
 
 ### 8.3 第二步落地结果

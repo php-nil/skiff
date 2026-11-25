@@ -45,16 +45,15 @@ trait Scheduler {
 
 | 路由 | 方法 | 权限 | 说明 |
 | --- | --- | --- | --- |
-| `/{p}/tasks` | GET | 登录（viewer 可读） | 列表：任务/类型/来源/计划/状态/下次执行/缓冲占用 |
-| `/{p}/tasks/{id}` | GET | 登录 | 详情：配置、最近 20 次、缓冲统计 |
-| `/{p}/tasks/{id}/history` | GET | 登录 | 分页历史 |
-| `/{p}/tasks/{id}/run` | POST | Admin + CSRF | 手动触发，审计 |
-| `/{p}/tasks/{id}/toggle` | POST | Admin + CSRF | 启停，审计 |
-| `/{p}/tasks` | POST | Admin + CSRF | 创建内置任务（仅允许 builtin 白名单） |
-| `/{p}/tasks/{id}` | POST | Admin + CSRF | 修改 schedule/payload/开关 |
-| `/{p}/tasks/{id}/delete` | POST | Admin + CSRF | 删除 |
+| `/ui/v1/tasks` | GET | 登录（viewer 可读） | 列表：任务/类型/来源/计划/状态/下次执行/缓冲占用 |
+| `/ui/v1/tasks/{id}` | GET | 登录 | 详情：配置、最近 50 次、缓冲统计 |
+| `/ui/v1/tasks/{id}/run` | POST | Admin + CSRF | 手动触发，审计 |
+| `/ui/v1/tasks/{id}/toggle` | POST | Admin + CSRF | 启停，审计 |
+| `/ui/v1/tasks` | POST | Admin + CSRF | 创建内置任务（仅允许 builtin 白名单） |
+| `/ui/v1/tasks/{id}` | POST | Admin + CSRF | 修改 schedule/payload/开关 |
+| `/ui/v1/tasks/{id}/delete` | POST | Admin + CSRF | 删除 |
 
-- 深链：`/{p}/tasks`、`/{p}/tasks/{id}`；超管菜单新增「任务」一级入口（内核页，不占插件槽位）。
+- 深链：`/{p}/tasks/scheduled`、`/{p}/tasks/scheduled/{id}`；超管菜单归属「任务审计」一级（内核页，不占插件槽位）。
 - 插件 UI 深链 `/{p}/plugins/com.skiff.cron/jobs`（cron 若仍无 schema，则由壳页补 `?legacy=1` 打开 iframe），数据来自 scheduler API。
 - 所有写操作带 CSRF、审计；错误内联返回，不吞异常。
 

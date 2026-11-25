@@ -6,7 +6,7 @@
 
 ### 5.12 任务与作业（第五批，只读）
 
-- `GET /{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
+- `GET /{p}/tasks/scheduled`、`/{p}/tasks/scheduled/{id}`、`/{p}/tasks/jobs`、`/{p}/tasks/jobs/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 列表/详情复用 `TaskService::list_views` / `detail_view` 与 `Jobs::list` / `tail` / `detail_of`，不新增 SQL。
 - 写操作已原生化：`POST /ui/v1/tasks/{id}/toggle|run|delete`、`POST /ui/v1/jobs/{id}/cancel|retry`；分别复用 `TASK_TOGGLE|RUN|DELETE`、`JOB_CANCEL|RETRY` 与既有命令层审计。SSE 实时日志仍待上游通道。
 
@@ -55,15 +55,16 @@
 
 ### 5.13 审计（第六批占位 → 第十五批落地）
 
-- `GET /{p}/settings/audit` 交付 budding 壳页，页面为原生只读审计列表；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）；权限口径不变（viewer 403）。
+- `GET /{p}/tasks/audit` 交付 budding 壳页（菜单归属「任务审计」一级），页面为原生只读审计列表；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）；权限口径不变（viewer 403）。
 - 权限两处同源：页面与 `GET /ui/v1/audit` 都按 `Permission::AuditRead` 判定（viewer 403，菜单不可见），不新增权限来源。
-- 查询：`GET /ui/v1/audit?q=&limit=&cursor=`，落 `{ items, keyword, has_more, next_cursor }`。
+- 查询：`GET /ui/v1/audit?q=&cat=&limit=&cursor=`，落 `{ items, keyword, category, has_more, next_cursor }`。
   - 关键字非空时对 actor / ip / action / target / detail 做 ASCII 不区分大小写的子串匹配（`instr(lower(...))`，`%`/`_` 按字面量处理）。
-  - 排序 `(ts DESC, id DESC)`，走既有 `idx_audit_ts(ts DESC, id DESC)`（schema v19），**未改表、未加索引**；关键字只做行内过滤。
-  - 游标是 `app::cursor::CursorCodec<AuditScope>` 签名游标（HMAC，密钥复用持久化 CSRF 派生密钥，签名域 `cursor:audit:` 隔离），载荷为上一页末项 `(ts,id)` 并与筛选指纹绑定：换关键字沿用旧游标 400、篡改 400、旧版本 400。`limit` 默认 50、上限 200。
-  - 字段冻结：`id` / `ts`（RFC3339 UTC，D9）/ `ts_label`（本地时间文案，服务端 `fmt_local_time`，时区不可判定时给 `—`）/ `actor` / `ip` / `action` / `target` / `result` / `detail`（截断 200 字符）。
-- 前端：关键字表单 + `table` 列表 + 「下一页（更早记录）」按钮；翻页是向更早的 keyset 前进，不提供随机跳页。
-- 页面骨架由 `handlers/ui/audit_page.rs` 在 `?with_schema=true` 时产出；壳脚本只 fetch，不再保留 `auditSchema`。搜索、重置与翻页统一走宿主动作 `skiffSearch`（读表单 `q` 或显式 `q`/`cursor`，`URLSearchParams` 编码，整页跳转）。
+  - `cat` 按动作命名空间分类过滤，口径唯一来源 `skiff_model::AuditCategory`（auth / site / docker / files / plugin / task / system / other）；未知值按全部分类，存量数据不迁移。
+  - 排序 `(ts DESC, id DESC)`，走既有 `idx_audit_ts(ts DESC, id DESC)`（schema v19），**未改表、未加索引**；关键字与分类都只做行内过滤。
+  - 游标是 `app::cursor::CursorCodec<AuditScope>` 签名游标（HMAC，密钥复用持久化 CSRF 派生密钥，签名域 `cursor:audit:` 隔离），载荷为上一页末项 `(ts,id)` 并与「关键字 + 分类」指纹绑定：换关键字/分类沿用旧游标 400、篡改 400、旧版本 400。`limit` 默认 50、上限 200。
+  - 字段冻结：`id` / `ts`（RFC3339 UTC，D9）/ `ts_label`（本地时间文案，服务端 `fmt_local_time`，时区不可判定时给 `—`）/ `category`（分类键）/ `category_label`（分类文案）/ `actor` / `ip` / `action` / `target` / `result` / `detail`（截断 200 字符）。
+- 前端：关键字输入 + 分类下拉 + 重置（同时清空两者）+ `table` 列表 + 「下一页（更早记录）」按钮；翻页是向更早的 keyset 前进，不提供随机跳页。
+- 页面骨架由 `handlers/ui/audit_page.rs` 在 `?with_schema=true` 时产出；壳脚本只 fetch，不再保留 `auditSchema`。搜索、重置与翻页统一走宿主动作 `skiffSearch`（读表单 `q`/`cat` 或显式 `q`/`cat`/`cursor`，`URLSearchParams` 编码，整页跳转）。
 - 列表渲染：`table` 固定 `perPage: -1`，把宿主给出的本页全部行渲染出来；审计页再加 `virtual` + `height: 420` 定高内部滚动。服务端游标取本页第 `limit` 条的 `(ts,id)`，与本页最后一条实际渲染行一致，不再出现「本页 50 条只显示 10 条、翻页跳过 40 条」。其余本地列表（运行环境配置/扩展、站点解绑、Compose 项目、菜单、回收站、配额、商店）同规则，不与组件默认每页 10 条错位。
 - 本地验证：`main_flow` 覆盖 viewer 403、关键字命中、翻页游标、换关键字与篡改 400；无头浏览器实测页面渲染、`?q=` 过滤与接口层游标翻页（10 条验收数据内，后翻 id 递减、换关键字 400）。
 
@@ -119,11 +120,11 @@
 - `GET /{p}/settings/menu`、`GET /{p}/docker/settings` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 菜单导航的 href 改指向规范路径 `/{p}/settings/menu`、`/{p}/docker/settings`，不再以 `/m/core/...` 作为产品入口；旧 `/{p}/settings/docker` 随 URL 分组调整于 2026-11-20 下线（现直接 404）。
 - `GET /ui/v1/settings/menu` → `{layout, width, max_width, groups[{key,label,items[{key,label,href,hidden,pinned,pinnable,plugin,icon}]}]}`；读对登录用户开放（偏好按账号隔离）。页面用「布局按钮 + 内容宽度表单 + 分组表格」，行内「↑ / ↓ / 显隐 / 固定」，底部「恢复默认」（确认后 `action=reset`）。
-- `GET /ui/v1/settings/docker` → `{registry_mirror, image_prefix, can_admin}`；读对登录用户开放，`can_admin=false` 时页面只读提示。写操作仅 Admin，失败按 JSON 信封返回（不 PRG），成功刷新页面。
+- `GET /ui/v1/settings/docker` → `{registry_mirror, image_prefix, runtime_index_url, can_admin}`；读对登录用户开放，`can_admin=false` 时页面只读提示。`runtime_index_url` 是**只读的生效地址**（由 `[catalog].mirrors` 首项 + 渠道 + 类型文件名推出，这里给 PHP 那份，同目录还有 `node.json` / `rust.json`，契约 §4.5），不随写操作提交。写操作仅 Admin，失败按 JSON 信封返回（不 PRG），成功刷新页面。
 
 **运行环境详情（第二十三批）**
 
-- `/sites/runtimes` 列表新增「安装运行环境」表单（类型来自 `GET /ui/v1/runtimes/catalog`，版本可留空）与「镜像参数」表单（`GET|POST /ui/v1/runtimes/images`）。
+- `/sites/runtimes` 列表新增「安装运行环境」表单（类型来自 `GET /ui/v1/runtimes/catalog`；版本：三类各一份下拉 `version_php` / `version_node` / `version_rust`，选项来自 `version_indexes.<kind>`，`version_custom` 手填优先；页头「刷新版本清单」依次走 `GET /ui/v1/runtimes/versions?refresh=true&kind=php|node|rust`，口径见契约 §4.5）与「镜像参数」表单（`GET|POST /ui/v1/runtimes/images`）。
 - `/sites/runtimes/{id}` 改为真实原生页（原占位与旧版链接删除）：`GET /ui/v1/runtimes/{id}` 一次返回运行环境行、PHP 参数、Node 配置、端口、扩展清单、配置文件列表、当前选中的配置文件内容（`?file=key`）、绑定站点与 `config_mounts_stale`。
 - 写操作：生命周期按钮（start/stop/restart/rebuild/sync/delete）走 `POST /ui/v1/runtimes/{id}/action/{action}`，有绑定站点时前端先确认；`POST .../probe` 只回显实测版本；PHP 参数、Node 配置、端口、配置文件、PECL、克隆、解绑各有独立端点，全部复用 `runtime_cmd` 与既有动作权限。
 - 扩展表行内「安装 / 卸载」调用 `POST /ui/v1/runtimes/{id}/extensions/{key}/{op}`；批量端点 `POST .../extensions/batch` 已登记，当前页面按单项操作。
@@ -138,7 +139,8 @@
 - 写操作：`POST /ui/v1/web/config`（主配置，`nginx -t` + reload）与 `POST /ui/v1/web/params`（性能参数）；HTML 表单路径已删除，写入统一经 `nginx::apply_main` / `apply_params`，审计事件 `nginx.config.save` / `nginx.params.save` 不变。失败返回 400 并保留错误文本，不伪装成功。
 - 骨架：`GET /ui/v1/web?view=status|config|logs|modules&with_schema=true` 由 `handlers/ui/web_page.rs` 产出，壳脚本只 fetch + `prepareServerSchema`；`webSchema` / `webEnvButton` / `webStepState` / 安装轮询已删。
 - 安装进度是表格 `source.autoRefresh = 2000`，由框架轮询；离开页面或节点隐藏自动停止。原先脚本里的 `setTimeout` + `document.querySelector` 改写 DOM 的路径已移除。
-- 运维按钮（安装 / 启停 / 重启 / 重新安装 / 删除）的显隐由服务端按 `container_state` 决定，动作 `skiffWebEnv` 留在脚本（提交后整页刷新）。
+- 运维按钮（2026-11-24 调整）：**安装 / 启停 / 重启**进页头 `content.actions`；**重新安装 / 删除容器**留在正文「重新安装与删除」卡片（破坏性动作不占页头）。显隐由服务端按 `container_state` 与安装是否进行中决定，动作 `skiffWebEnv` 留在脚本。
+- 安装告警只在**进行中 / 失败 / 中断**时出现，正文一行结论（状态或失败原因），明细走步骤表（进行中轮询 2s，失败态快照）；**已完成收敛为页尾「最近一次安装」摘要卡**（一行 + 「查看任务详情」→ `/tasks/jobs/<id>`）。
 
 ### 5.15 商店（第八批）
 
@@ -217,7 +219,7 @@
 - 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code` 组件（1.8.0 起渲染器类型名为 `code`，旧 `code-viewer` 已不再注册；文本字段为 `modelValue`，旧 `code` 字段组件不读取；只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
 - 代码 Pack：入库 `budding-code-1.8.7.min.js`（90,331 B，取自 `dist/packs/code.mjs`，自包含 ESM；与 1.8.6 逐字节相同），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
 - 站点日志：`GET /{p}/sites/{domain}/logs` 交壳页（服务端已无 SSR 日志页）。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code` 组件定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
-- 作业日志：`GET /{p}/jobs/{id}/logs` 交 budding 日志页，页面骨架与正文都由 `GET /ui/v1/jobs/{id}/logs?with_schema=true` 给出（`JOB_LOGS`）：服务端按 `after` 游标最多聚合 10 页（每页 500 行），合成 `HH:MM:SS [stream] line` 文本后由 `jobs_page::job_logs_schema` 出 `code` 查看器，`truncated` 时在计数行提示「可刷新继续」。`/{p}/jobs/{id}/logs/stream` 的 SSE 尾随仍在（同权限、同审计），但页面按需加载，未接页内实时流。作业详情首屏日志仍用 `code` 组件，取消 / 重试走 `/ui/v1/jobs/{id}/cancel|retry`。
+- 作业日志：`GET /{p}/tasks/jobs/{id}/logs` 交 budding 日志页，页面骨架与正文都由 `GET /ui/v1/jobs/{id}/logs?with_schema=true` 给出（`JOB_LOGS`）：服务端按 `after` 游标最多聚合 10 页（每页 500 行），合成 `HH:MM:SS [stream] line` 文本后由 `jobs_page::job_logs_schema` 出 `code` 查看器，`truncated` 时在计数行提示「可刷新继续」。`/{p}/tasks/jobs/{id}/logs/stream` 的 SSE 尾随仍在（同权限、同审计），但页面按需加载，未接页内实时流。作业详情首屏日志仍用 `code` 组件，取消 / 重试走 `/ui/v1/jobs/{id}/cancel|retry`。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
 
 ### 5.19 容器终端（第十四批）
@@ -234,9 +236,9 @@
 ### 5.20 日志入口收口（第十六批）
 
 - 容器日志：`GET /{p}/docker/containers/{id}/logs` 从旧 SSR SSE 页改为 budding 日志页（尾部快照 + 刷新，不做实时流）；SSE 流只保留在 `GET /{p}/containers/{id}/logs/stream`，供旧 SSR 详情页 `data-src` 跟随。新增 `GET /ui/v1/containers/{id}/logs?tail=`（策略同旧 SSE：`Verb::ContainerLogs` → `DockerRead`；`tail` 默认 500、上限 2000），容器详情新增「查看日志」入口，旧版链接收窄为「资源限制编辑」。
-- 运行环境日志：新增 `GET /{p}/sites/runtimes/{id}/logs` budding 日志页与 `GET /ui/v1/runtimes/{id}/logs?tail=`（Admin，复用 `AppState::runtime_logs`）；旧详情抽屉的快照接口移到 `GET /{p}/runtimes/{id}/logs.json`（`logs_url` 已同步），让 `/logs` 可以交壳页；运行环境列表行可点进详情占位页，占位页提供「查看运行日志」与「旧版配置 / 安装 / 扩展」两个明确入口。
+- 运行环境日志：`GET /{p}/sites/runtimes/{id}/logs` 壳页 + `GET /ui/v1/runtimes/{id}/logs?tail=&with_schema=true`（Admin，复用 `AppState::runtime_logs`）；入口是详情页的「日志」子视图（§5.14 第二十三批已改为原生页，占位页与 `/runtimes/{id}/logs.json` 旧抽屉接口都已不存在）。
 - 前端统一用 `code` 组件（`language: 'plaintext'`、固定高度、行号、可复制），刷新走整页重载；不新增 SSE/WS 契约，也不在前端造分页或流式缓冲。
 - `?legacy=1` 现状：仅插件 iframe 工作台与站点日志旧 SSR 两处保留（前者是插件嵌入兼容，后者是无 JS 兜底）；本轮未新增 legacy 分支。
-- 验证：`main_flow` 覆盖「页面交壳 + JSON 未认证 401 / 无 Docker 503 / viewer 403 / 实例不存在 400」；无头浏览器实测三个页面（容器日志错误页、运行环境日志错误页、运行环境详情占位页）均无 iframe、无脚本错误。
+- 验证：`main_flow` 覆盖「页面交壳 + JSON 未认证 401 / 无 Docker 503 / viewer 403 / 实例不存在 400」；无头浏览器实测三个页面（容器日志错误页、运行环境日志错误页、运行环境详情页）均无 iframe、无脚本错误。
 
 ---

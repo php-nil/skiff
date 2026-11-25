@@ -30,7 +30,7 @@
 
 ### 4.3 菜单契约（继续有效）
 
-- L1 固定 6 项（`overview`/`sites`/`docker`/`plugins`/`tools`/`settings`）不变；L2/L3 的声明、稳定键、角色/gate、偏好持久化仍归内核。
+- L1 固定 7 项（`overview`/`sites`/`docker`/`plugins`/`tasks`/`tools`/`settings`）不变；L2/L3 的声明、稳定键、角色/gate、偏好持久化仍归内核。
 - L3 标签栏**仍由内核决定数据**（菜单声明 + 当前视图），只是渲染从 askama 换到 budding。
 - budding 默认包**不含** `admin` 组（`admin` / `nav-menu` / `page-tabs`），`chart` 也不在默认包；清单与上游文档存在漂移（§7.1）。菜单壳由上游 admin Pack 提供（§6.3 R-1）。
 - 菜单偏好（顺序/隐藏/固定/布局）继续存内核，不迁到 `localStorage` 作为唯一来源。
@@ -45,7 +45,7 @@
 - iframe 工作台只保留显式 `?legacy=1` 一条通路（`/{p}/plugins/{id}/{view}?legacy=1`）与包内静态托管 `GET /{p}/plugins/{id}/ui/{path}`；页面级 SSR 已全部删除，面板内无任何入口指向它。
 - 一次性 nonce、`skiff.rpc` / `skiff.theme` / `skiff.height` / `skiff.open`、`PLUGIN_UI_CSP` 只作用于该 iframe 工作台，与壳页 schema 渲染互不影响。
 - 槽位（`[[mount]]`）已支持 `schema` 声明与安装期校验；新壳仍没有通用槽位渲染 API。`overview.health` 由内核改为「取数 + 原生渲染」：`GET /ui/v1/overview` 返回启用插件的 `health_plugin`，壳页对其调 `snapshot` RPC 后用卡片渲染 CPU / 内存 / 负载 / 运行时长，失败降级为说明性 `alert`；不是 iframe，也不是通用槽位渲染器。
-- 组件缺失时不自造渲染：例如文件管理需要的树/编辑器组件仍缺。站点文件插件（`com.skiff.files`）只原生化「站点目录浏览 + 文本编辑/保存」，全盘管理、回收站、配额、上传仍只在内核「工具 → 文件管理」，不做第二套文件管理器。
+- 组件缺失时不自造渲染：例如文件管理需要的树/编辑器组件仍缺。因此文件管理不做 schema 页——全盘管理、回收站、配额、上传仍只在内核「工具 → 文件管理」（`core/files`），不引入第二套文件管理器。
 - 已原生化的只读批次：guard（containers / events）、monitor（overview / history / process / network）。monitor 的进程与网络页把当前快照一次取回（RPC `all: true`，进程仍受 512 PID、连接仍受 5000 条上限），排序 / 表头筛选 / 分页交给 budding 表格本地完成；展示文案由插件派生，schema 只做绑定。两页都没有写入口。
 - 已原生化的写批次：firewall（rules / fail2ban）。表单内按钮的 `skiffPluginRpc` 会合并表单值（空值不发送），仍走 `POST /plugins/{id}/rpc`，CSRF、`PluginManage`、逐条审计不变；行内删除 / 解封用 `${row}` 插值。`skiffPluginView.query` 只接受标量，由壳页拼到同一插件页的 query，用于「查看某 jail 的封禁」这类只读下钻；schema 仍不能写 URL 或直接 `fetch`。数值字段由插件归一化（字符串 → 整数），内核参数校验不放宽。
 - ftp（accounts / runtime）同样原生：账号新建 / 重置密码改为页内表单（schema 没有弹窗与二次确认，页面已明确提示）；`status` / `sites` / `accounts` / `protection` 的展示文案与下拉选项由插件派生。防火墙插件缺失时 `protection` 返回原因、`protection.banned` 返回空列表，FTP 页面不因可选依赖而整页失败。

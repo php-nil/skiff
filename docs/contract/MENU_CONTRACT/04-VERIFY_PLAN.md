@@ -15,7 +15,7 @@
 | C3 | 插件声明 `core/...` 或重复键 | 拒绝 `MENU_ID_CONFLICT`，无覆盖 | 单测 |
 | C4 | L3 深度超限 / 数量超限 | 拒绝 `MENU_DEPTH_EXCEEDED` / `MENU_TOO_MANY_ITEMS` | 单测 |
 | C5 | `view` 非法/文件不存在/同插件重复 | 拒绝 `MENU_VIEW_INVALID` / `MENU_VIEW_MISSING` / `MENU_VIEW_CONFLICT` | 单测 |
-| C6 | 旧包只有 `[[ui]]` | 合成 `plugin/<id>/legacy`；旧 nginx 包兼容映射到 `sites`，其余映射到 `tools` | 单测/集成 |
+| C6 | 旧包只有 `[[ui]]` | 合成 `plugin/<id>/legacy`，一级固定 `tools`、`order = 1000`（不再有按插件 id 的一级映射白名单） | 单测/集成 |
 | C7 | 网站 L1 的内核固定 L2 | 始终出现网站列表 / 运行环境 / Web 服务，三项均 200，无 404 | 集成 |
 | C8 | 0 个工具提供者 | 工具 L1 显示空态 | 集成 |
 | C9 | 插件未启用 | 其 L2 不出现在导航；插件中心可启用 | 集成 |
@@ -69,7 +69,7 @@
 - files/cron/guard/monitor/ftp 声明迁移；插件中心 L2 拆分；旧「应用」代码删除。
 - Docker 概览 / 编排 / 设置 页面与内置 L2（编排无后端前保持 `route_available=false`，不出现死链）。
 - pin/固定区、管理员实例默认、菜单设置细节（拖拽、恢复默认、预览）。
-- 产出：7 个官方插件全部走新契约；旧 `[[ui]]` 仅作兼容；契约测试矩阵全绿。
+- 产出：6 个官方插件全部走新契约；旧 `[[ui]]` 仅作兼容；契约测试矩阵全绿。
 - 风险：官方插件 UI 需配合 `tab`/`menu` query，否则 L3 是空标签；Docker 编排缺少后端可能导致长期隐藏项；用户偏好迁移与清理遗漏。
 
 ---

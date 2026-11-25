@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS user_prefs (
 默认 L1 顺序：
 
 ```text
-overview(0) → sites(100) → docker(200) → plugins(300) → tools(400) → settings(900)
+overview(0) → sites(100) → docker(200) → plugins(300) → tasks(350) → tools(400) → settings(900)
 ```
 
 默认 L2/L3 顺序：内置注册表 `order` + manifest `order`。

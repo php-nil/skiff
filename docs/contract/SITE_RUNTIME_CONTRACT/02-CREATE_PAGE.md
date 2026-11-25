@@ -55,11 +55,11 @@
 | --- | --- |
 | 类型 | `PHP`、`Node.js`、`Rust`（Go 未实现，不出现在列表与向导） |
 | 实例名 | 环境名；默认版本带「默认」标记 |
-| 版本 | 镜像/上游版本号，来自版本目录（见 4.5） |
+| 版本 | 镜像/上游版本号：容器可读时显示**真实版本**（PHP 取 `PHP_VERSION`、Node.js 取 `NODE_VERSION`，含补丁号如 `8.5.13` / `24.4.0`，副行为「目标 + 镜像」）；Rust 无稳定变量，回退目标版本并标「版本未读取」；未安装显示目标 +「未安装」。可选版本见 4.5 |
 | 状态 | 运行中 / 已停止 / 异常 / 安装中（排队、拉镜像、创建容器、启动、失败）+ 进度 |
 | 占用站点 | 绑定站点数 |
 | 接入方式 | 只显示短标识：PHP `sock`、Node.js / Rust `:容器端口`；完整容器地址（`<ip>:<port>`，含是否对外发布）放 `title` 悬浮提示与详情页，不再单列长路径 |
-| 操作 | 只保留一个「详情」入口；整行或按钮都打开右侧抽屉，不再并列「更多」 |
+| 操作 | 只保留一个「详情」入口；整行或按钮都跳详情页 `/{p}/sites/runtimes/<id>`，不再并列「更多」 |
 
 - 表格按内容自适应列宽并铺满容器，不固定撑宽某一列；接入方式列宽度只够放 `sock` / `:8080`（完整容器地址在悬浮提示里）。
 - 空态：没有任何真实实例时显示「还没有运行环境」+「新建运行环境」主操作；迁移种入的 PHP 模板（8.5/8.4/8.3）只在新建弹窗里出现，不在列表占位。
@@ -68,13 +68,14 @@
 
 ### 4.2 PHP 环境详情
 
-标签：`基础信息 / 专属配置 / 日志 / 关联站点`（页内标签，不新增菜单 L3）。
+子视图：`基础信息 / 配置 / 扩展 / 站点 / 管理 / 日志`，地址为
+`/{p}/sites/runtimes/<id>/{,config,extensions,sites,manage,logs}`（壳页横向菜单，不在菜单里新增入口）。
 
 | 区块 | 内容 | P1 |
 | --- | --- | --- |
 | 基础信息 | 版本、镜像与 digest、socket 路径/权限、默认版本、启动时间、最近健康检查、绑定站点数 | 可读 |
-| 扩展开关 | 基线全集按分类展示（数据库 / 图片 / 加密 / 缓存 / 其他），按 `(version, base_image)` 过滤；支持搜索、PECL 按名字安装 | P1 可增删：安装阶段装入，安装后在抽屉里开关并重建/重载（见 §11.4） |
-| 安装任务 | 状态（排队/拉镜像/创建容器/启动/失败）、进度百分比、实时日志、失败原因与「重试安装」 | P1 异步执行，抽屉轮询刷新 |
+| 扩展开关 | 基线全集按分类展示（数据库 / 图片 / 加密 / 缓存 / 其他），按 `(version, base_image)` 过滤；支持搜索、PECL 按名字安装 | P1 可增删：安装阶段装入，安装后在详情页「扩展」子视图开关并重建/重载（见 §11.4） |
+| 安装任务 | 状态（排队/拉镜像/创建容器/启动/失败）、进度百分比、实时日志、失败原因与「重试安装」 | P1 异步执行，列表与详情页轮询刷新 |
 | ini | `memory_limit`、`upload_max_filesize`、`post_max_size`、`max_execution_time` | P1 可改，保存后平滑 reload |
 | FPM 进程池 | `pm`（dynamic/static）、`max_children`、`start_servers`、`min_spare_servers`、`max_spare_servers`、`max_requests` | P1 可改 |
 | socket | 路径（只读）、权限 `0660`、属组 `65534`；不允许世界可写 | 只读 |
@@ -129,27 +130,83 @@
 
 ### 4.5 新建运行环境与异步安装
 
-- **新建弹窗**：类型下拉（PHP / Node.js / Rust）→ 版本下拉（PHP `8.5 / 8.4 / 8.3`；
-  Node.js `24 / 22 / 20`；Rust `1.99 / 1.98 / 1.97 / 1.83`）
-  → 实例名（默认跟随类型与版本，如 `php-8.5` / `node-24`，可改；同 kind 内唯一，目标目录已存在直接拒绝）。
-  不允许手填版本；Go **未实现**，已从 `RUNTIME_KINDS` 与弹窗摘除，提交 `kind=go` 由后端按
-  「未知运行环境类型」拒绝。
+- **新建弹窗**：类型下拉（PHP / Node.js / Rust）→ 版本 → 实例名（默认跟随类型与版本，
+  如 `php-8.5` / `node-24`，可改；同 kind 内唯一，目标目录已存在直接拒绝）。
+  - 三类都有**版本下拉**，字段名按类型生成 `version_<kind>`（`version_php` / `version_node` /
+    `version_rust`），显示条件 `visibleOn: "${kind === '<kind>'}"`；选项来自镜像服务的清单
+    （PHP 如 `8.6.0 / 8.5.13 / 8.5.12 …`，Node.js 如 `26.13.1 / 24.22.3 …`），按版本降序、
+    **首个未 EOL 的标「最新」**，预选顺序为「清单 `default`（且未 EOL）> 首个未 EOL」。
+  - 某类型清单取不到时**退回目录大版本**（`26 / 24 / 22 / 20`、`1.100 / 1.99 …`）并在提示里写明来源，
+    下拉不会空。
+  - 「自定义版本」输入框（`version_custom`）对所有类型可见，填了优先于下拉——清单外版本、
+    镜像服务不可达时的唯一出路。
+  - 提交值取 `version_custom > version_<kind>`，为空时后端用该类型目录首项。
+  - 校验：**大版本必须在 `RUNTIME_KINDS` 目录内**，补丁号按点号边界归入大版本——
+    PHP `8.5.13` → `8.5`、Node.js `24.22.3` → `24`、Rust `1.99.1` → `1.99` 都通过；
+    `9.0.1`（大版本不在目录）、`8.5.13-beta`（非纯数字）、`8.5.13.1`（超过三段）、
+    `8.55.0`（不是 `8.5` 的补丁）拒绝。Go **未实现**，已从目录与弹窗摘除。
+- **版本清单来源**：目录只维护「支持哪些大版本」，具体版本号由镜像服务提供，避免发版后
+  面板里的可选版本永远慢一拍。
+  - **路径固定、不可配**：`<镜像基址>/channels/<channel>/runtime-index/<kind>.json`，
+    三个类型各一份（`php.json` / `node.json` / `rust.json`）。基址取
+    `[catalog].mirrors` **首项**（默认 `http://10.66.52.7:8080`，一期只走 HTTP），渠道取
+    `[catalog].channel`（默认 `stable`）；`mirrors = []` 表示不联网，只用面板内置副本/目录大版本。
+    取数与 `[catalog].enabled` **无关**：商店目录默认关闭也照取清单（清单不签名，不走签名链）。
+    清单落在渠道目录下而不是根目录，是因为服务端产物里 `channels/<name>/` 是唯一的可变层
+    （[SKIFF_SERVER/01-DESIGN.md §2.2](../../plugin/SKIFF_SERVER/01-DESIGN.md)）。
+  - **格式 `skiff.server.runtime-index/v1`**（schema 随产物发在
+    `deploy/skiff-server/schema/runtime-index.schema.json`）：
+    `{"schema","kind","channel","generated_at","versions":[{"version","eol?","default?"}]}`。
+    由 `skiff-server build` 按 `kind` 分组、从该渠道 `runtimes/` 条目生成（版本数值降序、
+    跳过 `yanked`）；某类型没有条目就不产出该文件，面板取到 404 回退。
+    条目由 `skiff-server runtimes` 从上游刷新，**每个发布分支默认保留最近三个版本**
+    （PHP `8.5` → `8.5.13 / 8.5.12 / 8.5.11`；Node.js major 跨 minor 往前数；
+    `--per-branch 1` 可只留最新），老站点升级时才有降级余量。
+    直连不到 `docker.io` 的机器用 `--proxy <url>` 出网（该命令**不读** `HTTPS_PROXY`，
+    代理清单见 `docs/test/ITERATION/02-ISSUES_ENV.md`）。
+    旧形态（裸数组、`{"versions":[…]}`、`{"tags":[…]}`、`{"items":[…]}`、
+    `{"results":[{"name":…}]}`）继续兼容，只认 1–3 段纯数字版本（`24` 是合法的 Node LTS 版本）。
+  - **内置副本只对 PHP 存在**：`crates/app/assets/runtime-index/php.json` 是服务端产物的
+    **快照**（发版时用产物覆盖，两边同一份字节）。Node.js / Rust 不给内置副本——它们的可选
+    版本是 LTS/stable 大版本，目录即权威；且内置副本的 `generated_at` 一旦比产物新，回滚
+    保护会把服务端清单**永久**判成「更旧」。
+  - **防回滚**：清单的 `generated_at` 早于内置副本即拒绝采用并提示原因——镜像同步卡住时
+    「刷新一次反而少几版」比不刷新更坏（只对有内置副本的类型生效）。
+  - **回填顺序（硬要求）**：先发布服务端数据、再回填面板内置副本，即内置副本的
+    `generated_at` 必须 **≤** 镜像服务的清单。顺序反了远端会被永久判成「更旧」而拒用，
+    页面上只看到「已忽略」，功能等于失效。日常刷新直接用 `skiff-server runtimes`
+    （写条目 → 生成产物 → 回填内置副本一次完成，见 `SKIFF_SERVER/06-RELEASE_MIRROR.md` §14.4），
+    收尾再跑
+    `skiff-server check --dist <产物> --builtin-index crates/app/assets/runtime-index`
+    校验字节一致（产物有多个渠道时加 `--channel`），不一致即失败——手写这份文件迟早写错。
+  - **信任边界**：该文件不签名、内网只走 HTTP。能挡陈旧镜像回滚，挡不住伪造；要防伪造得把
+    它的 sha256 写进已签名的 `index.json`（二期，未做）。
+  - 缓存：成功 10 分钟、失败 60 秒负缓存（避免每次开弹窗都等一次超时）；「服务端未发布」
+    （HTTP 404/410）按成功缓存，不是故障。每大版本最多列 4 个版本；`eol` 版本标「已 EOL」
+    并排到最后，`default` 决定预选项。
+  - 接口：`GET /ui/v1/runtimes/versions?kind=php[&refresh=true]`（`kind` 另支持 `node` / `rust`；Admin，未知类型 400）。
+    页面右上角「刷新版本清单」依次刷三类，成功后整页重载让弹窗拿到新选项。
 - **软件源（apk，仅 PHP 生效）**：弹窗提供源下拉（默认「自动」= 容器内实测后择快；其余为
   `runtime_catalog::APK_MIRRORS` 候选）。目录接口
   `GET /ui/v1/runtimes/catalog` 同时返回候选与**当前生效值**（`apk_mirror_current.fixed/base`），
   弹窗据此预选已固定的源，避免用户只是新建环境却把源改回自动。提交字段 `apk_mirror`：
   缺省/`null` = 不改动；`""`/`auto` = 恢复自动探测；候选 key 或源根地址 = 固定为该源。
   命令层在安装作业入队**之前**落盘，容器内 prelude 立即读到；非 PHP 类型不应携带该字段。
-- **版本目录单一来源**：`crates/app/src/runtime_catalog.rs` 的 `RUNTIME_KINDS` 同时驱动弹窗下拉、
-  安装镜像选择与后端校验；新增版本只改这一处，模板不再硬编码版本列表。
-- **扩展清单单一来源**：同一模块的 `PHP_EXTENSIONS` 同时驱动安装弹窗勾选、抽屉开关、
+- **版本目录单一来源**：`crates/app/src/runtime_catalog.rs` 的 `RUNTIME_KINDS` 维护**大版本**
+  （2026-11 对齐上游：PHP `8.6 / 8.5 / 8.4 / 8.3 / 8.2`、Node.js `26 / 24 / 22 / 20`、
+  Rust `1.100 / 1.99 / 1.98 / 1.97 / 1.83`），
+  同时驱动校验、默认实例名与镜像名推导；补丁号不写入目录，走上面的清单。镜像名
+  `image_for(kind, version, php_image, image_prefix)`：默认版本用设置里的完整镜像名（已含前缀），
+  其余版本按 `php:<version>-fpm-alpine` 生成并**统一拼镜像前缀**。
+- **扩展清单单一来源**：同一模块的 `PHP_EXTENSIONS` 同时驱动安装弹窗勾选、详情页扩展开关、
   `extensions` 字段校验与容器内执行脚本；默认集合为 `default_on` 项（pdo_mysql / mbstring 等）。
 - **异步安装**：点击「创建并后台安装」立即返回（落库 + 入队），后台任务按
-  `排队 → 拉镜像 → 创建容器 → 启动 → 完成/失败` 推进；列表与抽屉轮询
-  `/runtimes/jobs`、`/runtimes/{id}/job` 获取状态、进度与日志。
-- **安装日志**：任务持有最近 300 行日志，抽屉内 `data-job-log` 实时追加；失败保留原因，
-  提供「重试安装」入口，不阻塞其它页面操作。
-- **扩展变更**：抽屉提交 `/runtimes/{id}/extensions/{key}/install|uninstall` 或 `/pecl`，异步执行
+  `排队 → 拉镜像 → 创建容器 → 启动 → 完成/失败` 推进；**状态与进度跟随列表接口每行的 `job` 字段**
+  下发（`RuntimeItem.job`：状态 / 进度 / 起止时间），没有单独的安装进度端点。
+- **安装日志**：任务持有最近 300 行日志；详情页「日志」子视图按需取尾部
+  （`GET /ui/v1/runtimes/{id}/logs?tail=`）+「刷新」，不建页内实时流。失败保留原因；
+  重试走任务中心（`POST /ui/v1/jobs/{id}/retry`），运行环境页不另设重试按钮。
+- **扩展变更**：详情页提交 `/runtimes/{id}/extensions/{key}/install|uninstall` 或 `/pecl`，异步执行
   mlocati `install-php-extensions`（下载失败回退手写依赖 + `docker-php-ext-install` / `pecl install`），
   完成后重启容器、收紧 socket 权限并落库；容器不存在时提示先安装/启动。
 - **两家族可用性（Debian / Alpine）**：扩展安装脚本在**容器内**用 `command -v apk` / `apt-get`

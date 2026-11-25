@@ -18,7 +18,7 @@
 
 ## 0. 四个结论
 
-1. **三级归属**：一级 6 项由内核封闭固定（概览 / 网站 / Docker / 插件 / 工具 / 设置），插件不能新增或改名一级；插件只能在固定一级下声明二级，并只为自己的二级声明三级。
+1. **三级归属**：一级 7 项由内核封闭固定（概览 / 网站 / Docker / 插件 / 任务审计 / 工具 / 设置），插件不能新增或改名一级；插件只能在固定一级下声明二级，并只为自己的二级声明三级。
 2. **L3 渲染方式**：三级由**内核渲染成工作台内的标签栏**，插件只提供被选中的内容页（iframe），不自行绘制导航 chrome。这样标签样式、当前态、权限、深链和窄屏行为都由内核统一控制。
 3. **声明入口**：插件在 `manifest.toml` 用 `[[menu]]` + `[[menu.items]]` 声明 L2/L3，用 `[[mount]]` 声明固定页槽位；仅 `[[ui]]` 的老包走明确的降级映射，不要求重打包。
 4. **设置作用域**：顺序、隐藏/显示、固定（pin）按**用户**保存；壳布局固定为侧栏（左右），不再作为可配置项；插件只能改声明默认值，不能读写任何用户偏好，也不能改布局实现。
@@ -31,7 +31,7 @@
 
 | 层级 | 语义 | 最大数量 | 说明 |
 |---|---|---|---|
-| L1 | 功能域 / 模块入口 | 固定 6 项 | 概览、网站、Docker、插件、工具、设置；集合与 id 不可由插件改变 |
+| L1 | 功能域 / 模块入口 | 固定 7 项 | 概览、网站、Docker、插件、任务审计、工具、设置；集合与 id 不可由插件改变 |
 | L2 | 一个可独立完成的任务或工作台 | 每个 L1 内有序列表 | 系统内置项 + 插件在固定 L1 下声明项；不再允许「页内锚点」冒充 L2 |
 | L3 | 同一个工作台内的视图 / 标签 | 每个 L2 最多 12 个 | 只允许拥有该 L2 的插件声明；内核渲染标签栏，插件渲染内容 |
 
@@ -108,7 +108,7 @@ pub struct Manifest {
 | 字段 | 类型 | 必填 | 默认 | 约束 |
 |---|---|---|---|---|
 | `id` | string | 是 | — | 本插件内稳定的局部 id：`[a-z0-9][a-z0-9-]{0,31}`；全仓唯一键由内核拼成 `plugin/<plugin-id>/<id>` |
-| `parent` | string | 是 | — | **只能是固定一级 id**：`sites` / `tools` / `plugins` / `docker` / `settings`；不允许挂到另一个 L2 下 |
+| `parent` | string | 是 | — | **只能是固定一级 id**：`sites` / `tasks` / `tools` / `plugins` / `docker` / `settings`；不允许挂到另一个 L2 下 |
 | `label` | string | 是 | — | 1–32 字符，纯文本；内核转义，不允许 HTML |
 | `order` | integer | 否 | `100` | 同一父级内升序；冲突用稳定键裁决 |
 | `icon` | string | 否 | `dot` | 只能取内核内置图标集；未知值记 warning 并降级为 `dot`，不加载任何外部资源 |
@@ -145,7 +145,7 @@ L3 不重复声明 `roles` / `gates`：继承所属 L2。若将来需要单独�
 
 | 层级 | 键 | 示例 |
 |---|---|---|
-| L1 | 固定 id | `overview` / `sites` / `docker` / `plugins` / `tools` / `settings` |
+| L1 | 固定 id | `overview` / `sites` / `docker` / `plugins` / `tasks` / `tools` / `settings` |
 | 内置 L2 | `core/<l1>/<l2>` | `core/docker/containers` |
 | 插件 L2 | `plugin/<plugin-id>/<local-id>` | `plugin/com.skiff.monitor/monitor` |
 | 插件 L3 | `<L2键>/<local-id>` | `plugin/com.skiff.monitor/monitor/history` |
@@ -245,8 +245,8 @@ view = "main"
    - 稳定键：`plugin/<plugin-id>/legacy`。
    - `label` = `[[ui]].label`（空则用插件 `name`）。
    - `icon` = `[[ui]].icon`（合法时）。
-   - `parent` = 官方白名单映射（见 §7.3），未知插件默认 `tools`。
-   - `order` = `1000`；同一父级内按 `plugin-id` 字典序稳定排序。
+   - `parent` = 固定 `tools`：旧包没声明归属，内核不替它猜一级菜单。
+   - `order` = 固定 `1000`；同一父级内按 `plugin-id` 字典序稳定排序（不再维护官方插件次序白名单）。
    - `roles` = 全角色；`gates` = `["plugin_enabled"]`；`pinnable` = true。
 2. `[[ui]]` 其余条目 → 该 L2 的 L3，`id = legacy-2`、`legacy-3`…，各用 `path` 对应的视图名，`label` 用各自 label。
 3. 无 `[[ui]]` 的插件：不产生菜单，只出现在插件中心。

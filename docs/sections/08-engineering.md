@@ -39,7 +39,7 @@ skiff/
 │   ├── systemd/skiff.service + install.sh + uninstall.sh   # 主交付：宿主直装
 │   ├── Dockerfile                                  # 可选 Docker 形态
 │   └── 1panel/apps/skiff/                          # 可选：商店包（受限形态，§5.4）
-├── plugins/        # 第二个 workspace（根 Cargo.toml exclude）：common 共享库 + 7 个官方插件 + testkit 测试台
+├── plugins/        # 第二个 workspace（根 Cargo.toml exclude）：common 共享库 + 6 个官方插件 + testkit 测试台
 ├── docs/           # DESIGN.md（索引+一页结论）+ sections/（§1–§12 正文）+ 七个主题入口
 │                   # （contract / impl / test / ops / plugin / sdui / archive，各自 <topic>.md + 同名目录）
 │                   # + changes/（按日期变更记录）

@@ -19,8 +19,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18080/28bwmusa/login`（**形态三：直接明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `28bwmusa`（2026-11-23 budding 1.8.6 轮干净首装生成，两轮就地升级后不变） |
+| URL | `http://10.10.15.4:18080/8au3xewy/login`（**形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `8au3xewy`（2026-11-25 干净重装生成） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
 | 明文通道（形态三，当前） | `listen="0.0.0.0:18080"` + `tls_enabled=false` + `allow_insecure_http=true`（**安装后人工追加**：安装脚本只写 `listen` + `tls_enabled`，`allow_insecure_http` 与插件安装要用的 `allow_reduced_sandbox` 均需人工补，见 §6.2 裸奔防护）；**无转发层**，直连 18080。Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
 | 证书 | 本轮全新安装未生成 TLS 证书（`tls_enabled=false`）；历史自签证书路径与 SAN 见 §2.1，需要 TLS 时按形态一/二重新生成或回切 |
@@ -34,17 +34,29 @@
 | 二：反代终止 TLS（`trusted_proxies`） | `listen="0.0.0.0:18080"`、`allow_insecure_http=true`、`trusted_proxies=["127.0.0.1/32"]`、`tls_enabled=false` | `https://10.10.15.4:18443`（需自备 `skiff-tls-proxy.service`，当前未部署） | 同上；停 `skiff-http-fwd`、起 TLS 代理、重启 `skiff` |
 | 三：直接明文（当前） | `listen="0.0.0.0:18080"`、`allow_insecure_http=true`、`tls_enabled=false` | `http://10.10.15.4:18080`（直连，无转发层） | `/etc/skiff/config.toml`（当前生效；`allow_insecure_http` 为安装后人工追加） |
 
-- **机器还原后，上一轮的配置备份、TLS 证书与 `skiff-tls-proxy` 均已不存在**；上表只描述切换方法，形态一/二需要先重新生成证书/代理。当前没有任何配置备份，基线就是 `/etc/skiff/config.toml`（2026-11-22 22:47 首装生成 + 人工追加两行）。
+- **机器还原后，上一轮的配置备份、TLS 证书与 `skiff-tls-proxy` 均已不存在**；上表只描述切换方法，形态一/二需要先重新生成证书/代理。基线就是 `/etc/skiff/config.toml`（2026-11-25 干净重装生成 + 人工追加 `allow_insecure_http` 与 `[catalog]` 段）；**2026-11-25 重装前现场已备份**在测试机 `/root/iter/backup-20261125/`（`config.toml.bak`、`skiff-data.tgz`、`sites-old/`、`php-old/`、`runtime-old/`），回滚即反向覆盖。
 - 三形态切换均只需覆盖配置 + 重启 `skiff`；历史三形态实测结论（3→1→3 恢复 `/healthz` 200、无残留监听）仍然有效。
 - Cookie 断言：形态一/二为 `__Host-skiff_session`（`Secure; HttpOnly; SameSite=Lax`）；形态三为 `skiff_dev_session`（`HttpOnly; SameSite=Lax`，无 `Secure`）。
 - 形态二下直连 `:18080` 明文端口：`GET /<prefix>/login` 仍 200 但不写会话，`POST /<prefix>/login` 返回 403「跨站登录请求被拒绝」；`curl -k https://<host>:18080/healthz` 返回 000（该端口无 TLS）。
+
+### 2.2 商店目录镜像（本机托管，2026-11-25）
+
+| 项 | 值 |
+| --- | --- |
+| 镜像基址 | `http://10.66.52.7:8080`（**开发机**，即 `[catalog].mirrors` 的一期默认值） |
+| 服务进程 | 开发机 `target/debug/skiff-server.exe serve --dist target/skiff-server/dist --listen 0.0.0.0:8080 --http --access-log .workbuddy/server-access.log`（明文，仅供内网；Windows 无 systemd，进程随会话存续） |
+| 产物 | `target/skiff-server/dist`（`publish` 生成，含 `channels/stable/{manifest.json,.sig,index.json,runtime-index/{php,node,rust}.json}` 与 `blobs/sha256/*`） |
+| 客户端配置 | 测试机 `/etc/skiff/config.toml` 的 `[catalog]`：`enabled = true`、`channel = "stable"`、`mirrors = ["http://10.66.52.7:8080"]`、`public_key = <测试发布公钥 7a9cb5d3…>`、`timeout_secs = 10`。**公钥每轮换密钥都要同步改**，否则面板拒绝该渠道 |
+| 默认关闭 | 面板出厂 `[catalog] enabled = false`，装完不显示商店入口；要验对接必须手工开启（MIRROR-05） |
+| 发布密钥 | 测试期用临时 Ed25519 密钥对，私钥只在发布机环境变量里（`SKIFF_SIGNING_KEY`），公钥写进上面 `public_key`；仓库与文档都不保存私钥 |
+| 用例归属 | 本册只记坐标；验收步骤与预期见 [TEST_MATRIX/08-SELFHOST_MIRROR.md](../TEST_MATRIX/08-SELFHOST_MIRROR.md) |
 
 ## 3. 账号与口令
 
 | 项 | 值 / 读取方式 |
 | --- | --- |
 | 管理员账号 | `admin` |
-| 当前口令 | 见测试机 `/root/iter/admin-pw.txt`（2026-11-23 轮 `skiff admin reset-password --yes` 后用接口改为已知口令；口令明文不落文档） |
+| 当前口令 | 见测试机 `/root/iter/admin-pw.txt`（2026-11-25 干净重装取自 `/www/skiff/initial-admin.txt`，未改密；口令明文不落文档） |
 | 口令文件 | `/root/iter/admin-pw.txt`（`0600`）。**只存口令本身**（无换行）。首装时取自 `/www/skiff/initial-admin.txt` 第 3 行 `口令: …`；`accept.sh` 的 B3 改密会把口令换回原值，重装/重置后必须同步更新本文件 |
 | 读取方式 | SSH 登录后 `cat /root/iter/admin-pw.txt`；重置/轮换口令后必须同步更新该文件 |
 | 首登改密 | 测试期默认 `must_change_password=0`，初始口令可直接登录；强制改密流程见 [ITERATION/01-ROUND.md](../ITERATION/01-ROUND.md) §5.2.1 |

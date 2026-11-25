@@ -6,7 +6,7 @@
 
 ### 2.11 官方插件：导入公钥 → 安装 → 复核（2026-11-03 已实测）
 
-> **历史记录**：以下内容记录 2026-11-03 的实测过程。其中 `com.skiff.nginx` 已于 2026-11-04 内核化为「网站」一级功能（见 [`docs/changes/2026-11-04.md`](../../changes/2026-11-04.md)），其安装命令、`/etc/nginx/conf.d` 授权与 RPC 复核步骤不再适用；其余 4 个插件（guard/monitor/files/cron）的步骤仍有效。
+> **历史记录**：以下内容记录 2026-11-03 的实测过程。其中 `com.skiff.nginx` 已于 2026-11-04 内核化为「网站」一级功能（见 [`docs/changes/2026-11-04.md`](../../changes/2026-11-04.md)），其安装命令、`/etc/nginx/conf.d` 授权与 RPC 复核步骤不再适用；其余 3 个插件（guard/monitor/cron）的步骤仍有效（原 `com.skiff.files` 站点文件插件已删除，文件管理归内核，见 [`PLUGIN_CATALOG/02-PLUGINS.md`](../../plugin/PLUGIN_CATALOG/02-PLUGINS.md) §4.5）。
 
 **为什么会出现「一个插件都看不到」**（本机逐项实测）：
 
@@ -17,7 +17,7 @@
   已安装的官方插件由内核在启动早期做版本/内容比对后自动补齐（见 §2.5），
   `data/`、既有授权与停用状态都不变。
 - 信任库为空时安装会被 TOFU 拒绝。**2026-11-04 起**，`official/public-key.txt` 会在首启时自动写入信任库；仅当公钥文件缺失或指纹不符时，才需要执行 `skiff trust import <公钥文件> --label official`（或面板「设置 → 信任公钥」）。CLI 报错会区分「包自带公钥但未信任」与「包里没带公钥」，并打印带真实路径的一步命令。
-- `allow_reduced_sandbox = false` 时，官方 8 个包的 manifest 没有显式关闭 `requires_full_sandbox`
+- `allow_reduced_sandbox = false` 时，官方 7 个包的 manifest 没有显式关闭 `requires_full_sandbox`
   （默认 true），安装会全部被拒；本机配置 `allow_reduced_sandbox = true` 才可装。
 - 停机快照 `/var/backups/skiff/datadir-initial-state.tgz` 内的库是 **0 插件 / 0 公钥**，且不含 `official/`；
   回到该快照就是回到「未装插件」状态。
@@ -39,10 +39,6 @@ cp -a /root/iter/official/. /www/skiff/official/
 cd /www/skiff/official
 skiff plugin install com.skiff.monitor-0.1.0.wbpkg --yes \
   --grant fs:read --grant fs:list --resource path:/proc
-skiff plugin install com.skiff.files-0.1.3.wbpkg --yes \
-  --grant fs:read --grant fs:write --grant fs:list --grant fs:mkdir \
-  --grant fs:remove --grant fs:rename \
-  --resource path:/www/sites/example.com/index
 skiff plugin install com.skiff.guard-0.1.0.wbpkg --yes \
   --grant docker:containers.list --grant docker:containers.inspect \
   --grant docker:containers.restart --grant fs:read --grant fs:write --grant fs:list \
@@ -89,10 +85,10 @@ manifest 升到 `api = "1.2"` 后，路由契约变为：
 | 路由 | 用途 | 2026-11-05 实测（`/swn4nbhe` 前缀） |
 | --- | --- | --- |
 | `GET /{p}/plugins/{id}` | 内核渲染的信息 + 管理页 | 5 个插件均 200；版本/API、签名与指纹、沙箱、授权、启停、卸载、关联菜单、日志入口齐全 |
-| `GET /{p}/plugins/{id}/main` | 默认功能页（`ui/main.html`） | files 200；无 L3 声明，无标签栏 |
+| `GET /{p}/plugins/{id}/main` | 默认功能页（`ui/main.html`） | 该行原以 files 插件实测；插件已删除，待随 `sources`（单视图 `main`）复验 |
 | `GET /{p}/plugins/{id}/<view>` | 声明的 L3 视图 | cron `list`/`new`、guard `containers`/`events`、monitor `overview`/`history` 200，标签栏 2 项；testkit `main`/`check`/`group` 200，标签栏 3 项 |
-| `GET /{p}/plugins/{id}/<未知>` | 未知视图 | 404，文案「插件 com.skiff.files 不存在视图 nope，或该视图对当前角色不可见」 |
-| `GET /{p}/plugins/{id}/<view>?legacy=1` | iframe 工作台（无 schema 的旧视图） | cron `jobs`/`list`/`new`、files、testkit `main`/`check`/`single` 全 200 且标签栏项数正确 |
+| `GET /{p}/plugins/{id}/<未知>` | 未知视图 | 404，文案「插件 com.skiff.monitor 不存在视图 nope，或该视图对当前角色不可见」 |
+| `GET /{p}/plugins/{id}/<view>?legacy=1` | iframe 工作台（无 schema 的旧视图） | cron `jobs`/`list`/`new`、testkit `main`/`check`/`single` 全 200 且标签栏项数正确 |
 
 testkit 实测：`ping` / `state` / `probe` RPC 200；`interop_cron` 200（`jobs:[], ok:true`）；
 `fail` HTTP 400 且文案含 `-32602`；`fs_read /etc/passwd` 400（「内核返回 HTTP 403：路径不在
@@ -132,7 +128,7 @@ schema v7 起 `sites` 整表重建为 `site_type(runtime/static/proxy)` + `runti
   `POST /ui/v1/runtimes` 完成环境安装后 `docker exec skiff-web-nginx nginx -t` 成功
   （当时走 `POST /{p}/sites/env/install`，该路由已于 2026-11-19 删除）。
 - 三类站（入口前缀 `/swn4nbhe`）：
-  - PHP（`php.local` + `runtime_id=php-8.5`）：HTTP 与 HTTPS 均 200，正文含 `PHP Version 8.5.12`；
+  - PHP（`php.local` + `runtime_id=php-8.5`）：HTTP 与 HTTPS 均 200，正文含 `PHP Version 8.5.x`（实测时为 `8.5.12`；补丁号随镜像 tag 漂移，不写死）；
   - 静态（`static.local`）：自定义 `index/index.html` 返回 200；
   - 反代（`proxy.local` → `http://127.0.0.1:18081`）：200，`Server: openresty/1.31.8.1`、
     `X-Upstream: 18081`，上游收到 `Host: proxy.local`。
@@ -164,7 +160,7 @@ schema v7 起 `sites` 整表重建为 `site_type(runtime/static/proxy)` + `runti
 ```sh
 # 生成自签 + 启用
 curl -sk https://10.10.15.4/ -o /dev/null -w '%{http_code}\n'      # 200
-grep -o 'PHP Version 8.5.12' <响应体>                               # 命中
+grep -o 'PHP Version 8\.5\.[0-9]*' <响应体>                           # 命中（实测时 8.5.12）
 openssl x509 -in /www/sites/demo.local/ssl/cert.pem -noout -subject -ext subjectAltName
 stat -c '%a' /www/sites/demo.local/ssl/key.pem                      # 600
 docker exec skiff-web-nginx nginx -t                                # syntax ok，无 warning

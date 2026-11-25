@@ -30,7 +30,7 @@
 
 | 项 | 现状 | 影响 | 对应 §12 |
 |---|---|---|---|
-| **插件安装后的代码目录可执行位** | **已修并上机复验**：后续 7 个官方插件长期 enabled、可正常拉起（见 [TEST_ENV/02-DEPLOY_STATE.md](../TEST_ENV/02-DEPLOY_STATE.md) §5） | 修前官方插件装完即 `Permission denied`（`versions/{ver}` 0700、`bin/plugin` 0644） | §4.2 |
+| **插件安装后的代码目录可执行位** | **已修并上机复验**：当批随包官方插件长期 enabled、可正常拉起（见 [TEST_ENV/02-DEPLOY_STATE.md](../TEST_ENV/02-DEPLOY_STATE.md) §5） | 修前官方插件装完即 `Permission denied`（`versions/{ver}` 0700、`bin/plugin` 0644） | §4.2 |
 | **Docker 容器生命周期 / 资源限制 / Compose 运行时** | **已实现并上机**：容器/镜像/网络/卷/Compose 的创建、启停、删除入口已上线；资源限制与 Compose 运行时细节以 [TEST_MATRIX.md](../TEST_MATRIX.md) H 章为准 | 不得把未覆盖的边界说成「全量已验证」 | §5.3、§12 |
 | **HSTS 响应头** | **未实现**：`crates/` 内无 `Strict-Transport-Security` 下发，实测响应头也没有 | 浏览器首次仍可被诱导到同端口明文地址（该地址不返回页面）；不得声称已启用 HSTS | §12 |
 | landlock 隔离 | **未实现** | 插件隔离主力是“独立 UID + 目录权限 + 附加组” | §12 待实测清单 |

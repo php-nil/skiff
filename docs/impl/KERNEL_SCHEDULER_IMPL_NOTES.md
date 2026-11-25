@@ -278,7 +278,7 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
 - cron 插件删除 `tick` / `cron` 声明与自带计时器，改为纯管理 UI：
   `jobs.list/create/update/toggle/remove/run → task.*`、`targets → interop_catalog`；
   manifest `requires` 增加 `scheduler`，`[[permissions]] capability="scheduler"`
-  覆盖 `read/manage/run/admin`；菜单元标签改「任务编辑器」，避免与内核「工具 → 计划任务」重名。
+  覆盖 `read/manage/run/admin`；菜单元标签改「任务编辑器」，避免与内核「任务审计 → 计划任务」重名。
 - **`manifest.cron` 已停用**：`run_cron` / `minute_index` / `plugin.cron_deprecated` 已从
   `crates/core/src/server.rs` 删除；`Manifest::cron` 仅保留解析兼容，内核不再读取。
 

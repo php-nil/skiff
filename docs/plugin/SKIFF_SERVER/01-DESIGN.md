@@ -95,13 +95,19 @@
 │   ├── stable/
 │   │   ├── manifest.json
 │   │   ├── manifest.json.sig
-│   │   └── index.json
+│   │   ├── index.json
+│   │   └── runtime-index/
+│   │       ├── php.json             # 版本清单：面板按固定路径取（见 SITE_RUNTIME_CONTRACT §4.5）
+│   │       ├── node.json            # 同上，按 kind 各一份；没有条目的类型不产出
+│   │       └── rust.json
 │   └── night/…                 # 同构
 ├── blobs/sha256/<hex>          # 不可变内容：.wbpkg、compose、升级包、模板资源
 └── schema/                     # 随产物发布的 JSON Schema，供镜像方与第三方校验
 ```
 
 `blobs/` 全渠道共享，同一摘要只存一份；`channels/<name>/` 是唯一可变层。渠道名与客户端配置一一对应，新增渠道不改变已有路径。
+
+`channels/<name>/runtime-index/<kind>.json`（`kind` ∈ `php` / `node` / `rust`）是由 `build` 按 kind 分组、从该渠道 `runtimes/` 条目生成的版本清单，供面板新建运行环境时列出可选版本（`yanked` 条目不下发，某类型没有条目就不产出该文件）。它**不签名**：面板只做 `generated_at` 防回滚与渠道/类型校验，能挡陈旧镜像、挡不住伪造；要纳入签名得把摘要写进 `index.json`（二期）。
 
 ### 2.3 条目字段（最小集）
 
@@ -191,7 +197,7 @@
 {
   "schema": "skiff.server.index/v1",
   "plugins": [
-    { "id": "com.skiff.files", "version": "0.1.0", "api": "1.2",
+    { "id": "com.skiff.monitor", "version": "0.1.0", "api": "1.3",
       "pkg_sha256": "…", "pkg_url": "blobs/sha256/…", "key_id": "…", "yanked": false }
   ],
   "runtimes": [

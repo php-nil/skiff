@@ -1,14 +1,14 @@
-# 7 个官方插件的实现与前置（§4）
+# 6 个官方插件的实现与前置（§4）
 
 > 上级索引：[PLUGIN_CATALOG.md](../PLUGIN_CATALOG.md) ｜ 拆自 `docs/plugin/PLUGIN_CATALOG.md` 原 §4（2026-11-16 整理，正文未改）。
 
 ---
 
-## 4. 当前 7 个：实现与前置
+## 4. 当前 6 个：实现与前置
 
 ### 4.1 实现顺序（按落地难度，已全部落地）
 
-**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ 文件管理（全 fs 动词 + 宿主写，最重）→ 计划任务（只调度插件接口，最小但不独立）→ FTP 管理（新增 `ftp` 能力面，见 §4.8；Nginx 站点已内核化）→ 防火墙（新增 `firewall` 能力面，见 §4.9）**。`sources`（软件源）为后续新增，不在首批选型内，菜单归属见 §4.7、实现见 [`plugins/README.md`](../../../plugins/README.md)。
+**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ 计划任务（只调度插件接口，最小但不独立）→ FTP 管理（新增 `ftp` 能力面，见 §4.8；Nginx 站点已内核化）→ 防火墙（新增 `firewall` 能力面，见 §4.9）→ 软件源（`fs` + `exec` 组合，见 §4.10）**。文件管理与站点（§4.4、§4.5）都留在内核，不做插件。
 
 `guard` 排在第一位是因为它**不需要任何内核改动**：只用既有 `containers.list/inspect/restart` 与自身 `data/`，可以先把「manifest → 打包 → 装包 → RPC → UI」整条链路验穿，再往上叠能力面。
 
@@ -56,20 +56,25 @@ vhost 生成、启停 / 删除 / 日志都由内核实现，菜单归属固定�
 插件侧不再维护该 manifest、UI 与备份接口；定时备份仍可复用 `com.skiff.cron` 对内核站点的能力
 （待后续提供 interop 入口）。
 
-### 4.5 站点文件 `com.skiff.files`
+### 4.5 文件管理（内核内置，不再作为插件）
 
-```toml
-run = "on-demand"
-requires = ["fs", "identity"]
-resource_hints = []                 # 授权哪些目录由管理员在安装确认页填写
-# fs: read / write / list / mkdir / remove / rename（全 6 动词）
-```
+「工具 → 文件管理」是内核持有的 fs 管理员客户端：菜单键 `core/files`（`crates/app/src/menu.rs`），
+壳页 `/{p}/files`（L3：回收站 / 配额），取数与写操作走 `/ui/v1/files*`（`crates/web/src/handlers/ui/files.rs`），
+IO 全经 `AdminFs` → `skiff-fs`。原 `com.skiff.files`（站点文件）插件已删除——它与内核页是同一能力的
+第二套实现，且更弱：
 
-- **功能面**：站点内容目录内浏览、读（256KiB 分页）、写（覆盖 / 追加 / 按 offset 续写）、新建目录、删除、改名；UI 带文本编辑器与手写 UTF-8 ⇄ base64。入口挂在「网站」一级下，不与内核「工具 → 文件管理」抢位置。
-- **范围收口**：只接受 `/www/sites/<域名>/index` 形态的授权根，其余根一律拒绝；`resource_hints` 为空，站点域名在打包时未知，必须安装确认页手动添加。回收站、配额、上传/下载、归档、chmod/chown 一律走内核页（插件页给跳转）。
-- **限制（未做）**：大文件仍是分页 + 文本编辑，**没有**二进制上传/下载与流式传输契约——那需要新的内核传输面（规划见 §7）。回收站、配额、归档、chmod/chown 也不在插件内，统一走内核「工具 → 文件管理」页。
-- **审计**：走能力面时 actor 是 `plugin:com.skiff.files`，`detail` 追加 `grant=<授权根> site=<域名>`；这是「不把 `/www/sites` 全量授权给插件」换来的定责可读性（见 KERNEL_FS_CONTRACT §4.4）。
-- **风险**：插件侧 `remove` 是**永久删除**（内核页默认进回收站），UI 文案与审计必须显式区分；越权一律 403 + 审计。
+- **动词不全**：插件能力面只有 `read / write / list / mkdir / remove / rename`，内核页在用的
+  `chmod / chown / copy / archive / extract / stat / download` 一项都没有。
+- **状态拿不到**：回收站（`crates/fs/src/trash.rs`）与配额（`skiff-fs` 的 `quota_target`/`enforce_quota`）
+  都在内核数据根下，插件对 `data_dir` 的读写被 `fs.protected` 直接拒绝，插件侧再做一套就是两套口径。
+- **语义退化**：插件 `fsops::remove` 是 `remove_dir_all`（不进回收站、不受配额约束），`rename`
+  目标存在一律拒；内核页这两处都有明确策略。
+- **流式能力不匹配**：能力面单次 IO 256 KiB（协议单帧 1MiB），而 `files/download` 是直接流式响应、
+  目录先打 zip 再流；换插件后要经 RPC 分页中转。
+- **内核不减**：`AdminFs` 已被 nginx、站点脚手架、证书、商店缓存、升级与任务等 20 个文件使用，
+  搬 UI 不减少一行 `skiff-fs`，只多一层 IPC。
+
+分界线是**授权范围能否枚举**：范围可枚举的（如站点内容目录）才适合做成插件；但已有内核入口的同一能力也不该再开第二套——`com.skiff.files` 就是因此删除的。全盘管理员工具留在内核。
 
 ### 4.6 计划任务 `com.skiff.cron`
 
@@ -93,7 +98,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
 
-7 个官方插件与 testkit（共 8 个包）均为 `api = "1.3"` + `[[menu]]` + `view` + 随包 schema（`ui/schema/<view>.json`）；默认由壳页原生渲染，旧 `ui/<view>.html` 只在显式 `?legacy=1` 时使用。**菜单归属、L3 视图与槽位以 [MENU_CONTRACT/03-SLOTS_SECURITY.md](../../contract/MENU_CONTRACT/03-SLOTS_SECURITY.md) §7.3 为唯一来源，本文不复述**；插件页形态见 `docs/contract/PLUGIN_UI_CONTRACT.md`。
+6 个官方插件与 testkit（共 7 个包）均为 `api = "1.3"` + `[[menu]]` + `view` + 随包 schema（`ui/schema/<view>.json`）；默认由壳页原生渲染，旧 `ui/<view>.html` 只在显式 `?legacy=1` 时使用。**菜单归属、L3 视图与槽位以 [MENU_CONTRACT/03-SLOTS_SECURITY.md](../../contract/MENU_CONTRACT/03-SLOTS_SECURITY.md) §7.3 为唯一来源，本文不复述**；插件页形态见 `docs/contract/PLUGIN_UI_CONTRACT.md`。
 
 - `/{p}/plugins/<id>` 是内核信息与管理页，功能页固定 `/{p}/plugins/<id>/<view>`；老包（无 `[[menu]]`）`main` 回落 `ui/index.html`。
 - 不造「磁盘 / 执行记录 / 守护设置」等假标签：插件当前没有对应视图时不声明 L3。
@@ -143,4 +148,26 @@ verbs = ["status", "rules.list", "rule.add", "rule.remove", "port.allow",
 - **fail2ban 口径**：`fail2ban.install` 安装/复用宿主 fail2ban（新装时写 `skiff-defaults.conf` 关闭 `sshd` jail）；`start` / `stop` / `uninstall` 提供显式生命周期管理（`enable --now` / `disable --now` / `apt-get purge`），`status` 如实返回未安装/已安装未运行/运行中三态与可读原因；`jail.ensure` / `jail.remove` 管理 `/etc/fail2ban/jail.d/skiff-<jail>.conf`，改动后 `systemctl restart fail2ban`；`banned` / `ban` / `unban` 走 `fail2ban-client`。不改系统级 `jail.conf`，不删用户创建的其它 jail 文件。
 - **对外接口**：`[interop].provides` 暴露 `fail2ban.*`，FTP 等插件按需调用；调用方需 `interop:call` 与 `plugin:com.skiff.firewall`。四道闸、15s 超时与审计沿用既有 interop 契约。
 - **特权通道**：能力面实现只在 `crates/plugin/src/firewall.rs`（判定 + 命令编排），内核 `crates/core/src/kernel/firewall.rs` 只做鉴权、审计与 `systemd-run` 瞬态单元执行；受限形态（非 Native）一律 503。
-- **契约与验收**：动词、授权、审计与安全边界见 [KERNEL_FIREWALL_CONTRACT.md](../../contract/KERNEL_FIREWALL_CONTRACT.md)；回归项见 [TEST_MATRIX.md](../../test/TEST_MATRIX.md) `FW-01` 起。**本轮代码未经编译验证，未上机验收。**
+- **契约与验收**：动词、授权、审计与安全边界见 [KERNEL_FIREWALL_CONTRACT.md](../../contract/KERNEL_FIREWALL_CONTRACT.md)；回归项见 [TEST_MATRIX.md](../../test/TEST_MATRIX.md) `FW-01` 起。
+
+### 4.10 软件源 `com.skiff.sources`
+
+```toml
+run = "on-demand"
+idle_timeout_sec = 300
+requires = ["fs", "exec"]
+network_egress = ["unrestricted"]   # 测速要连用户自填的镜像域名，无法预列 IP/CIDR
+resource_hints = ["path:/www/runtime/cache/apk", "path:/etc/docker",
+                  "bin:/usr/bin/systemctl", "bin:/usr/bin/docker"]
+[[permissions]]
+capability = "fs"
+verbs = ["read", "write"]
+[[permissions]]
+capability = "exec"
+verbs = ["run"]
+```
+
+- **不新增能力面**：apk 源写安装器缓存（`<runtime>/cache/apk/.skiff-mirror`），镜像源合并 `/etc/docker/daemon.json` 后 `systemctl reload docker` 确认内存态，失败即回滚——全在 `fs` + `exec` 内完成，是「新宿主功能走既有面」的样板。
+- **出网必须声明**：`network_egress = ["unrestricted"]` 在安装确认页原样展示，装它等于允许主动连接任意地址。
+- **测速口径**：按真实数据量吞吐判（apk 下 3 MB ISO range；镜像走 token → manifest → 3 MB 层 blob），数字只用于同页横向比较，不落库、不自动改配置（口径见 [SOURCE_MIRRORS.md](../../impl/SOURCE_MIRRORS.md)）。
+- **菜单**：`tools` 下 `sources`（order 30），单视图 `main`，随包 schema 原生渲染。

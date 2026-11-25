@@ -15,23 +15,21 @@
 | FS-03 | 原子写与并发路径锁 | `[本机]` 单测 | `cargo test -p skiff-fs --locked` | 写入走临时文件+rename；并发写同一路径不出现半文件；失败不留 `.tmp` | □通过 / □失败 | `crates/fs/src/atomic.rs`、`crates/fs/src/lock.rs` |
 | FS-04 | 回收站移动/恢复/清理 | `[本机]` 单测；`[上机]` 管理员会话可打开 `/$P/files/trash` | `pwsh tools/gate.ps1 -Task test -Pkg skiff-fs`；上机删除文件后进回收站，恢复、彻底删除、过期清理 | 删除进回收站、可恢复、过期清理；恢复后原路径内容一致；父目录缺失/同名冲突有可读提示 | □通过 / □失败 | `crates/fs/src/trash.rs`、`crates/app/src/admin_fs.rs`、`crates/web/src/handlers/ui/files.rs` |
 | FS-05 | 全局与插件配额 | `[本机]` 单测；`[上机]` 管理员会话可打开 `/$P/files/quotas` | `pwsh tools/gate.ps1 -Task test -Pkg skiff-fs`；设置目录树字节/文件数上限后写入 | 超全局/插件配额被拒；目录树超限返回 `fs.quota_exceeded` 且消息含配额根与用量；回收站对象不计入目录树用量（恢复回补） | □通过 / □失败 | `crates/fs/src/quota.rs`、`crates/fs/src/ops/mod.rs`、`crates/app/src/admin_fs.rs` |
-| FS-06 | 审计分级与目视筛选 | `[上机]` 已产生 fs 操作 | 打开 `/$P/settings/audit`，用关键字框筛 `fs.`，再翻页找 result=deny/fail 行 | 每条含 actor、channel、action、target、result；关键字命中 actor/ip/action/target/detail；翻页走 `GET /ui/v1/audit?q=&limit=&cursor=`（`limit` ≤200，默认 50） | □通过 / □失败 | `crates/plugin/src/capability.rs`、`crates/web/src/handlers/ui/audit.rs`、`crates/web/static/budding/budding-boot.js` |
+| FS-06 | 审计分级与目视筛选 | `[上机]` 已产生 fs 操作 | 打开 `/$P/tasks/audit`，分类选「文件」、关键字框筛 `fs.`，再翻页找 result=deny/fail 行 | 每条含分类、actor、channel、action、target、result；关键字命中 actor/ip/action/target/detail；分类按动作命名空间过滤；翻页走 `GET /ui/v1/audit?q=&cat=&limit=&cursor=`（`limit` ≤200，默认 50） | □通过 / □失败 | `crates/model/src/audit.rs`、`crates/plugin/src/capability.rs`、`crates/web/src/handlers/ui/audit.rs`、`crates/web/static/budding/budding-boot.js` |
 | FS-07 | 内核文件管理页基本操作（第一步） | `[上机]` 管理员会话，`/$P/files` 可打开 | 浏览目录；打开文本并修改保存；新建目录/文件；重命名；删除；再打开 >256 KiB 文件 | 操作成功；大小/时间正确；>256 KiB 只读且保存禁用；删除二次确认；保存失败时编辑内容保留 | □通过 / □失败 | `crates/web/src/handlers/ui/files.rs`、`crates/app/src/admin_fs.rs`、`crates/web/static/budding/budding-boot.js` |
 | FS-08 | 数据根硬拒与权限位 | `[上机]` 已安装 | 用内核文件页尝试列/读/写 `/www/skiff/skiff.db`、`/www/skiff/plugins`、`/www/skiff/official`；检查数据根权限 | 即使管理员也返回 403 `fs.protected`；绕过软链仍拒绝；数据根与 plugins 为 0711；DB 文件非全局可写 | □通过 / □失败 | `crates/app/src/admin_fs.rs`、`crates/plugin/src/fsgrant.rs`、`deploy/install.sh`、`docs/test/DEPLOY_TEST.md` §1.1 |
-| FS-09 | 旧深链 301 与插件菜单撤销 | `[上机]` `com.skiff.files` 已装 | 访问 `/$P/plugins/com.skiff.files/main`；查看「工具」菜单与全站导航 | 返回 301 且 `Location: /$P/files`；菜单中只有内核「文件管理」入口，无插件文件管理入口 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`crates/app/src/menu.rs`、`crates/web/src/handlers/mod.rs` |
-| FS-10 | 回收站页面主链路（第二步） | `[上机]` 管理员会话，`/$P/files/trash` 可打开 | 在文件页删除文件/目录 → 打开回收站；恢复、故意制造同名冲突后覆盖恢复、彻底删除、清空 | 删除后进回收站且原路径消失；恢复后内容一致；冲突提示可读且需二次确认覆盖；清空二次确认并说明不可恢复；列表清空 | □通过 / □失败 | `crates/web/src/handlers/ui/files.rs`、`crates/web/static/budding/budding-boot.js`（回收站 L3）、`/ui/v1/files/trash/list` 接口 |
-| FS-11 | 配额页面与执行（第二步） | `[上机]` 管理员会话，`/$P/files/quotas` 可打开 | 设置目录树字节/文件数上限 → 在文件页写入超限；修改上限；取消上限；点「重新统计」 | 超限写入返回 `fs.quota_exceeded` 且含原因；页面显示已用/上限；取消后不再拦截且列表隐藏；重扫耗时提示出现 | □通过 / □失败 | `crates/web/src/handlers/ui/files.rs`、`crates/web/static/budding/budding-boot.js`（配额 L3）、`/ui/v1/files/quotas/list` 接口、`crates/app/src/admin_fs.rs` |
-| FS-12 | 回收站/配额审计与受保护路径 | `[上机]` 已产生回收站/配额操作 | 删除、恢复、彻底删除、清空、设置/取消配额后打开 `/$P/settings/audit`；再尝试把配额根设为数据根/`plugins/` | 审计出现 `fs.recycle.*` / `fs.quota.*` 且不含文件内容；受保护根被拒（403 `fs.denied/protected`） | □通过 / □失败 | `crates/fs/src/audit.rs`、`crates/app/src/admin_fs.rs`、`handlers/settings.rs` |
-| FS-13 | 内核运行配置保护（加固） | `[本机]` 单测；`[上机]` 管理员会话，文件页可浏览 `/etc` | 在文件页对 `/etc/skiff/config.toml` 执行删除、改名、覆盖保存；再对 `/etc/nginx/nginx.conf` 执行同样操作；尝试把配额根设为 `/etc/skiff` | 配置/TLS 路径三类操作均 403 且提示「内核运行配置或数据目录受保护」；`/etc/nginx/nginx.conf` 仍可操作；配额设置/扫描对 `/etc/skiff` 均 403 | □通过 / □失败 | `crates/fs/src/path.rs`、`crates/fs/src/ops/mutate.rs`、`crates/app/src/admin_fs.rs` |
-| FS-14 | 宿主只读/容量类 I/O 错误映射 | `[本机]` 单测；`[上机]` systemd `ProtectSystem` 生效，管理员会话可浏览 `/etc` | 本机 `cargo test -p skiff-fs -p skiff-plugin`；上机在文件页写保护区外只读路径（如 `/etc/skiff-iter-probe.txt`），有只读挂载时再写该挂载点；ENOSPC/EDQUOT 构造不出则如实标未实测 | `EROFS` → 403 `fs.read_only` 且文案含「只读」，不再 500；`EACCES`/`EPERM` → 403 `fs.denied`；`ENOSPC`/`EDQUOT` → 507 `fs.no_space`；未归类 I/O 仍 500；插件能力面同一口径 | □通过 / □失败 | `crates/fs/src/error.rs`、`crates/plugin/src/fsops.rs`、`crates/web/src/handlers/ui/files.rs`、`crates/web/static/budding/budding-boot.js` |
+| FS-09 | 回收站页面主链路（第二步） | `[上机]` 管理员会话，`/$P/files/trash` 可打开 | 在文件页删除文件/目录 → 打开回收站；恢复、故意制造同名冲突后覆盖恢复、彻底删除、清空 | 删除后进回收站且原路径消失；恢复后内容一致；冲突提示可读且需二次确认覆盖；清空二次确认并说明不可恢复；列表清空 | □通过 / □失败 | `crates/web/src/handlers/ui/files.rs`、`crates/web/static/budding/budding-boot.js`（回收站 L3）、`/ui/v1/files/trash/list` 接口 |
+| FS-10 | 配额页面与执行（第二步） | `[上机]` 管理员会话，`/$P/files/quotas` 可打开 | 设置目录树字节/文件数上限 → 在文件页写入超限；修改上限；取消上限；点「重新统计」 | 超限写入返回 `fs.quota_exceeded` 且含原因；页面显示已用/上限；取消后不再拦截且列表隐藏；重扫耗时提示出现 | □通过 / □失败 | `crates/web/src/handlers/ui/files.rs`、`crates/web/static/budding/budding-boot.js`（配额 L3）、`/ui/v1/files/quotas/list` 接口、`crates/app/src/admin_fs.rs` |
+| FS-11 | 回收站/配额审计与受保护路径 | `[上机]` 已产生回收站/配额操作 | 删除、恢复、彻底删除、清空、设置/取消配额后打开 `/$P/tasks/audit`；再尝试把配额根设为数据根/`plugins/` | 审计出现 `fs.recycle.*` / `fs.quota.*` 且不含文件内容；受保护根被拒（403 `fs.denied/protected`） | □通过 / □失败 | `crates/fs/src/audit.rs`、`crates/app/src/admin_fs.rs`、`handlers/settings.rs` |
+| FS-12 | 内核运行配置保护（加固） | `[本机]` 单测；`[上机]` 管理员会话，文件页可浏览 `/etc` | 在文件页对 `/etc/skiff/config.toml` 执行删除、改名、覆盖保存；再对 `/etc/nginx/nginx.conf` 执行同样操作；尝试把配额根设为 `/etc/skiff` | 配置/TLS 路径三类操作均 403 且提示「内核运行配置或数据目录受保护」；`/etc/nginx/nginx.conf` 仍可操作；配额设置/扫描对 `/etc/skiff` 均 403 | □通过 / □失败 | `crates/fs/src/path.rs`、`crates/fs/src/ops/mutate.rs`、`crates/app/src/admin_fs.rs` |
+| FS-13 | 宿主只读/容量类 I/O 错误映射 | `[本机]` 单测；`[上机]` systemd `ProtectSystem` 生效，管理员会话可浏览 `/etc` | 本机 `cargo test -p skiff-fs -p skiff-plugin`；上机在文件页写保护区外只读路径（如 `/etc/skiff-iter-probe.txt`），有只读挂载时再写该挂载点；ENOSPC/EDQUOT 构造不出则如实标未实测 | `EROFS` → 403 `fs.read_only` 且文案含「只读」，不再 500；`EACCES`/`EPERM` → 403 `fs.denied`；`ENOSPC`/`EDQUOT` → 507 `fs.no_space`；未归类 I/O 仍 500；插件能力面同一口径 | □通过 / □失败 | `crates/fs/src/error.rs`、`crates/plugin/src/fsops.rs`、`crates/web/src/handlers/ui/files.rs`、`crates/web/static/budding/budding-boot.js` |
 
 最小回归命令：
 
 ```bash
 cargo test -p skiff-fs --locked
 cargo test -p skiff-plugin capability --locked
-curl -ks -o /dev/null -w 'audit=%{http_code}\n' -b "$J" "$B/$P/settings/audit"
-curl -ks -o /dev/null -w 'files=%{http_code}\n' -b "$J" "$B/$P/plugins/com.skiff.files/main"
+curl -ks -o /dev/null -w 'audit=%{http_code}\n' -b "$J" "$B/$P/tasks/audit"
 ```
 
 **2026-11-06 实测（测试机 10.10.15.4）**
@@ -43,13 +41,11 @@ curl -ks -o /dev/null -w 'files=%{http_code}\n' -b "$J" "$B/$P/plugins/com.skiff
 | FS-03 | ☐未执行 | 仅本机单测；开发机无 `cargo`/`rustup`；运行态写路径是 `crates/plugin/src/fsops.rs::write_chunk` 直接 `set_len(0)`+写，无临时文件/rename/路径锁 |
 | FS-04 | ☐未执行 | 仅本机单测；运行时无回收站存储/入口（`/www/skiff` 下无 trash 目录），files 删除为永久删除 |
 | FS-05 | ☐未执行 | 仅本机单测；运行时无配额配置/入口（`config.toml` 无 trash/quota 键） |
-| FS-06 | 审计分级与目视筛选 | `[上机]` 已产生 fs 操作 | 打开 `/$P/settings/audit`，用关键字框筛 `fs.`，再翻页找 result=deny/fail 行 | 每条含 actor、channel、action、target、result；关键字命中 actor/ip/action/target/detail；翻页走 `GET /ui/v1/audit?q=&limit=&cursor=`（`limit` ≤200，默认 50） | □通过 / □失败 | `crates/plugin/src/capability.rs`、`crates/web/src/handlers/ui/audit.rs`、`crates/web/static/budding/budding-boot.js` |
-| FS-07 | 内核文件管理页基本操作（第一步） | `[上机]` 管理员会话，`/$P/files` 可打开 | 浏览目录；打开文本并修改保存；新建目录/文件；重命名；删除；再打开 >256 KiB 文件 | 操作成功；大小/时间正确；>256 KiB 只读且保存禁用；删除二次确认；保存失败时编辑内容保留 | □通过 / □失败 | `crates/web/src/handlers/ui/files.rs`、`crates/app/src/admin_fs.rs`、`crates/web/static/budding/budding-boot.js` |
-| FS-08 | ☑本机集成通过（2026-11-07，内核文件页） | 旧结论（files 插件按 `path:/www` 可写数据根）已被内核接管取代：`AdminFs::guard` 对 `data/`、`data/plugins`、`data/official` 一律 403，集成测试断言列 `data_dir/plugins` 返回 403；Unix 软链绕回单测同样拒绝。上机权限位复核仍待发版 | 发版后按 FS-08 上机复验：管理员在 `/files` 打开数据根必须 403；软链逃逸仍拒绝；数据根 0711/DB 0600 不变 |
+| FS-06 | ☐待补实测 | 原结果行误拷了检查项（7 列塞进 3 列表）；需按当前审计页（`/$P/tasks/audit`，分类「文件」、关键字 `fs.`，翻页查 result=deny/fail）实测后补填 |
+| FS-07 | ☐待补实测 | 原结果行误拷了检查项（7 列塞进 3 列表）；需在内核文件页（`/$P/files`）复验浏览/保存/新建/重命名/删除与 >256 KiB 只读后补填 |
+| FS-08 | ☑本机集成通过（2026-11-07，内核文件页） | 旧结论（插件按 `path:/www` 可写数据根）已由内核接管取代：`AdminFs::guard` 对 `data/`、`data/plugins`、`data/official` 一律 403，集成测试断言列 `data_dir/plugins` 返回 403；Unix 软链绕回单测同样拒绝。上机权限位复核仍待发版——发版后按 FS-08 复验：管理员在 `/$P/files` 打开数据根必须 403，软链逃逸仍拒绝，数据根 0711/DB 0600 不变 |
 
 > 稳定性：开跑前后 6 次探活（`/$P/` 307、`/api/v1/docker/containers` 401）一致，`NRestarts=0`，未遇到重启/502；测试期间 `monitor` 被并行会话停用，不影响 F 章判定。
-
-> 2026-11-07 补充（FS-07 编辑器关闭回归）：`plugins/files` 编辑器弹窗的关闭按钮 / Esc / 点遮罩三条路径全部失效。根因是 `.editor-dialog` 上的作者样式 `display:flex` 盖掉了 UA 的 `dialog:not([open]) { display:none }`，`close()` 只移除 `open` 属性，窗口整块留在页面上。修复为 `display` 只挂 `.editor-dialog[open]`、补 `dialog:not([open]) { display:none !important }`、遮罩点击接入 `requestCloseEditor`（未保存内容先确认）、关闭后焦点回列表、确认框防重复 `showModal`。本地复现台（同 CSP + mock RPC，真浏览器）已验证：关闭按钮 / Esc / 遮罩均能收起、未保存内容先确认、保存后重开内容持久、>256 KiB 只读且禁用保存；测试机面板内复验待发版（浏览器工具无法越过自签证书）。
 
 ## G. 调度器
 
@@ -57,8 +53,8 @@ curl -ks -o /dev/null -w 'files=%{http_code}\n' -b "$J" "$B/$P/plugins/com.skiff
 
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
 | --- | --- | --- | --- | --- | --- | --- |
-| TASK-01 | 任务列表与详情状态 | `[上机]` 已登录 | 打开 `/$P/tasks`；点任一任务详情 | 壳页 200；`GET /ui/v1/tasks` 与 `/ui/v1/tasks/{id}` 200 且含 kind/source/调度/状态/下次运行与历史 | □通过 / □失败 | `crates/web/src/handlers/tasks.rs`、`crates/web/src/handlers/ui/tasks.rs`、`crates/web/static/budding/budding-boot.js`（tasks 页） |
-| TASK-02 | 内置任务标记与删除入口 | `[上机]` 新库或已有内置任务 | 打开列表找 `builtin:db-vacuum`；检查是否有删除按钮；如需可再直接 POST `/$P/tasks/builtin:db-vacuum/delete` 观察 | 列表可见并标「内置」；壳页不为内置任务渲染删除按钮。注：服务端 `delete_task` 当前未拦截 builtin，直接 POST 仍会删除（如要硬保护需另开事项） | □通过 / □失败 | `crates/app/src/tasks.rs`、`crates/web/src/handlers/tasks.rs`、`crates/web/static/budding/budding-boot.js`（tasks 页） |
+| TASK-01 | 任务列表与详情状态 | `[上机]` 已登录 | 打开 `/$P/tasks/scheduled`；点任一任务详情 | 壳页 200；`GET /ui/v1/tasks` 与 `/ui/v1/tasks/{id}` 200 且含 kind/source/调度/状态/下次运行与历史 | □通过 / □失败 | `crates/web/src/handlers/tasks.rs`、`crates/web/src/handlers/ui/tasks.rs`、`crates/web/static/budding/budding-boot.js`（tasks 页） |
+| TASK-02 | 内置任务标记与删除入口 | `[上机]` 新库或已有内置任务 | 打开列表找 `builtin:db-vacuum`；检查是否有删除按钮；如需可再直接 POST `/ui/v1/tasks/builtin:db-vacuum/delete` 观察 | 列表可见并标「内置」；壳页不为内置任务渲染删除按钮。注：服务端 `delete_task` 当前未拦截 builtin，直接 POST 仍会删除（如要硬保护需另开事项） | □通过 / □失败 | `crates/app/src/tasks.rs`、`crates/web/src/handlers/tasks.rs`、`crates/web/static/budding/budding-boot.js`（tasks 页） |
 | TASK-03 | 站点备份开关与计划 | `[上机]` 有站点 | 站点详情打开/关闭备份；把间隔改为每周一、时间改为 04:30 保存；刷新站点页与任务页 | 写接口 200/303；启用后出现 `builtin:site-backup:<domain>`，表达式随所选间隔与 `HH:MM` 生成（每天/每周一/每月 1 日），关闭后任务保留但 `enabled=false`；站点页开关与任务页状态一致；非法时间被表单与接口双重拒绝 | □通过 / □失败 | `crates/app/src/tasks.rs`（`set_site_backup`）、`crates/app/src/commands/site.rs`、`crates/web/static/budding/budding-boot.js`（站点详情备份卡） |
 | TASK-04 | 手动触发并写历史 | `[上机]` 任一启用任务 | 点「立即执行」；刷新详情；看 `task_runs` | 303；出现 running 记录；完成后 success/failed 与耗时、输出摘要可见 | □通过 / □失败 | `crates/app/src/tasks.rs`、`crates/sched` |
 | TASK-05 | 超时、重试与退避 | `[本机]` 调度器单测 | `cargo test -p skiff-sched timeout --locked`；`cargo test -p skiff-sched backoff --locked` | 超时被取消并记 timeout；按重试次数与退避间隔重跑；最终状态正确 | □通过 / □失败 | `crates/sched/src/scheduler.rs`、`docs/contract/KERNEL_SCHEDULER_CONTRACT.md` |
@@ -72,8 +68,8 @@ curl -ks -o /dev/null -w 'files=%{http_code}\n' -b "$J" "$B/$P/plugins/com.skiff
 ```bash
 cargo test -p skiff-sched --locked
 cargo test -p skiff-app tasks --locked
-curl -ks -o /dev/null -w 'tasks=%{http_code}\n' -b "$J" "$B/$P/tasks"
-curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/builtin:db-vacuum"
+curl -ks -o /dev/null -w 'tasks=%{http_code}\n' -b "$J" "$B/$P/tasks/scheduled"
+curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/scheduled/builtin:db-vacuum"
 ```
 
 **2026-11-06 实测（测试机 10.10.15.4）**

@@ -20,7 +20,7 @@
 | 章节 | 文件 | 内容要点 |
 | --- | --- | --- |
 | §0–2 | [01-MODEL.md](SITE_RUNTIME_CONTRACT/01-MODEL.md) | 五条结论、领域模型、数据与目录（含网段回退与静态池） |
-| §3–5 | [02-CREATE_PAGE.md](SITE_RUNTIME_CONTRACT/02-CREATE_PAGE.md) | 建站流程差异（静态 / PHP / Node.js）、运行环境管理页、与 Docker 容器页边界 |
+| §3–5 | [02-CREATE_PAGE.md](SITE_RUNTIME_CONTRACT/02-CREATE_PAGE.md) | 建站流程差异（静态 / PHP / Node.js）、运行环境管理页、与 Docker 容器页边界；补丁号清单来自镜像服务固定路径 |
 | §6–7 | [03-ROUTES_SCOPE.md](SITE_RUNTIME_CONTRACT/03-ROUTES_SCOPE.md) | 路由、权限与审计；P1 / P2 范围 |
 | §8–10 | [04-VERIFY_IMPACT.md](SITE_RUNTIME_CONTRACT/04-VERIFY_IMPACT.md) | 测试矩阵、变更影响面、需要拍板的决策、状态文案与空态 |
 | §11–13 | [05-P1-NOTES.md](SITE_RUNTIME_CONTRACT/05-P1-NOTES.md) | P1 实现补充、运行环境拆分与安装器本地化、PHP 配置文件直接编辑 |
