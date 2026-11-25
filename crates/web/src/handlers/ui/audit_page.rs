@@ -15,7 +15,11 @@ use super::AuditItem;
 /// 保证地址栏、筛选条件与已取结果三者一致。
 fn filter_form(keyword: &str, category: Option<AuditCategory>, base: &str) -> Value {
     let mut items: Vec<(&str, &str)> = vec![("全部分类", "")];
-    items.extend(AuditCategory::ALL.iter().map(|c| (c.label(), c.key())));
+    items.extend(
+        AuditCategory::ALL
+            .iter()
+            .map(|c| (crate::labels::audit_category(*c), c.key())),
+    );
     let selected = category.map(|c| c.key()).unwrap_or("");
     json!({
         "type": "form",
@@ -149,7 +153,7 @@ pub fn audit_page_schema(
             parts.push(format!("关键字：{keyword}"));
         }
         if let Some(category) = category {
-            parts.push(format!("分类：{}", category.label()));
+            parts.push(format!("分类：{}", crate::labels::audit_category(category)));
         }
         if parts.is_empty() {
             String::new()

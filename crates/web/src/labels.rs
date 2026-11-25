@@ -1,6 +1,6 @@
-//! 跨页面复用的中文文案映射：任务/作业状态、运行环境扩展来源、商店目录状态。
+//! 跨页面复用的中文文案映射：任务/作业状态、运行环境扩展来源、商店目录状态、审计分类。
 //!
-//! App 只输出稳定枚举值（`as_str`），这四类的文案集中在这里，SDUI 与模板共用；
+//! App 只输出稳定枚举值（`as_str`），这五类的文案集中在这里，SDUI 与模板共用；
 //! 只在一处出现、且与配色 class 或视图语义绑定的文案（站点/容器/插件状态）
 //! 留在各自的 handler，避免为「统一」而制造跨模块耦合。
 
@@ -8,6 +8,21 @@ use skiff_app::catalog::CatalogState;
 use skiff_app::jobs::JobStatus;
 use skiff_app::runtime_catalog::ExtSource;
 use skiff_app::sites::RuntimeJobState;
+use skiff_model::AuditCategory;
+
+/// 审计分类的展示文案（`AuditCategory` 定义在 `skiff-model`，文案按 AGENTS.md §4.1 留在 web 层）。
+pub fn audit_category(category: AuditCategory) -> &'static str {
+    match category {
+        AuditCategory::Auth => "认证与账号",
+        AuditCategory::Site => "站点",
+        AuditCategory::Docker => "容器与镜像",
+        AuditCategory::Files => "文件",
+        AuditCategory::Plugin => "插件",
+        AuditCategory::Task => "任务",
+        AuditCategory::System => "系统",
+        AuditCategory::Other => "其他",
+    }
+}
 
 pub fn job_status(status: JobStatus) -> &'static str {
     match status {

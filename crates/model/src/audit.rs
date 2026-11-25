@@ -47,20 +47,6 @@ impl AuditCategory {
         }
     }
 
-    /// 展示文案。
-    pub fn label(self) -> &'static str {
-        match self {
-            AuditCategory::Auth => "认证与账号",
-            AuditCategory::Site => "站点",
-            AuditCategory::Docker => "容器与镜像",
-            AuditCategory::Files => "文件",
-            AuditCategory::Plugin => "插件",
-            AuditCategory::Task => "任务",
-            AuditCategory::System => "系统",
-            AuditCategory::Other => "其他",
-        }
-    }
-
     /// 该分类覆盖的动作命名空间；`Other` 为空，由兜底逻辑处理。
     pub fn namespaces(self) -> &'static [&'static str] {
         match self {

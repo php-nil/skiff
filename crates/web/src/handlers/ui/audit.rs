@@ -52,7 +52,7 @@ pub async fn audit(
                 ts: rfc3339(a.ts),
                 ts_label: crate::util::fmt_local_time(Some(a.ts), "%Y-%m-%d %H:%M:%S", "—"),
                 category: category.key().to_string(),
-                category_label: category.label().to_string(),
+                category_label: crate::labels::audit_category(category).to_string(),
                 actor: a.actor,
                 ip: a.ip,
                 action: a.action,
