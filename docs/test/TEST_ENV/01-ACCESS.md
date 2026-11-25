@@ -45,8 +45,9 @@
 | --- | --- |
 | 镜像基址 | `http://10.66.52.7:8080`（**开发机**，即 `[catalog].mirrors` 的一期默认值） |
 | 服务进程 | 开发机 `target/debug/skiff-server.exe serve --dist target/skiff-server/dist --listen 0.0.0.0:8080 --http --access-log .workbuddy/server-access.log`（明文，仅供内网；Windows 无 systemd，进程随会话存续） |
-| 产物 | `target/skiff-server/dist`（`publish` 生成，含 `channels/stable/{manifest.json,.sig,index.json,runtime-index/{php,node,rust}.json}` 与 `blobs/sha256/*`） |
-| 客户端配置 | 测试机 `/etc/skiff/config.toml` 的 `[catalog]`：`enabled = true`、`channel = "stable"`、`mirrors = ["http://10.66.52.7:8080"]`、`public_key = <测试发布公钥 7a9cb5d3…>`、`timeout_secs = 10`。**公钥每轮换密钥都要同步改**，否则面板拒绝该渠道 |
+| 产物 | `target/skiff-server/dist`（`publish` 生成，含 `channels/stable/{manifest.json,.sig,index.json,runtime-index/{php,node,rust}.json}` 与 `blobs/sha256/*`）。当前 `seq=1`、`key_id=707cede3…ac2`、`index.json` 8,303 B；三份清单 php 1,030 B / node 777 B / rust 214 B |
+| 安装包（客户端侧） | `v0.1.0` Release 的 `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz`：**12,538,544 B**、`sha256=2d0e29b735c4a679cda4a3d5316b6bfba83ecd65e024c6c0e2a46ff0342ce0a6`（CI run `45616962452`，提交 `a0f27c8`，CI 同一提交 `45616188710` 全绿）。包内 `official/` **7 个**（`com.skiff.files` 已删） |
+| 客户端配置 | 测试机 `/etc/skiff/config.toml` 的 `[catalog]`：`enabled = true`、`channel = "stable"`、`mirrors = ["http://10.66.52.7:8080"]`、`public_key = <测试发布公钥 7a9cb5d3…>`、`timeout_secs = 10`。**公钥每轮换密钥都要同步改**，否则面板拒绝该渠道。就地升级（`sh install.sh --no-start`，不传 `--listen/--tls`）**不会改这份配置**——脚本只在文件不存在时才放示例配置（2026-11-25 实测 `diff` 无差异） |
 | 默认关闭 | 面板出厂 `[catalog] enabled = false`，装完不显示商店入口；要验对接必须手工开启（MIRROR-05） |
 | 发布密钥 | 测试期用临时 Ed25519 密钥对，私钥只在发布机环境变量里（`SKIFF_SIGNING_KEY`），公钥写进上面 `public_key`；仓库与文档都不保存私钥 |
 | 用例归属 | 本册只记坐标；验收步骤与预期见 [TEST_MATRIX/08-SELFHOST_MIRROR.md](../TEST_MATRIX/08-SELFHOST_MIRROR.md) |

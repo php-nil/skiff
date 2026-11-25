@@ -6,7 +6,14 @@
 
 ## 5. 当前部署
 
-> **2026-11-25 干净重装：本机当服务端（`skiff-server serve`）+ 测试机当客户端的安装对接轮（当前；包同 `c841074`，未出新包）**
+> **2026-11-25 晚：换到含 11-25 源码的新包，就地升级两跳 + 补完 MIRROR 上机验收（当前；包 `a0f27c8`，`sha256=2d0e29b7…`）**
+> - 背景：上一条记录用的是 11-24 的包，面板侧「三个版本清单」根本不存在（`/ui/v1/runtimes/versions` 被 `/runtimes/{id}` 吃掉）。本轮把 11-24 后半到 11-25 的积压改动提交、CI 转绿、出包，再就地升级沿用现场（不清库、不换前缀）。
+> - **提交与门禁**：`7918bac`（代码）/ `7e3146f`（文档）/ `f194751`（`eol` 按日期比对 + `--help`）/ `a0f27c8`（修 11-24 遗留的 9 项 `main_flow` 断言）。CI run `45616188710`（提交 `a0f27c8`）**全绿**；同一提交的 Release run `45616962452` 出包。
+> - **两跳升级**（都是 `sh install.sh --no-start < /dev/null`，不传 `--listen/--tls`）：`7e3146f` 包 12,538,394 B / `2c8297f0…` → `a0f27c8` 包 **12,538,544 B / `2d0e29b7…`**；两跳都 exit 0、`/etc/skiff/config.toml` 与升级前**逐字节相同**、`/www/skiff/official/` 收敛为 7 个包（手工清掉上一轮遗留的 `com.skiff.files-0.1.3.wbpkg`）、前缀仍是 `8au3xewy`、`/healthz` 200。
+> - **升级副作用（已修）**：第一跳后版本下拉把 13 个 PHP 版本全标「已 EOL」——清单 `eol` 是日期，面板按「非空即 EOL」解析，日期字段当布尔用会全量命中；`f194751` 改成与今天比对，第二跳后 `eol: []`、0 处「已 EOL」。注意面板下拉读本地缓存，升包后要点一次「刷新版本清单」才重算。
+> - **MIRROR 验收**（详见 [08-SELFHOST_MIRROR.md](../../TEST_MATRIX/08-SELFHOST_MIRROR.md) §2.1）：01~09 全部通过，含篡改摘要拒绝、异钥 `key_id` 拒绝、断源降级与新包的三类清单（PHP 13 / Node 9 / Rust 1，每分支 3 条）。
+
+> **2026-11-25 干净重装：本机当服务端（`skiff-server serve`）+ 测试机当客户端的安装对接轮（历史；包同 `c841074`，未出新包）**
 > - 背景：为验证「先装、再连镜像」这条链路，测试机现场（11-23 首装 + 两轮就地升级，前缀 `gk5y33tq`，库 `user_version=22`）整体备份后 **干净重装**；本轮**换包不换代**——仍用 11-24 的 amd64 包，只为验安装与目录对接，不带 2026-11-25 的源码改动（`runtime_index` 版本匹配修复、`/ui/v1/runtimes/versions` 端点均**不在**该包内）。
 > - **备份**（重装前，测试机 `/root/iter/backup-20261125/`）：`config.toml.bak`（7,048 B）、`skiff-data.tgz`（4,122,767 B，含库与插件数据）、`sites-old/`、`php-old/`、`runtime-old/`。
 > - **卸载**：`printf 'YES\n' | sh uninstall.sh --purge` → 退出 0；`/etc/skiff`、`/www/skiff`、`/usr/local/bin/skiff*`、unit 全部消失，`/www` 仅剩 `log`/`nginx`。

@@ -4,7 +4,16 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-25 19:30：本机当服务端 + 测试机安装对接轮）
+## 8. 最近一次验收结论（截至 2026-11-25 21:00：换新包就地升级 + MIRROR 补验）
+
+**2026-11-25 20:55 就地升级到 `a0f27c8` 包（12,538,544 B / `2d0e29b7…`）：MIRROR-01~09 全部通过，含面板侧三类清单**
+
+- **前置**：11-24 后半到 11-25 的积压改动先提交（`7918bac` / `7e3146f`），CI 一跑露出 9 项 `main_flow` 过期断言（写操作改走 `writePost`、`routes` 新增 `data.subviews`、C12 删 `handlers::files::page`、页头主操作迁 `page.content.actions`、配额测试落在受保护目录）。修完（`f194751` + `a0f27c8`）CI run `45616188710` **全绿**。
+- **升级**：`7e3146f` 包 → `a0f27c8` 包两跳都是 `sh install.sh --no-start`（不传 `--listen/--tls`），exit 0、`config.toml` 与升级前逐字节相同、`official/` 7 包、前缀 `8au3xewy`、`/healthz` 200。
+- **清单（通过）**：三类 `/ui/v1/runtimes/versions` 均 `source=registry`、`failed=false`、`generated_at=2026-11-25T10:07:00Z`；PHP 13 / Node 9 / Rust 1，每分支 3 条；弹窗三个下拉共 23 项、无「已 EOL」、`8.6.0（最新）`；提示行给出 `http://10.66.52.7:8080/channels/stable/runtime-index/{php,node,rust}.json` 固定路径。
+- **篡改与伪造（通过）**：改 `index.json` 一字节（保持长度）→「校验失败：索引摘要与 manifest 不符：声明 2921ccf4…，实得 48f24d21…」；换异钥产物 →「验签失败: 清单 key_id 与固定公钥不匹配（清单 c0d75726…，公钥 707cede3…）」。两次都 `can_install=false` 且保留上次成功快照。
+- **本批修掉的缺陷**：① 清单 `eol` 是日期，面板按「非空即 EOL」解析，导致 13 个 PHP 版本全标「已 EOL」（含刚发的 `8.6.0`）；② `skiff-server <子命令> --help` 报「参数 --help 缺少取值」。
+- **未做**：`accept.sh` 全量、浏览器巡检、`sync` 到独立镜像站、清单签名（二期）。
 
 **2026-11-25 19:18 干净重装：安装链路通过，商店目录对接通过，运行环境清单面板侧未覆盖（旧包无端点）**
 
@@ -16,7 +25,7 @@
   - `message` = 「已从 http://10.66.52.7:8080 更新到 seq 1」，`fetched_at=2026-11-25T11:19:38Z`，`key_configured=true`、`allow_unsigned=false`；
   - `sections` 三类齐全：插件 1、应用模板 1、运行环境 **23**（PHP 13 / Node 9 / Rust 1，`8.5.13/12/11`、`24.22.3/2/1`、`26.13.1/13.0/12.1` 等每分支 3 条）；
   - 镜像侧访问日志同一时刻出现 `manifest.json` / `manifest.json.sig` / `index.json` 三条 GET。
-- **条件请求与降级（通过）**：再次 `refresh=1` → 「目录未更新（304），展示 … 的本地缓存」，`fetched_at` 不变；停掉开发机 `serve` 后 → 「镜像源不可达，正在使用本地缓存；… Connection refused (os error 111)」，条目仍在；恢复 `serve` 后 → 回到 304，条目未丢。
+- **条件请求与降级（通过）**：再次 `refresh=1` → 「目录未更新（304），展示 … 的本地缓存」，条目与 `seq` 不变（`fetched_at` 会前移到本次校验时间；**只有断源失败时才冻结**，2026-11-25 晚复测修正）；停掉开发机 `serve` 后 → 「镜像源不可达，正在使用本地缓存；… Connection refused (os error 111)」，条目仍在；恢复 `serve` 后 → 回到 304，条目未丢。
 - **未覆盖 / 限制**：
   - **运行环境清单面板侧**：该包无 `GET /ui/v1/runtimes/versions`（请求被 `/ui/v1/runtimes/{id}` 吃掉，返回「运行环境不存在：versions」），三类清单的「面板取到并展示」要在含 2026-11-25 改动的**新包**上重跑 MIRROR-06；服务端侧三类清单 200 已验。
   - `accept.sh` 全量未跑（本轮只做 `doctor` + 手工断言），A6 权限位全表、B 组改密链路待下一轮随新包补。
