@@ -600,7 +600,8 @@ pub async fn runtime_config_save(
     .await
     .map_err(AppError::from)
     .map_err(ApiError)?;
-    write_done(json!({ "message": "PHP 配置已保存并重载 FPM" }))
+    // 落地动作是整容器 restart（docker 层不放自定义信号），文案必须说实。
+    write_done(json!({ "message": "PHP 配置已保存并重启 PHP 容器生效（同环境站点短暂 503）" }))
 }
 
 /// `POST /ui/v1/runtimes/{id}/node-config`：Node.js 启动命令/健康检查/环境变量。

@@ -429,11 +429,11 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
         .collect();
         config.push(kit::write_card(
             "PHP 运行参数",
-            "保存后自动重载 FPM；非法值会被拒绝并保留原配置。",
+            "保存后会重启 PHP 容器生效，同环境站点在重启期间（约 3 秒）返回 503；非法值会被拒绝并保留原配置。",
             kit::form(
                 json!({ "type": "skiffRuntimeConfig", "props": { "id": runtime_id } }),
                 fields,
-                "保存并重载 FPM",
+                "保存并重启 PHP 容器",
                 Some(initial),
             ),
         ));

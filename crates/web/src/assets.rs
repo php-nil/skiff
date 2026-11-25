@@ -107,7 +107,9 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.7";
 /// v52：版本下拉按类型各一份（`version_php` / `version_node` / `version_rust`，取各自
 ///   `runtime-index/<kind>.json`），`runtimeCreate` 改按 `version_<kind>` 取值；
 ///   「刷新版本清单」一次刷三类。不升版本旧壳会继续取 `version_other`，Node/Rust 装空版本。
-pub const SHELL_VERSION: &str = "52";
+/// v53：`notReadyPage` 支持 `headline` / `subtitle` 覆盖；端点失败落地页不再标「该功能
+///   正在适配中」（真实 4xx/5xx 与「功能没做」是两码事）。不升版本旧壳继续用旧文案。
+pub const SHELL_VERSION: &str = "53";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

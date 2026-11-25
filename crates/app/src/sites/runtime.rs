@@ -1009,11 +1009,11 @@ impl AppState {
             .await;
             self.run_extension_scripts(job_id, &container, &enabled, &[], 65, 92)
                 .await?;
-            self.job_advance(job_id, "重载 PHP-FPM", 96, "重启容器以加载扩展")
+            self.job_advance(job_id, "重启 PHP 容器", 96, "重启容器以加载扩展")
                 .await;
             self.docker_runtime_action(&container, Verb::Restart)
                 .await
-                .map_err(|e| format!("重载 PHP-FPM 失败：{e}"))?;
+                .map_err(|e| format!("重启 PHP 容器失败：{e}"))?;
             self.secure_php_socket(&s, &rt.kind, &rt.name)
                 .await
                 .map_err(|e| format!("收紧 PHP socket 失败：{e}"))?;
@@ -2143,7 +2143,7 @@ impl AppState {
                 lines[start..].join("\n")
             ));
         }
-        self.job_advance(job_id, "重载 PHP-FPM", 80, "重启容器以加载扩展变更")
+        self.job_advance(job_id, "重启 PHP 容器", 80, "重启容器以加载扩展变更")
             .await;
         self.docker_runtime_action(&container, Verb::Restart)
             .await
@@ -2205,7 +2205,7 @@ impl AppState {
             .await;
         self.run_extension_scripts(job_id, &container, desired, &current, 20, 60)
             .await?;
-        self.job_advance(job_id, "重载 PHP-FPM", 85, "重启容器以加载扩展变更")
+        self.job_advance(job_id, "重启 PHP 容器", 85, "重启容器以加载扩展变更")
             .await;
         if self.job_cancelled(job_id).await {
             return Err("已取消".into());
@@ -2420,7 +2420,7 @@ impl AppState {
                 }
             }
             return Err(SiteError::Unavailable(format!(
-                "配置已回滚：重载 PHP-FPM 失败：{e}"
+                "配置已回滚：重启 PHP 容器失败：{e}"
             )));
         }
         self.db()

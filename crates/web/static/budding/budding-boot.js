@@ -2445,12 +2445,19 @@
   }
 
   /// 未适配页面的统一占位（保留旧 SSR 入口，仅限非插件页）。
-  function notReadyPage(title, text, oldHref, oldText) {
-    var body = [{ type: 'alert', props: { type: 'warning', title: '该功能正在适配中', text: text } }];
+  ///
+  /// `opts.headline` / `opts.subtitle` 供**真实错误**（端点 4xx/5xx、实例不存在）覆盖
+  /// 默认的「该功能正在适配中」——把「运行环境不存在：none」说成「功能没做」会把
+  /// 排查方向带偏。
+  function notReadyPage(title, text, oldHref, oldText, opts) {
+    var o = opts || {};
+    var headline = o.headline || '该功能正在适配中';
+    var subtitle = o.subtitle || headline;
+    var body = [{ type: 'alert', props: { type: 'warning', title: headline, text: text } }];
     if (oldHref) {
       body.push({ type: 'link', props: { text: oldText || '打开旧版页面', href: prefix + oldHref } });
     }
-    return { type: 'page', props: { title: title, subtitle: '该功能正在适配中' }, body: body };
+    return { type: 'page', props: { title: title, subtitle: subtitle }, body: body };
   }
 
   /// 路由 Schema 加载：`skiff:page` 问服务端要取数地址，`skiff:<special>` 交壳体处理，
@@ -2825,7 +2832,10 @@
       return fetchRawJson(source.schema_url)
         .then(toPageSchema)
         .catch(function (error) {
-          return notReadyPage('页面加载失败', error2text(error));
+          return notReadyPage('页面加载失败', error2text(error), null, null, {
+            headline: '数据加载失败',
+            subtitle: '请检查地址是否正确，或从左侧菜单重新进入'
+          });
         });
     });
   }
