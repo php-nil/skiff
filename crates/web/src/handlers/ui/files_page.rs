@@ -731,8 +731,10 @@ mod tests {
         assert_typed_action_arrays(&schema, "");
 
         // 恢复按钮仍要保留失败分支：click 是壳对象（带 onError），不是动作数组。
+        // `trash_schema` 返回未包装的根节点；浏览器报错里的 `//content/body/...`
+        // 是端点再包一层 `content` 之后的路径，不能拿来做指针。
         let rows = schema
-            .pointer("/content/body")
+            .pointer("/body")
             .and_then(Value::as_array)
             .expect("回收站页必须有正文");
         let table = rows
