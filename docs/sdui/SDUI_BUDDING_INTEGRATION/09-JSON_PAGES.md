@@ -197,8 +197,11 @@ crates/web/static/budding/
 | 内容 | 产出端 | 谁消费 |
 | --- | --- | --- |
 | 路由表（菜单投影 + 详情/子视图隐藏路由 + 插件视图清单） | `GET /ui/v1/routes` | `embed()` 的 `routes` |
+| 内置三级子视图登记表（`pattern` / `blocked` / `title` / `tabs`，Rust `SUBVIEWS` 的镜像） | 同上响应的 `data.subviews` | 壳脚本 `matchSubviews`（2026-11-24 起脚本不再硬编码该表） |
 | 「当前地址的结构去哪取」 | `GET /ui/v1/page?path=&search=` | `platform.loadJson('skiff:page')` |
 | 图标语义名 → mdi 字形 | `routes.rs::MENU_ICONS` | 路由表的 `icon` 字段 |
+
+`data` 的键集冻结为 `routes` / `plugins` / `subviews`（`main_flow::ui_routes_project_menu_with_hidden_details` 比对）；新增可选键必须同时更新那份冻结清单与本表，删改语义要升 `api_version`。
 
 `page_source()` 是纯函数，12 条单测钉住「路径 → 端点」的映射与编码（`%2F` 只解码一次、query 值解码后再编码、未知路径不给来源）。加页面时改这一处即可，不会再出现「脚本里改了、服务端没改」。
 | 文件分片上传 | 切分、并发、进度回填都是命令式流程；表单本身已迁到资产 / 服务端 schema |

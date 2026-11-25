@@ -2681,7 +2681,7 @@ fn d3_plugin_ui_adapts_to_theme_message() {
             "{name} 默认必须保持深色，旧面板不下发主题时不破裂"
         );
         assert!(
-            js.contains(r#"msg.type === "skiff.theme""#),
+            js.contains(r#".type === "skiff.theme""#),
             "{name} 必须监听父页面的主题消息"
         );
         assert!(
@@ -3076,8 +3076,10 @@ async fn trash_is_files_l3_tab_not_standalone_menu_item() {
     );
 
     // 浏览 / 回收站 / 配额三个 L3 都是 budding 壳页（旧 SSR 已删除）。
+    // C12 删掉 `handlers::files::page` 后这些路径只剩 SPA `fallback` 承接，
+    // 而 fallback 只对 `Accept: text/html` 回壳页（浏览器一定带，裸 GET 走 404）。
     for uri in ["/p/files", "/p/files/trash", "/p/files/quotas"] {
-        let (status, html) = get_page(&h.app, uri, &token).await;
+        let (status, html) = get_html(&h.app, uri, &token).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
     }
@@ -4110,7 +4112,20 @@ async fn ui_sites_and_runtimes_lists_use_frozen_fields_and_keyset_cursor() {
     assert_eq!(v["schema"]["body"][1]["source"]["url"], "/ui/v1/sites");
     // 管理员能看到新建/批量弹窗与行内启停。
     assert_eq!(v["schema"]["body"][1]["props"]["rowKey"], "domain");
-    assert!(v["schema"]["body"][0]["content"]["body"][1]["content"]["body"].is_array());
+    // 2026-11-24 页头主操作迁移：新建/批量从卡片体内挪到 `page.content.actions`。
+    assert_eq!(v["schema"]["body"][0]["type"], "text", "首行是站点计数");
+    let actions = v["schema"]["content"]["actions"]
+        .as_array()
+        .expect("管理员必须有页头主操作区");
+    let texts: Vec<&str> = actions
+        .iter()
+        .filter_map(|a| a["props"]["text"].as_str())
+        .collect();
+    assert!(texts.contains(&"新建站点"), "页头缺新建站点：{texts:?}");
+    assert!(
+        texts.iter().any(|t| t.contains("批量")),
+        "页头缺批量操作：{texts:?}"
+    );
 
     let second_uri = format!("/ui/v1/sites?limit=2&cursor={cursor}");
     let (status, _, body) = get_ui(&h.app, &second_uri, Some(&token), None).await;
@@ -6409,8 +6424,9 @@ fn budding_boot_docker_actions_map_to_resource_endpoints() {
         }
     }
     // 表单不再自带 `api.url`，Docker 设置保存的落点只剩壳脚本这一处。
+    // 2026-11-24 写操作统一走 `writePost`（内部再调 `submitJson`），断言跟到模板层。
     assert!(
-        js.contains("submitJson('/settings/docker'"),
+        js.contains("writePost('/settings/docker'"),
         "Docker 设置保存必须提交到 /settings/docker"
     );
 }
@@ -6498,10 +6514,13 @@ fn budding_boot_job_logs_page_comes_from_server() {
     }
     // 产出端：路由表登记隐藏路由，`page_source` 指到日志端点。
     let routes = include_str!("../src/handlers/ui/routes.rs");
-    assert!(
-        routes.contains("\"/tasks/jobs/:id/logs\", \"作业日志\""),
-        "路由表必须登记作业日志隐藏路由"
-    );
+    // 路径与标签在登记表里各占一行（rustfmt 会拆行），分别断言，别锁死排版。
+    for needle in ["\"/tasks/jobs/:id/logs\"", "\"作业日志\""] {
+        assert!(
+            routes.contains(needle),
+            "路由表必须登记作业日志隐藏路由：{needle}"
+        );
+    }
     assert!(
         routes.contains("\"/jobs/{}/logs?with_schema=true\""),
         "page_source 必须把作业日志指到日志端点"
@@ -6528,7 +6547,7 @@ fn budding_boot_job_logs_page_comes_from_server() {
 fn budding_boot_file_forms_send_typed_values_and_show_errors() {
     let js = include_str!("../static/budding/budding-boot.js");
     let chown = js
-        .split("submitJson('/files/chown'")
+        .split("writePost('/files/chown'")
         .nth(1)
         .expect("fileChown 必须提交 /files/chown");
     let body = &chown[..chown.find("})").unwrap_or(chown.len())];
@@ -7403,11 +7422,12 @@ async fn files_canonical_path_serves_shell() {
     }
     // 回收站 / 配额页面不再有独立 SSR handler：与主文件页一样走壳页回落，
     // 已认证用户统一拿到壳页；权限改在 `/ui/v1` 数据端点判定。
+    // 回落只对 `Accept: text/html` 生效（浏览器语义），所以这里用 `get_html`。
     for uri in ["/p/files/trash", "/p/files/quotas"] {
-        let (status, html) = get_page(&h.app, uri, &admin).await;
+        let (status, html) = get_html(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
-        let (status, _) = get_page(&h.app, uri, &viewer).await;
+        let (status, _) = get_html(&h.app, uri, &viewer).await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -7483,7 +7503,10 @@ async fn files_trash_and_quota_writes_require_csrf_and_permission() {
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
     let csrf = h.state.csrf_token(&admin);
     let viewer_csrf = h.state.csrf_token(&viewer);
-    let root = h.data_dir.join("www");
+    // 内核运行目录（`data_dir` 及其子树，含 `web_root`）对文件管理是保护路径，
+    // 配额写入必须挑一个普通目录：用独立临时目录，别落在 `data_dir` 下。
+    let sandbox = tempfile::tempdir().unwrap();
+    let root = sandbox.path().join("www");
     std::fs::create_dir_all(&root).unwrap();
 
     let cases: Vec<(&str, serde_json::Value)> = vec![
@@ -9067,7 +9090,23 @@ async fn ui_routes_project_menu_with_hidden_details() {
     let (status, _, body) = get_ui(&h.app, "/ui/v1/routes", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).expect("routes 必须是 JSON");
-    assert_key_set(&v["data"], &["routes", "plugins"], "GET /ui/v1/routes");
+    assert_key_set(
+        &v["data"],
+        &["routes", "plugins", "subviews"],
+        "GET /ui/v1/routes",
+    );
+    // 三级子视图登记表随路由表下发（2026-11-24 SUBVIEWS 双源合一：JS 侧硬编码已删）。
+    let subviews = v["data"]["subviews"]
+        .as_array()
+        .expect("subviews 必须是数组");
+    assert!(!subviews.is_empty(), "内置三级子视图登记表不能为空");
+    for sv in subviews {
+        assert!(
+            sv["pattern"].is_array(),
+            "subviews 条目必须有 pattern：{sv}"
+        );
+        assert!(sv["tabs"].is_array(), "subviews 条目必须有 tabs：{sv}");
+    }
     let routes = v["data"]["routes"].as_array().expect("routes 必须是数组");
     // 递归收集：L2 子项挂在分组的 `children` 下，隐藏路由在顶层。
     fn collect<'a>(routes: &'a [serde_json::Value], out: &mut Vec<&'a serde_json::Value>) {
