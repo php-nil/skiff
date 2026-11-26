@@ -142,12 +142,16 @@ fn light_any(p: &Plugin, binary: &str, argv: &[&str], t: u64) -> Result<String, 
     let out = p
         .host_exec_light(binary, argv, Some(t))
         .map_err(common::rpc_err)?;
-    Ok(out
-        .get("stdout")
-        .and_then(Value::as_str)
-        .or_else(|| out.get("stderr").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string())
+    // 同 `exec_raw`：stdout 为空串时要退到 stderr（`systemctl is-active` 失败、
+    // `fail2ban-client status` 连不上 socket 时，真正的原因都在 stderr）。
+    let stdout = out.get("stdout").and_then(Value::as_str).unwrap_or("");
+    let stderr = out.get("stderr").and_then(Value::as_str).unwrap_or("");
+    Ok(if stdout.trim().is_empty() {
+        stderr
+    } else {
+        stdout
+    }
+    .to_string())
 }
 
 /// 作业化执行，原样交出 `(是否成功, 退出码, 合并输出)`。
@@ -168,12 +172,17 @@ fn exec_raw(
         .map_err(common::rpc_err)?;
     let ok = out.get("success").and_then(Value::as_bool) == Some(true);
     let code = out.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
-    let text = out
-        .get("stdout")
-        .and_then(Value::as_str)
-        .or_else(|| out.get("stderr").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string();
+    // 不能写 `stdout.or_else(stderr)`：`stdout` 常常是 `Some("")`（命令成功时不写 stdout、
+    // 失败时只写 stderr），`or_else` 只在**字段缺失**时生效，空串会让真实的 stderr 永远读不到
+    // （2026-11-26 实测：`fail2ban-client -t` 失败时消息只剩「退出码 255（无输出）」）。
+    let stdout = out.get("stdout").and_then(Value::as_str).unwrap_or("");
+    let stderr = out.get("stderr").and_then(Value::as_str).unwrap_or("");
+    let text = if stdout.trim().is_empty() {
+        stderr
+    } else {
+        stdout
+    }
+    .to_string();
     Ok((ok, code, text))
 }
 
