@@ -215,10 +215,10 @@
 | FW-16 | `fail2ban.start` / `stop` | `start` = `enable` + `restart` 并复核 jail（返回 `residual_jails`），`stop` = `systemctl stop`，均返回真实状态；未安装时 `start` 返回可读错误 |
 | FW-17 | `fail2ban.uninstall` | 停服务、删 `skiff-defaults.conf`、`apt-get purge`；返回 `missing`，审计 `firewall.fail2ban.uninstall` |
 
-单元测试随实现一起迁到了插件：`plugins/firewall/src/main.rs` 的 `#[cfg(test)]` 现有 8 条
+单元测试随实现一起迁到了插件：`plugins/firewall/src/main.rs` 的 `#[cfg(test)]` 现有 9 条
 （nft 规则解析跳过结构行、iptables 只留 append 行、`port` 参数接受数字与 `a-b` 形式、
 `Jail list` 两种排版、托管默认值只关不启、`residual_jails` 语义、`jail_conf` 必含 `filter =`、
-jail/filter 名字字符集）。
+jail/filter 名字字符集、`backend` 白名单）。
 jail 名 / CIDR 校验、fail2ban 三态、未安装时启停 503 等原内核侧用例已随 `plugin::firewall`
 的实现删掉，现有覆盖只能靠上机回归（TEST_MATRIX 06）。Web 侧 RPC 状态映射见
 `crates/web/src/handlers/plugins.rs` 的 `rpc_error_passes_kernel_status_through`。
