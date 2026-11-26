@@ -891,6 +891,15 @@ fn h_f2b_uninstall(p: &Plugin) -> Result<Value, RpcError> {
     f2b_probe_invalidate();
     Ok(json!({ "state": "missing", "removed": true }))
 }
+/// fail2ban 支持的 backend 取值。非法值 `fail2ban-client -t` **不会**报错，
+/// 而是等真正加载时静默跳过该 jail（2026-11-26 实测：`backend = nosuchbackend` 预检通过、
+/// jail 没起来），所以这里必须自己挡。
+const F2B_BACKENDS: &[&str] = &["auto", "systemd", "polling", "gamin", "pyinotify"];
+
+fn valid_backend(b: &str) -> bool {
+    F2B_BACKENDS.contains(&b)
+}
+
 /// jail / filter 名：只允许 fail2ban 认得的字符集，顺带挡掉路径分隔符与换行
 /// （名字会拼进 `jail.d/skiff-<jail>.conf` 路径与 ini 段名）。
 fn valid_f2b_name(name: &str) -> bool {
@@ -937,6 +946,26 @@ fn f2b_config_test(p: &Plugin) -> (bool, String) {
         Ok((ok, _, text)) => (ok, text.trim().to_string()),
         Err(e) => (false, e.message),
     }
+}
+
+/// fail2ban 日志里最近的几条 ERROR，用于把「jail 没起来」归因到具体原因。
+///
+/// 预检拦不住所有坏配置（未知 `backend` 值就会被静默接受），复核失败时如果只说
+/// 「未出现在 jail 列表」，用户还得自己登机器看日志。这里读 `/var/log/fail2ban.log`
+/// 尾部几条 ERROR（`cat` 已在本插件 manifest 的 `bin:` 授权里），取不到就返回空串。
+fn f2b_log_errors(p: &Plugin) -> String {
+    let Ok(text) = light_ok(p, CAT, &["/var/log/fail2ban.log"], 15) else {
+        return String::new();
+    };
+    let mut errors: Vec<&str> = text.lines().filter(|l| l.contains("ERROR")).collect();
+    if errors.len() > 3 {
+        errors = errors.split_off(errors.len() - 3);
+    }
+    errors
+        .iter()
+        .map(|l| l.trim())
+        .collect::<Vec<_>>()
+        .join(" ｜ ")
 }
 
 /// filter 定义是否存在。Debian 把随包 filter 装进 `/etc/fail2ban/filter.d`，
@@ -989,6 +1018,12 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         return Err(RpcError::invalid_params(
             "filter 名只能包含字母、数字、点、下划线、连字符（1–64 字符）",
         ));
+    }
+    if !valid_backend(&backend) {
+        return Err(RpcError::invalid_params(format!(
+            "backend 只接受 {}，收到 `{backend}`",
+            F2B_BACKENDS.join(" / ")
+        )));
     }
     if !fail2ban_installed(p) {
         return Err(RpcError::internal("fail2ban 尚未安装"));
@@ -1048,13 +1083,18 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let jails = jail_list_from_status(&f2b_status_text(p));
     if !jails.iter().any(|j| j == &jail) {
         rollback_jail(p, &path);
+        let why = f2b_log_errors(p);
         return Err(RpcError::internal(format!(
-            "jail `{jail}` 写入后未出现在 fail2ban 的 jail 列表（当前：{}），已回滚 {path}——\
-             常见原因是宿主 `jail.d` 里有排序更晚的文件把它关掉了",
+            "jail `{jail}` 写入后未出现在 fail2ban 的 jail 列表（当前：{}），已回滚 {path}{}",
             if jails.is_empty() {
                 "无".to_string()
             } else {
                 jails.join(", ")
+            },
+            if why.is_empty() {
+                "；未能读到 /var/log/fail2ban.log，可查 journalctl -u fail2ban".to_string()
+            } else {
+                format!("；fail2ban 日志：{why}")
             }
         )));
     }
@@ -1347,6 +1387,17 @@ mod tests {
 
         // 写出来的受管文件必须能被自己的 enabled_jails 认成「启用」。
         assert_eq!(enabled_jails(&conf), vec!["ftp".to_string()]);
+    }
+
+    #[test]
+    fn backend_whitelist_rejects_unknown_values() {
+        // fail2ban-client -t 对未知 backend 是静默接受，只能在这里挡。
+        for ok in ["auto", "systemd", "polling", "gamin", "pyinotify"] {
+            assert!(valid_backend(ok), "{ok} 应被接受");
+        }
+        for bad in ["nosuchbackend", "", "SYSTEMD", "systemd "] {
+            assert!(!valid_backend(bad), "{bad:?} 应被拒");
+        }
     }
 
     #[test]
