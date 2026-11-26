@@ -320,7 +320,7 @@ fn h_status(p: &Plugin) -> Result<Value, RpcError> {
 
 - **只适用 systemd 直装形态**：能力面在受限形态不可授予；特权模式依赖 `systemd-run` 瞬态单元（`skiff_host` 的前提）。
 - **不做**：shell 解释、常驻进程、交互式命令、PTY。编排（顺序、条件、重试）由插件用多次提交组合，`exec:run` 一次只跑一条。
-- **firewall/ftp 冻结**：`CAP_FIREWALL_CALL` / `CAP_FTP_CALL` 保留不动、不再扩展，标注 legacy。哪个域下次真要改，再把内核侧的 argv 编排搬进插件包（纯插件侧变更，届时按需付账）。
+- **firewall/ftp 冻结**：`CAP_FIREWALL_CALL` / `CAP_FTP_CALL` 保留不动、不再扩展，标注 legacy。哪个域下次真要改，再把内核侧的 argv 编排搬进插件包（纯插件侧变更，届时按需付账）。冻结的具体形态：firewall 面全方法统一返回「已迁移，请更新调用方」400（授权与部署形态判定仍在拒绝之前，越权照样落 `deny` 审计），ftp 面只留只读查询（`status` / `sites.list` / `accounts.list`）；SDK 的 `firewall_call` / `ftp_call` 一并保留。**两处 400 与只读残留都是这条决定的兑现，不是待删死代码**——旧调用方应拿到可读的迁移提示，而不是 404。
 - **不做旧版本兼容**：当前为测试开发阶段（AGENTS.md 4.2），`exec` 是新能力面，无迁移包袱。
 
 ---

@@ -129,26 +129,27 @@ verbs = ["status", "install", "service.configure", "uninstall", "sites.list", "a
 - **配置持久化**：`/etc/skiff/ftp-service.json` 是唯一真相来源，插件本地不再保留 `service-config.json`。
 - **契约与验收**：主体/授权/审计口径见 [KERNEL_FTP_CONTRACT.md](../../contract/KERNEL_FTP_CONTRACT.md)；回归项见 [TEST_MATRIX.md](../../test/TEST_MATRIX.md) `FTP-01`–`FTP-09`。
 
-### 4.9 防火墙 `com.skiff.firewall`（能力面扩张）
+### 4.9 防火墙 `com.skiff.firewall`（原「能力面扩张」，2026-11-16 改走 exec）
 
 ```toml
 run = "on-demand"
-requires = ["firewall"]
-resource_hints = []                 # 能力面动词即权限，不落宿主文件授权
+requires = ["exec", "interop"]      # firewall 能力面已冻结为迁移提示，不再声明
+# exec: nft / iptables / systemctl / fail2ban-client / apt-get / dpkg-query / tee / rm / mkdir / cat / ls
+resource_hints = ["bin:/usr/sbin/nft", "bin:/usr/sbin/iptables", "bin:/usr/bin/systemctl",
+                  "bin:/usr/bin/fail2ban-client", "bin:/usr/bin/apt-get", "bin:/usr/bin/dpkg-query",
+                  "bin:/usr/bin/tee", "bin:/usr/bin/rm", "bin:/usr/bin/mkdir",
+                  "bin:/bin/cat", "bin:/bin/ls"]
 [[permissions]]
-capability = "firewall"
-verbs = ["status", "rules.list", "rule.add", "rule.remove", "port.allow",
-         "fail2ban.status", "fail2ban.install", "fail2ban.start", "fail2ban.stop",
-         "fail2ban.uninstall", "fail2ban.jail.ensure",
-         "fail2ban.jail.remove", "fail2ban.banned", "fail2ban.ban", "fail2ban.unban"]
+capability = "exec"
+verbs = ["run"]
 ```
 
-- **为什么必须新增内核原语**：`net` 仍一律 501；`fs` 只能读写授权根，改不了内核规则表；`docker` 与防火墙无关。宿主防火墙与 fail2ban 都需要 root 特权，因此新增 `firewall` 能力面，插件只做 UI 与编排。
+- **为什么最终不走专用能力面**：原设计新增 `firewall` 能力面（15 个动词，`perm:firewall:<verb>` 授权），内核代执行宿主命令。2026-11-16 通用 `exec` 面落地后改由插件自己提交命令——判定、审计、作业记录都走同一份通道，内核不再为单个域保留 argv 编排。`CAP_FIREWALL_CALL` 与 `firewall_call` 冻结保留，只回迁移提示（`HOST_EXEC_DESIGN.md` §五）。
 - **规则口径**：只管理自有作用域——nftables `inet skiff` 表的 `input` 链、iptables `SKIFF` 链；默认策略 accept。新规则带 `comment "skiff-<nanos>"` 标识，删除按 nft handle 或 iptables `-S` 序号，不触碰其它表/链。
 - **fail2ban 口径**：`fail2ban.install` 安装/复用宿主 fail2ban（新装时写 `skiff-defaults.conf` 关闭 `sshd` jail）；`start` / `stop` / `uninstall` 提供显式生命周期管理（`enable --now` / `disable --now` / `apt-get purge`），`status` 如实返回未安装/已安装未运行/运行中三态与可读原因；`jail.ensure` / `jail.remove` 管理 `/etc/fail2ban/jail.d/skiff-<jail>.conf`，改动后 `systemctl restart fail2ban`；`banned` / `ban` / `unban` 走 `fail2ban-client`。不改系统级 `jail.conf`，不删用户创建的其它 jail 文件。
 - **对外接口**：`[interop].provides` 暴露 `fail2ban.*`，FTP 等插件按需调用；调用方需 `interop:call` 与 `plugin:com.skiff.firewall`。四道闸、15s 超时与审计沿用既有 interop 契约。
-- **特权通道**：能力面实现只在 `crates/plugin/src/firewall.rs`（判定 + 命令编排），内核 `crates/core/src/kernel/firewall.rs` 只做鉴权、审计与 `systemd-run` 瞬态单元执行；受限形态（非 Native）一律 503。
-- **契约与验收**：动词、授权、审计与安全边界见 [KERNEL_FIREWALL_CONTRACT.md](../../contract/KERNEL_FIREWALL_CONTRACT.md)；回归项见 [TEST_MATRIX.md](../../test/TEST_MATRIX.md) `FW-01` 起。
+- **实现位置**：编排与命令全在 `plugins/firewall/src/main.rs`；`crates/core/src/kernel/firewall.rs` 只剩冻结入口的鉴权/审计/统一拒绝（先判授权与部署形态，越权照样落 `deny` 审计），`crates/plugin/src/firewall.rs` 只提供那条拒绝。受限形态（非 Native）仍是 503。
+- **契约与验收**：行为规格（作用域、审计、错误码，主体/授权一节只对旧包成立）见 [KERNEL_FIREWALL_CONTRACT.md](../../contract/KERNEL_FIREWALL_CONTRACT.md)；回归项见 [TEST_MATRIX/06-FIREWALL_JOBS.md](../../test/TEST_MATRIX/06-FIREWALL_JOBS.md)。
 
 ### 4.10 软件源 `com.skiff.sources`
 

@@ -3,7 +3,7 @@
 //! **纯插件实现**（零内核 firewall 宿主命令编排）：所有 nftables/iptables 规则、
 //! fail2ban 全套经内核 exec 能力面提交，任务中心自动有运行记录。
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 use skiff_plugin_common as common;
@@ -69,12 +69,31 @@ fn backend_probe(p: &Plugin) -> BackendProbe {
 struct F2bProbe {
     installed: bool,
 }
+
+/// fail2ban 安装探测缓存。
+///
+/// **与后端探测不同，这份缓存必须可失效**：装/卸 fail2ban 正是本插件自己的动作，
+/// 而 on-demand 插件进程长驻（`idle_timeout_sec = 300`），若像后端那样只缓存一次，
+/// 面板在装完之后会继续显示「未安装」，直到进程重启。2026-11-26 上机实测到该现象
+/// （安装前后同一进程内 `installed` 恒为 false，`dpkg -l` 已是 ii）。
+static F2B_PROBE_CACHE: Mutex<Option<F2bProbe>> = Mutex::new(None);
+
 fn f2b_probe(p: &Plugin) -> F2bProbe {
-    static CACHE: OnceLock<F2bProbe> = OnceLock::new();
-    *CACHE.get_or_init(|| F2bProbe {
+    let mut guard = F2B_PROBE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = *guard {
+        return v;
+    }
+    let probe = F2bProbe {
         installed: command_works(p, DPKG_QUERY, &["-s", "fail2ban"])
             || command_works(p, FAIL2BAN_CLIENT, &["--version"]),
-    })
+    };
+    *guard = Some(probe);
+    probe
+}
+
+/// 安装/卸载 fail2ban 后调用，让下一次探测重新落盘。
+fn f2b_probe_invalidate() {
+    *F2B_PROBE_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 // ── exec 辅助 ──
@@ -291,6 +310,78 @@ fn enabled_jails(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// 接管 fail2ban 后要关掉的**发行版默认 jail**。
+///
+/// Debian 的 `jail.d/defaults-debian.conf` 默认 `[sshd] enabled = true`：面板装完
+/// fail2ban 就会开始封禁宿主的 SSH 来源，这不是管理员点「安装」时预期的事。契约
+/// §3 FW-04 要求装完 `fail2ban-client status` 不含 sshd，靠的就是这份托管默认值。
+const MANAGED_DEFAULTS_JAILS: &[&str] = &["sshd"];
+
+/// `skiff-defaults.conf` 正文：只关默认 jail，不碰宿主自己的 `jail.local` 等文件。
+fn managed_defaults_conf() -> String {
+    let mut out = String::from(
+        "# 由 Skiff 托管：只启用 skiff-<jail>.conf 里声明的 jail。\n\
+         # 关闭发行版默认启用的 sshd jail，避免面板接管 fail2ban 后开始封禁宿主 SSH 来源。\n",
+    );
+    for jail in MANAGED_DEFAULTS_JAILS {
+        out.push_str(&format!("[{jail}]\nenabled = false\n\n"));
+    }
+    out
+}
+
+fn managed_defaults_path() -> String {
+    format!("{JAIL_DIR}/{JAIL_PREFIX}defaults.conf")
+}
+
+/// 解析 `fail2ban-client status` 的 `Jail list:\tsshd, skiff-ftp` 行。
+fn jail_list_from_status(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        // 两种排版都要吃：`|- Jail list:\tsshd` 与 `` `- Jail list:\tsshd, skiff-ftp ``
+        let t = line.trim().trim_start_matches(['`', '|', '-', ' ', '\t']);
+        let Some(rest) = t.strip_prefix("Jail list:") else {
+            continue;
+        };
+        for name in rest.split(',') {
+            let name = name.trim();
+            if !name.is_empty() && !out.iter().any(|x: &String| x == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 复核结果：请求关掉、但实际仍在跑的 jail（宿主 `jail.d` 排序更晚的覆盖会赢）。
+fn residual_jails(running: &[String], disabled: &[&str]) -> Vec<String> {
+    running
+        .iter()
+        .filter(|r| disabled.iter().any(|d| d.eq_ignore_ascii_case(r)))
+        .cloned()
+        .collect()
+}
+
+/// 重启后取 `fail2ban-client status`：socket 未就绪时重试几次。
+///
+/// 台账有一条长期观察——全新安装后紧接着调 `fail2ban-client` 会连不上
+/// `/var/run/fail2ban/fail2ban.sock`（首次重启后命中，1–2 秒后即正常）。这里做有限退避，
+/// 拿不到就返回最后一次输出，由调用方按「复核失败」处理，不阻塞页面。
+fn f2b_status_text(p: &Plugin) -> String {
+    let mut last = String::new();
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+        }
+        if let Ok(text) = light_any(p, FAIL2BAN_CLIENT, &["status"], 30) {
+            if text.contains("Jail list:") {
+                return text;
+            }
+            last = text;
+        }
+    }
+    last
 }
 
 // ── 15 条 handler（独立函数，match 只调） ──
@@ -680,8 +771,28 @@ fn h_f2b_status(p: &Plugin) -> Result<Value, RpcError> {
     } else {
         Vec::new()
     };
-    Ok(json!({ "installed": installed, "running": running, "jails": jails }))
+    // 三态由 RPC 直接给出（面板 `ui/app.js` 优先读 `state`，缺失时才按 installed/running 折算）。
+    let state = if !installed {
+        "missing"
+    } else if running {
+        "running"
+    } else {
+        "stopped"
+    };
+    let reason = match state {
+        "missing" => "未安装 fail2ban",
+        "stopped" => "fail2ban 已安装但服务未运行",
+        _ => "",
+    };
+    Ok(json!({
+        "installed": installed,
+        "running": running,
+        "state": state,
+        "reason": reason,
+        "jails": jails,
+    }))
 }
+
 fn h_f2b_install(p: &Plugin) -> Result<Value, RpcError> {
     if fail2ban_installed(p) {
         return Ok(json!({ "installed": true, "already": true }));
@@ -704,22 +815,53 @@ fn h_f2b_install(p: &Plugin) -> Result<Value, RpcError> {
         )?;
     }
     let _ = exec_ok(p, "/usr/bin/mkdir", &["-p", JAIL_DIR], None, 900);
+    // 先落托管默认值再启服务：否则 Debian 自带的 sshd jail 会先跑起来再被关掉。
+    write_managed_file(p, &managed_defaults_path(), &managed_defaults_conf())?;
     exec_ok(p, SYSTEMCTL, &["enable", F2B_SERVICE], None, 300)?;
-    Ok(json!({ "installed": true }))
+    // enable 只改开机自启，配置生效要显式 restart（契约 §3 FW-04）。
+    restart_fail2ban(p)?;
+    f2b_probe_invalidate();
+    let jails = jail_list_from_status(&f2b_status_text(p));
+    Ok(json!({
+        "installed": true,
+        "defaults_disabled": MANAGED_DEFAULTS_JAILS,
+        "jails": jails,
+        "residual_jails": residual_jails(&jails, MANAGED_DEFAULTS_JAILS),
+    }))
 }
+
 fn h_f2b_start(p: &Plugin) -> Result<Value, RpcError> {
-    exec_ok(p, SYSTEMCTL, &["start", F2B_SERVICE], None, 300)?;
-    Ok(json!({ "running": true }))
+    if !fail2ban_installed(p) {
+        return Err(RpcError::internal(
+            "fail2ban 尚未安装，请先安装（fail2ban.install）",
+        ));
+    }
+    // enable 保证开机自启；restart 让 reload 过的 jail 配置真正生效，随后复核实际 jail。
+    exec_ok(p, SYSTEMCTL, &["enable", F2B_SERVICE], None, 300)?;
+    restart_fail2ban(p)?;
+    let jails = jail_list_from_status(&f2b_status_text(p));
+    let residual = residual_jails(&jails, MANAGED_DEFAULTS_JAILS);
+    Ok(json!({
+        "running": true,
+        "jails": jails,
+        "residual_jails": residual,
+    }))
 }
+
 fn h_f2b_stop(p: &Plugin) -> Result<Value, RpcError> {
     exec_ok(p, SYSTEMCTL, &["stop", F2B_SERVICE], None, 300)?;
     Ok(json!({ "running": false }))
 }
+
 fn h_f2b_uninstall(p: &Plugin) -> Result<Value, RpcError> {
     let _ = exec_any(p, SYSTEMCTL, &["stop", F2B_SERVICE], None, 900);
     let _ = exec_any(p, SYSTEMCTL, &["disable", F2B_SERVICE], None, 900);
-    let _ = exec_any(p, APT_GET, &["remove", "-y", "fail2ban"], None, 900);
-    Ok(json!({ "removed": true }))
+    // purge 而不是 remove：`remove` 会把 `/etc/fail2ban` 留在宿主上（dpkg 状态 rc），
+    // 下次装上时又带着旧配置回来。托管文件随包一起清掉，宿主自己的 jail 不受影响。
+    let _ = exec_any(p, APT_GET, &["purge", "-y", "fail2ban"], None, 900);
+    let _ = exec_any(p, RM, &["-f", &managed_defaults_path()], None, 30);
+    f2b_probe_invalidate();
+    Ok(json!({ "state": "missing", "removed": true }))
 }
 fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let jail = params
@@ -927,5 +1069,54 @@ mod tests {
         assert_eq!(items[0]["port_text"], "8080");
         assert_eq!(items[0]["action_text"], "放行");
         assert_eq!(items[1]["action_text"], "丢弃");
+    }
+
+    #[test]
+    fn jail_list_parses_both_status_layouts() {
+        let one = "Status\n|- Number of jail:\t1\n`- Jail list:\tsshd\n";
+        assert_eq!(jail_list_from_status(one), vec!["sshd".to_string()]);
+
+        let two = "Status\n|- Number of jail:\t2\n`- Jail list:\tsshd, skiff-ftp\n";
+        assert_eq!(
+            jail_list_from_status(two),
+            vec!["sshd".to_string(), "skiff-ftp".to_string()]
+        );
+
+        assert!(jail_list_from_status("Status\n|- Number of jail:\t0\n").is_empty());
+    }
+
+    #[test]
+    fn managed_defaults_disable_distro_jails_only() {
+        let conf = managed_defaults_conf();
+        assert!(conf.contains("[sshd]"), "必须声明 sshd 段: {conf}");
+        assert!(
+            conf.contains("enabled = false"),
+            "必须是关闭而不是启用: {conf}"
+        );
+        // 这份文件不许被自己的 enabled_jails 解析成「启用」，否则等于没关。
+        assert!(
+            enabled_jails(&conf).is_empty(),
+            "托管默认值里不应有 enabled=true: {:?}",
+            enabled_jails(&conf)
+        );
+        assert_eq!(
+            managed_defaults_path(),
+            "/etc/fail2ban/jail.d/skiff-defaults.conf"
+        );
+    }
+
+    #[test]
+    fn residual_jails_only_reports_requested_but_still_running() {
+        let running = vec![
+            "sshd".to_string(),
+            "skiff-ftp".to_string(),
+            "pure-ftpd".to_string(),
+        ];
+        assert_eq!(
+            residual_jails(&running, MANAGED_DEFAULTS_JAILS),
+            vec!["sshd".to_string()]
+        );
+        assert!(residual_jails(&[], MANAGED_DEFAULTS_JAILS).is_empty());
+        assert!(residual_jails(&["skiff-ftp".to_string()], MANAGED_DEFAULTS_JAILS).is_empty());
     }
 }

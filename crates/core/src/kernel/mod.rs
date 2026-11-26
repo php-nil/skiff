@@ -15,9 +15,10 @@
 //!   `provides` 声明）由 `skiff_plugin::interop` 判定；这里负责查库、防环、超时与审计。
 //!   目标插件仍按自己的授权读写，转发不放宽任何一方。
 //! - `net`：**未实现**（nftables 收口属 M4 门禁），一律 501 + 审计。
-//! - `firewall`：宿主机 nftables/iptables 规则与 fail2ban（仅 Native）。判定与命令
-//!   编排在 `skiff_plugin::firewall`；这里只负责 `PluginId` + grants 校验、审计，
-//!   以及经 `systemd-run` 瞬态单元执行特权命令。
+//! - `firewall`：**已冻结为迁移提示**。原为宿主机 nftables/iptables 与 fail2ban 代执行
+//!   （仅 Native），15 条方法已全部由 `plugins/firewall` 经 `exec` 面自行提交。这里只做
+//!   `PluginId` + grants 校验、部署形态判定与审计，通过后统一返回 400「已迁移」——
+//!   保留入口是冻结决定（`docs/plugin/HOST_EXEC_DESIGN.md` §五），不是待删死代码。
 //! - `ftp`：宿主机 pure-ftpd 安装、服务配置与站点账号（仅 Native）。判定与命令
 //!   编排在 `skiff_plugin::ftp`；这里只负责 grants 校验、审计，以及经 `systemd-run`
 //!   瞬态单元执行特权命令（站点快照由这里注入，插件不查库）。

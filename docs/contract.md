@@ -21,5 +21,5 @@
 | [KERNEL_FS_CONTRACT.md](contract/KERNEL_FS_CONTRACT.md) | fs 授权、操作面、回收站与配额（分 4 册） | 改文件管理 / 授权 |
 | [KERNEL_SCHEDULER_CONTRACT.md](contract/KERNEL_SCHEDULER_CONTRACT.md) | 任务模型、调度、回执与插件唤醒（分 3 册） | 改计划任务 |
 | [KERNEL_FTP_CONTRACT.md](contract/KERNEL_FTP_CONTRACT.md) | ftp 能力面、账号、uid/gid | 改 FTP |
-| [KERNEL_FIREWALL_CONTRACT.md](contract/KERNEL_FIREWALL_CONTRACT.md) | firewall 能力面、作用域与审计 | 改防火墙 |
+| [KERNEL_FIREWALL_CONTRACT.md](contract/KERNEL_FIREWALL_CONTRACT.md) | firewall 能力面（已冻结为迁移提示）的规格、作用域与审计 | 改防火墙插件或冻结入口 |
 | [KERNEL_EXEC_CONTRACT.md](contract/KERNEL_EXEC_CONTRACT.md) | exec 能力面：`bin:` 授权、提交/查询/取消协议、三道判定、`host.exec` 运行记录、审计与错误码 | 新增宿主特权功能 / 改命令执行 |
