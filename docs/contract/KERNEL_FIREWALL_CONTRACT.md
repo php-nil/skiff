@@ -98,7 +98,7 @@
 | `fail2ban.start` | — | `systemctl enable` + `restart`（不是对已运行服务无效的 `enable --now`）并按 §4 复核 jail；未安装回 503 |
 | `fail2ban.stop` | — | `systemctl stop`（不改开机自启）；未安装时由内核面判定回 503 |
 | `fail2ban.uninstall` | — | 停止服务（失败不阻断）、`disable`、`apt-get purge -y fail2ban`（**失败即报错**，不报假成功）、删 `skiff-defaults.conf`、`rm -df` 清残留空目录；返回 `{state: "missing", removed: true}` |
-| `fail2ban.jail.ensure` | `jail`、`filter`(缺省 = jail)、`port`、`backend`(缺省 `auto`，白名单)、`maxretry`、`findtime`、`bantime`、`logpath`(可选) | 校验名字字符集、`filter.d/<filter>.conf`、`logpath` 存在 → 写 `/etc/fail2ban/jail.d/skiff-<jail>.conf`（含 `filter =` 与可选 `logpath =`）→ `fail2ban-client -t` 预检 → 重启 → 复核 jail 在运行集合；任一步失败撤回文件并报错。返回 `{ensured, jail, filter, logpath, path, jails}` |
+| `fail2ban.jail.ensure` | `jail`、`filter`(缺省 = jail)、`port`、`backend`(缺省 `auto`，白名单)、`maxretry`、`findtime`、`bantime`、`logpath`(可选) | 校验名字字符集、`filter.d/<filter>.conf`、`logpath`（不含通配符时才直接判存在，带 `*?[` 的交给 `fail2ban-client -t`）→ 写 `/etc/fail2ban/jail.d/skiff-<jail>.conf`（含 `filter =` 与可选 `logpath =`）→ `fail2ban-client -t` 预检 → 重启 → 复核 jail 在运行集合；任一步失败撤回文件并报错。返回 `{ensured, jail, filter, logpath, path, jails}` |
 | `fail2ban.jail.remove` | `jail` | 删除本能力面写入的 jail 文件（删不掉即报错）并重启 fail2ban，复核该 jail 已消失；只认 `skiff-` 前缀 |
 | `fail2ban.banned` | `jail` | 读取该 jail 的封禁 IP 列表；`fail2ban-client` 非零退出转成错误（不返回空列表冒充「0 个封禁」） |
 | `fail2ban.ban` | `jail`、`ip` | 手动封禁一个 IP |

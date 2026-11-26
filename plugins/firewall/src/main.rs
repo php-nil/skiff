@@ -1049,7 +1049,11 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         )));
     }
     if let Some(lp) = logpath.as_deref() {
-        if !light_probe(p, LS, &[lp]) {
+        // fail2ban 的 `logpath` 支持通配（`/var/log/*.log`），这里没有 shell 展开，
+        // 带通配符的路径直接交给下面的 `fail2ban-client -t` 判定（它会告警"没找到日志"）。
+        // 只有确定不含通配符的普通路径才在这里提前挡住，省得写下坏配置再回滚。
+        let glob = lp.chars().any(|c| matches!(c, '*' | '?' | '['));
+        if !glob && !light_probe(p, LS, &[lp]) {
             return Err(RpcError::internal(format!(
                 "logpath `{lp}` 不存在；fail2ban 找不到日志文件会让整个服务起不来，\
                  请确认服务日志路径，或改用 backend = systemd"
