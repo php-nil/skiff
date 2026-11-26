@@ -943,7 +943,17 @@ fn jail_conf(
 /// 同时保留 stderr 原文给调用方看。
 fn f2b_config_test(p: &Plugin) -> (bool, String) {
     match exec_raw(p, FAIL2BAN_CLIENT, &["-t"], None, 60) {
-        Ok((ok, _, text)) => (ok, text.trim().to_string()),
+        Ok((ok, code, text)) => {
+            let t = text.trim();
+            (
+                ok,
+                if t.is_empty() {
+                    format!("退出码 {code}（无输出）")
+                } else {
+                    format!("退出码 {code}：{t}")
+                },
+            )
+        }
         Err(e) => (false, e.message),
     }
 }
@@ -1074,17 +1084,14 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     // 落盘后先预检，再重启：坏配置当场回滚，服务全程不躺。
     let (tested, why) = f2b_config_test(p);
     if !tested {
-        // 区分责任：删掉本文件再测一次——仍失败说明宿主既有 jail 配置本身有问题，
-        // 那样就不该把这个锅算在本次调用头上（也不去动服务）。
+        // 区分责任：删掉本文件再测一次。
+        // 第二次**通过** ⇒ 是本次写入的配置有问题；第二次**仍失败** ⇒ 宿主既有配置本来就有问题。
         let _ = exec_any(p, RM, &["-f", &path], None, 30);
-        let (still_bad, why2) = f2b_config_test(p);
-        return Err(RpcError::internal(if still_bad {
-            format!(
-                "移除本次写入的 {path} 后配置预检仍失败，宿主既有 jail 配置有问题：{}",
-                if why2.is_empty() { why } else { why2 }
-            )
-        } else {
+        let (now_ok, why2) = f2b_config_test(p);
+        return Err(RpcError::internal(if now_ok {
             format!("jail `{jail}` 的配置未通过预检，已撤回 {path}：{why}")
+        } else {
+            format!("移除本次写入的 {path} 后配置预检仍失败，宿主既有 jail 配置有问题：{why2}")
         }));
     }
     // 预检通过后重启并复核：预检只保证「能被加载」，不保证这个 jail 在运行集合里
