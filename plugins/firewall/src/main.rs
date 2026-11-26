@@ -948,24 +948,36 @@ fn f2b_config_test(p: &Plugin) -> (bool, String) {
     }
 }
 
-/// fail2ban 日志里最近的几条 ERROR，用于把「jail 没起来」归因到具体原因。
+/// fail2ban 日志的解读结果：区分「有 ERROR」「读到了但没 ERROR」「读不到」。
 ///
-/// 预检拦不住所有坏配置（未知 `backend` 值就会被静默接受），复核失败时如果只说
-/// 「未出现在 jail 列表」，用户还得自己登机器看日志。这里读 `/var/log/fail2ban.log`
-/// 尾部几条 ERROR（`cat` 已在本插件 manifest 的 `bin:` 授权里），取不到就返回空串。
-fn f2b_log_errors(p: &Plugin) -> String {
+/// 三者对应不同的处置建议，混成一个空串会写出与事实不符的提示
+/// （2026-11-26 实测：`zz-*.conf` 关掉同名 jail 时配置能正常加载、日志里没有 ERROR，
+/// 旧文案却报「未能读到日志」）。
+enum LogHint {
+    Errors(String),
+    NoError,
+    Unreadable,
+}
+
+/// 读 `/var/log/fail2ban.log` 尾部几条 ERROR（`cat` 已在本插件 manifest 的 `bin:` 授权里）。
+fn f2b_log_hint(p: &Plugin) -> LogHint {
     let Ok(text) = light_ok(p, CAT, &["/var/log/fail2ban.log"], 15) else {
-        return String::new();
+        return LogHint::Unreadable;
     };
     let mut errors: Vec<&str> = text.lines().filter(|l| l.contains("ERROR")).collect();
+    if errors.is_empty() {
+        return LogHint::NoError;
+    }
     if errors.len() > 3 {
         errors = errors.split_off(errors.len() - 3);
     }
-    errors
-        .iter()
-        .map(|l| l.trim())
-        .collect::<Vec<_>>()
-        .join(" ｜ ")
+    LogHint::Errors(
+        errors
+            .iter()
+            .map(|l| l.trim())
+            .collect::<Vec<_>>()
+            .join(" ｜ "),
+    )
 }
 
 /// filter 定义是否存在。Debian 把随包 filter 装进 `/etc/fail2ban/filter.d`，
@@ -1083,18 +1095,21 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let jails = jail_list_from_status(&f2b_status_text(p));
     if !jails.iter().any(|j| j == &jail) {
         rollback_jail(p, &path);
-        let why = f2b_log_errors(p);
+        let hint = match f2b_log_hint(p) {
+            LogHint::Errors(e) => format!("；fail2ban 日志：{e}"),
+            LogHint::NoError => "；fail2ban 日志无 ERROR——配置能加载，通常是被宿主 \
+                 `jail.d` 里排序更晚的文件关掉了（如 `zz-*.conf` 里 `enabled = false`）"
+                .to_string(),
+            LogHint::Unreadable => {
+                "；未能读取 /var/log/fail2ban.log，可查 journalctl -u fail2ban".to_string()
+            }
+        };
         return Err(RpcError::internal(format!(
-            "jail `{jail}` 写入后未出现在 fail2ban 的 jail 列表（当前：{}），已回滚 {path}{}",
+            "jail `{jail}` 写入后未出现在 fail2ban 的 jail 列表（当前：{}），已回滚 {path}{hint}",
             if jails.is_empty() {
                 "无".to_string()
             } else {
                 jails.join(", ")
-            },
-            if why.is_empty() {
-                "；未能读到 /var/log/fail2ban.log，可查 journalctl -u fail2ban".to_string()
-            } else {
-                format!("；fail2ban 日志：{why}")
             }
         )));
     }

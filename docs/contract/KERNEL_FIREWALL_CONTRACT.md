@@ -77,8 +77,9 @@
 > ⑤ `fail2ban.jail.ensure` 显式落盘 `filter = <filter>`（缺省回落到 jail 名）与 `logpath`（可选），
 > 落盘前校验 `filter.d/<filter>.conf` 与 `logpath` 存在 → 写文件 → **`fail2ban-client -t` 预检**
 > → restart → 复核该 jail 真的在运行集合里；预检/重启/复核任一失败都撤回文件，并区分「本次配置
-> 的问题」与「宿主既有配置本来就有问题」，复核失败时把 `/var/log/fail2ban.log` 的 ERROR 摘要带进
-> 错误消息。2026-11-26 前这一层完全缺失：`filter` 与 `logpath` 都被静默丢弃，jail 配置坏掉时
+> 的问题」与「宿主既有配置本来就有问题」，复核失败时读 `/var/log/fail2ban.log` 并区分三种情形：
+> 有 ERROR 就列原文、读到但无 ERROR 则提示「被宿主更晚的 jail.d 文件关掉」、读不到才提示查 journalctl。
+> 2026-11-26 前这一层完全缺失：`filter` 与 `logpath` 都被静默丢弃，jail 配置坏掉时
 > 整个服务 exit 255，而 `ensure` 仍返回 `ensured: true`。
 > ⑥ `backend` 走白名单（`auto`/`systemd`/`polling`/`gamin`/`pyinotify`）：未知值 `fail2ban-client -t`
 > **不会**报错，而是等加载时静默跳过该 jail（实测 `nosuchbackend` 预检通过、jail 没起来），只能
