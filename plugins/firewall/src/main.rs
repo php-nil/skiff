@@ -911,14 +911,32 @@ fn jail_conf(
     filter: &str,
     port: &str,
     backend: &str,
-    maxretry: u64,
-    findtime: u64,
-    bantime: u64,
+    limits: (u64, u64, u64),
+    logpath: Option<&str>,
 ) -> String {
-    format!(
+    let (maxretry, findtime, bantime) = limits;
+    let mut out = format!(
         "[{jail}]\nenabled = true\nfilter = {filter}\nport = {port}\nbackend = {backend}\n\
          maxretry = {maxretry}\nfindtime = {findtime}\nbantime = {bantime}\n"
-    )
+    );
+    if let Some(lp) = logpath {
+        out.push_str(&format!("logpath = {lp}\n"));
+    }
+    out
+}
+
+/// `fail2ban-client -t`：在**重启服务之前**验证整份配置能不能被加载。
+///
+/// 这一步是本轮上机踩出来的：jail 写了 `backend = auto` 而对应日志文件不存在时，
+/// fail2ban 不是「跳过这个 jail」而是**整个服务 exit 255**
+/// （`Have not found any log file for <jail> jail`）。若直接 restart，服务会先躺下
+/// 再回滚重启；预检能让服务全程保持在运行状态。退出码可靠（失败 255、成功 0），
+/// 同时保留 stderr 原文给调用方看。
+fn f2b_config_test(p: &Plugin) -> (bool, String) {
+    match exec_raw(p, FAIL2BAN_CLIENT, &["-t"], None, 60) {
+        Ok((ok, _, text)) => (ok, text.trim().to_string()),
+        Err(e) => (false, e.message),
+    }
 }
 
 /// filter 定义是否存在。Debian 把随包 filter 装进 `/etc/fail2ban/filter.d`，
@@ -954,6 +972,14 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let maxretry = u64_param(params, "maxretry", 5);
     let findtime = u64_param(params, "findtime", 600);
     let bantime = u64_param(params, "bantime", 3600);
+    // `logpath` 是契约里声明过的可选参数，之前从未被读取（写了等于没写）。
+    // `backend = auto` / `file` 时它是 fail2ban 找日志的唯一依据，缺了就是整服务起不来。
+    let logpath = params
+        .get("logpath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     if !valid_f2b_name(&jail) {
         return Err(RpcError::invalid_params(
             "jail 名只能包含字母、数字、点、下划线、连字符（1–64 字符）",
@@ -975,26 +1001,56 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
              /usr/share/fail2ban/filter.d/{filter}.conf）；jail 名与 filter 名不同时必须显式传 filter"
         )));
     }
-    let content = jail_conf(&jail, &filter, &port, &backend, maxretry, findtime, bantime);
+    if let Some(lp) = logpath.as_deref() {
+        if !light_probe(p, LS, &[lp]) {
+            return Err(RpcError::internal(format!(
+                "logpath `{lp}` 不存在；fail2ban 找不到日志文件会让整个服务起不来，\
+                 请确认服务日志路径，或改用 backend = systemd"
+            )));
+        }
+    }
+    let content = jail_conf(
+        &jail,
+        &filter,
+        &port,
+        &backend,
+        (maxretry, findtime, bantime),
+        logpath.as_deref(),
+    );
     let _ = exec_ok(p, "/usr/bin/mkdir", &["-p", JAIL_DIR], None, 900);
     let path = format!("{JAIL_DIR}/{JAIL_PREFIX}{jail}.conf");
     write_managed_file(p, &path, &content)?;
-    // 落盘后必须复核：配置被 fail2ban 拒绝时 `systemctl restart` 会失败，但那已经是
-    // 「服务躺了」的状态。回滚文件、重启恢复，再把原因交给调用方。
+    // 落盘后先预检，再重启：坏配置当场回滚，服务全程不躺。
+    let (tested, why) = f2b_config_test(p);
+    if !tested {
+        // 区分责任：删掉本文件再测一次——仍失败说明宿主既有 jail 配置本身有问题，
+        // 那样就不该把这个锅算在本次调用头上（也不去动服务）。
+        let _ = exec_any(p, RM, &["-f", &path], None, 30);
+        let (still_bad, why2) = f2b_config_test(p);
+        return Err(RpcError::internal(if still_bad {
+            format!(
+                "移除本次写入的 {path} 后配置预检仍失败，宿主既有 jail 配置有问题：{}",
+                if why2.is_empty() { why } else { why2 }
+            )
+        } else {
+            format!("jail `{jail}` 的配置未通过预检，已撤回 {path}：{why}")
+        }));
+    }
+    // 预检通过后重启并复核：预检只保证「能被加载」，不保证这个 jail 在运行集合里
+    // （宿主 `jail.d` 里更晚的文件可能把它改成 enabled = false）。
     if let Err(e) = restart_fail2ban(p) {
         rollback_jail(p, &path);
         return Err(RpcError::internal(format!(
-            "jail `{jail}` 的配置被 fail2ban 拒绝，已回滚 {path}：{}",
+            "jail `{jail}` 重启 fail2ban 失败，已回滚 {path}：{}",
             e.message
         )));
     }
     let jails = jail_list_from_status(&f2b_status_text(p));
     if !jails.iter().any(|j| j == &jail) {
-        // 服务活着但 jail 没起来（被宿主更晚的配置覆盖、filter 缺可选项等）。
-        // 留着文件会让下一次重启继续失败，同样回滚。
         rollback_jail(p, &path);
         return Err(RpcError::internal(format!(
-            "jail `{jail}` 写入后未出现在 fail2ban 的 jail 列表（当前：{}），已回滚 {path}",
+            "jail `{jail}` 写入后未出现在 fail2ban 的 jail 列表（当前：{}），已回滚 {path}——\
+             常见原因是宿主 `jail.d` 里有排序更晚的文件把它关掉了",
             if jails.is_empty() {
                 "无".to_string()
             } else {
@@ -1006,6 +1062,7 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         "ensured": true,
         "jail": jail,
         "filter": filter,
+        "logpath": logpath,
         "path": path,
         "jails": jails,
     }))
@@ -1260,7 +1317,7 @@ mod tests {
     fn jail_conf_always_declares_filter() {
         // filter 与 jail 同名也必须显式写：fail2ban 的默认规则是「按 jail 名找 filter」，
         // 一旦有人改了 jail 名却沿用旧 filter，缺这一行就是整个服务起不来。
-        let conf = jail_conf("ftp", "pure-ftpd", "21", "auto", 5, 600, 3600);
+        let conf = jail_conf("ftp", "pure-ftpd", "21", "auto", (5, 600, 3600), None);
         assert!(conf.contains("[ftp]"), "{conf}");
         assert!(
             conf.contains("filter = pure-ftpd"),
@@ -1268,10 +1325,25 @@ mod tests {
         );
         assert!(conf.contains("enabled = true"), "{conf}");
         assert!(conf.contains("port = 21"), "{conf}");
+        assert!(!conf.contains("logpath"), "没传就不写: {conf}");
 
         // 同名时也写出来，不依赖 fail2ban 的隐式回退。
-        let same = jail_conf("pure-ftpd", "pure-ftpd", "ftp", "auto", 3, 60, 120);
+        let same = jail_conf("pure-ftpd", "pure-ftpd", "ftp", "auto", (3, 60, 120), None);
         assert!(same.contains("filter = pure-ftpd"), "{same}");
+
+        // logpath 传了必须落盘：backend=auto 时它是 fail2ban 唯一的日志依据。
+        let with_log = jail_conf(
+            "pure-ftpd",
+            "pure-ftpd",
+            "21",
+            "auto",
+            (5, 600, 3600),
+            Some("/var/log/pure-ftpd/transfer.log"),
+        );
+        assert!(
+            with_log.contains("logpath = /var/log/pure-ftpd/transfer.log"),
+            "{with_log}"
+        );
 
         // 写出来的受管文件必须能被自己的 enabled_jails 认成「启用」。
         assert_eq!(enabled_jails(&conf), vec!["ftp".to_string()]);
