@@ -257,6 +257,12 @@ fn before_tests(text: &str) -> String {
 /// 口径（2026-11-19 重定）：除 `std::fs::*` 的别名写法（`use std::fs;` 后
 /// `fs::write(...)`）外，还计入 `File::create` / `OpenOptions` 与
 /// `write_atomic` 调用方——它们是同一件事的不同写法，漏计等于闸门失明。
+///
+/// 匹配按标识符边界（2026-11-26 补）：needle 左侧紧邻字符不能是标识符字符。
+/// 起因是动作表把命令名写成 `admin_fs::write` / `admin_fs::rename` / `admin_fs::copy`
+/// ——模块名尾部的 `fs` 与 `::write` 拼出了 `fs::write`，3 条动作声明被当成 3 处直写。
+/// 真实写法（`std::fs::write`、`use std::fs;` 后的 `fs::write(...)`）左侧是 `:` 或
+/// 行首，仍然计入。
 fn count_fs_writes(body: &str) -> usize {
     [
         "fs::write",
@@ -270,8 +276,20 @@ fn count_fs_writes(body: &str) -> usize {
         "write_atomic",
     ]
     .iter()
-    .map(|needle| body.matches(needle).count())
+    .map(|needle| count_ident_bound(body, needle))
     .sum()
+}
+
+/// `needle` 的出现次数，只数左侧不紧邻标识符字符的那些。
+fn count_ident_bound(body: &str, needle: &str) -> usize {
+    body.match_indices(needle)
+        .filter(|(at, _)| {
+            body[..*at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+        })
+        .count()
 }
 
 fn rel(root: &Path, file: &Path) -> String {
