@@ -6,12 +6,12 @@
 
 ## 5. 当前部署
 
-> **2026-11-26 还原后干净首装 + 三次就地升级（当前；包 `a915b6e`，`sha256=c038e313…`）**
+> **2026-11-26 还原后干净首装 + 五次就地升级（当前；包 `64f64cc`，`sha256=3098f223…`）**
 > - 背景：测试机还原为干净系统，按「重新发版 → 干净装 → 装插件/建环境/建站点 → 全量测 → 修缺陷 → 重出包 → 就地升级 → 再测」跑完整一轮；三个产品缺陷见 `docs/changes/2026-11-26.md`。
 > - **包序列**（都是 amd64 `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz`，覆盖同一 Release 资产）：
->   干净首装 `92949ea` 12,538,527 B `6c246450…`（Release `45673872060`）→ `070ff1d` 12,539,101 B `87a828e5…`（`45678981070`，修 `gzip_types`）→ `7810675` 12,541,372 B `d7fb85d8…`（`45683912296`，修回收站 CompileError）→ **`a915b6e` 12,542,260 B `c038e313…`（`45688148056`，修文案与错误落地页）**。
+>   干净首装 `92949ea` 12,538,527 B `6c246450…`（Release `45673872060`）→ `070ff1d` 12,539,101 B `87a828e5…`（`45678981070`，修 `gzip_types`）→ `7810675` 12,541,372 B `d7fb85d8…`（`45683912296`，修回收站 CompileError）→ **`a915b6e` 12,542,260 B `c038e313…`（`45688148056`，修文案与错误落地页）** → `a9d8308` 12,547,045 B `6936edd6…`（`45822071089`，C5a：能力面 HTTP 形状上移 core + 防火墙 fail2ban 行为修复） → **`64f64cc` 12,546,974 B `3098f223…`（`45825094092`，当前；卸载后清空壳目录）**。
 > - **干净首装**：preflight 8/8 PASS → `sh install.sh --listen 0.0.0.0:18080 --tls off --no-start` exit **0** → 追加 `allow_insecure_http` 与 `[catalog]` → `systemctl restart skiff`。`skiff.service` enabled+active、`/healthz` 200、前缀 **`5e3yz2yr`**、`skiff doctor` 六项 ok、`official/` 7 包 + `public-key.txt`、自动建出 `php-8.5`（Docker 29.7.2）。
-> - **三次就地升级**（都 `sh install.sh --no-start < /dev/null`，不传 `--listen/--tls`）：exit 0、`/etc/skiff/config.toml` 与升级前**逐字节相同**、前缀仍是 `5e3yz2yr`、`/healthz` 200、`official/` 保持 8 项（7 包 + 公钥）、已装插件与容器全保留。
+> - **五次就地升级**（都 `sh install.sh --no-start < /dev/null`，不传 `--listen/--tls`）：exit 0、`/etc/skiff/config.toml` 与升级前**逐字节相同**（`sha256=5c41e260…`，五次全一致）、`/healthz` 200、`official/` 保持 8 项（7 包 + 公钥）、已装插件与容器全保留。官方插件在服务启动时按随包内容自动换版：`plugins/com.skiff.firewall/versions/0.1.0` 的 mtime 与包时间一致，说明新版二进制已生效（不靠手写版本号）。
 > - **能力面**：7 个官方插件（cron / firewall / ftp / guard / monitor / sources / testkit）全部已验签安装；`php-8.5`（`php:8.5.13-fpm-alpine`）running；OpenResty 已装；站点 `matrix.local`（PHP）/ `matrix-static.local`（静态）/ `matrix-proxy.local`（反代，上游 18081）三站 200，PHP 页 `PHP Version 8.5.13`。
 > - **自建镜像**：开发机 `serve --dist target/skiff-server/dist --listen 0.0.0.0:8080 --http`；测试机三类清单 `source=registry`、`failed=false`（PHP 13 / Node 9 / Rust 1）。`serve` 是前台进程，随开发机会话退出（Windows 无 systemd）；断源时测试机按设计降级（PHP→`builtin`、Node/Rust→`catalog`），重启服务后 `GET /ui/v1/runtimes/versions?kind=…&refresh=true` 回到 `registry`。
 > - **已知行为**：保存 PHP 运行参数 = 重启 PHP 容器，同环境站点约 3.2 秒 503（100 ms 采样 150 次、非 200 共 29 次）；`crates/docker/src/client.rs` 的自定义信号白名单决定了不做 `USR2` 热重载，文案已改为「重启 PHP 容器」并写明 503 窗口。
@@ -23,13 +23,13 @@
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `45688148056`（dispatch `ref=main`，head `a915b6e`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-25 19:51 UTC（本机 11-26 03:51）。
+- **当前资产来源**：Release run `45825094092`（dispatch `ref=main`，head `64f64cc`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-26 13:09 UTC（本机 21:09）。
 - **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`a915b6e`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
-- **本轮同一 Release 覆盖了四次**（`92949ea`→`070ff1d`→`7810675`→`a915b6e`），下表只列最后一次；前三次坐标见 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md)。
+- **本轮同一 Release 覆盖了六次**（`92949ea`→`070ff1d`→`7810675`→`a915b6e`→`a9d8308`→`64f64cc`），下表只列最后一次；前三次坐标见 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md)，`a9d8308` 为 12,547,045 B `6936edd6…`（`45822071089`）。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,542,260 B | `c038e313c9c4bcabdfeaef1da61811cc245f8c3e95ccbad9e39f75c1dce0279b` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,546,974 B | `3098f223bbb220a1c824aa37aa7434fe3f9eda06cde8da687f265fb31b9f8fb1` |
 | `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | 侧车，内容同上摘要（`d3d0f954…`） |
 | `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 11,974,674 B | `4fe4772dfc230c0fb3f983fcd3422a76f8da8e33c2e5d5b5d2efecaca306926f`（本轮仅 amd64 实测） |
 | `skiff-server-x86_64-unknown-linux-musl` | 4,031,200 B | `e8cde7ad42d427aa139dfe6a43d59f7e9e6612fe43d77143cd9aac4cc35a7fde`（本轮未下载） |

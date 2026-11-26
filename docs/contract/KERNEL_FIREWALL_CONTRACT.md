@@ -65,14 +65,18 @@
 > 插件 UI 与 FTP 的登录防护都按这些名字调用。变化只在授权面：不再走 `firewall:<verb>` grants，
 > 改由 exec 的 `bin:` 授权判定。
 >
-> **下表「说明」列的语义已于 2026-11-26 上机核对，并按插件实现校正**（核对包 `a915b6e`）：
+> **下表「说明」列的语义已于 2026-11-26 上机核对并复验，按插件实现校正**（复验包 `64f64cc`，`sha256=3098f223…`）：
 > ① `fail2ban.status` 返回 `{installed, running, state, reason, jails}`——三态由 RPC 直接给出，
 > `jails` 只列 `skiff-*` 受管 jail；② `fail2ban.install` 先写 `skiff-defaults.conf`
 > （`[sshd] enabled = false`）再 `enable` + `restart`，装完 `fail2ban-client status` 不含 `sshd`；
 > ③ `fail2ban.start` = `enable` + `restart` + 用 `fail2ban-client status` 复核，返回
 > `{running, jails, residual_jails}`（`residual_jails` = 请求停用但仍在跑，通常是宿主
-> `jail.d` 里排序更晚的文件覆盖了托管默认值）；④ `fail2ban.uninstall` 用 `apt-get purge`
-> 并删 `skiff-defaults.conf`，返回 `{state: "missing", removed: true}`。
+> `jail.d` 里排序更晚的文件覆盖了托管默认值）；④ `fail2ban.uninstall` 用 `apt-get purge`、
+> 删 `skiff-defaults.conf`，再用 `rm -df` 清掉因此残留的空 `jail.d` / `/etc/fail2ban`
+> （dpkg 只在目录为空时删目录，purge 那一刻托管文件还在），返回 `{state: "missing", removed: true}`。
+> ⑤ `fail2ban.jail.ensure` 的 `filter` 参数**当前没有落盘**（写出的 jail 文件不含 `filter =` 行，
+> fail2ban 按 jail 名找 filter），jail 名与 filter 名不一致时会拖垮整个服务。属未处理项，
+> 见 `docs/test/TEST_LEDGER.md`「`fail2ban.jail.ensure` 忽略 `filter` 参数」条。
 > 回归项与代码位置见 [`TEST_MATRIX/06-FIREWALL_JOBS.md`](../test/TEST_MATRIX/06-FIREWALL_JOBS.md)。
 
 | 方法 | 参数 | 说明 |
@@ -87,7 +91,7 @@
 | `fail2ban.start` | — | `systemctl enable` + `restart`（不是对已运行服务无效的 `enable --now`）并按 §4 复核 jail；未安装回 503 |
 | `fail2ban.stop` | — | 显式停止并取消开机自启（`systemctl disable --now`）；未安装回 503 |
 | `fail2ban.uninstall` | — | 停止服务、删除本能力面写入的 `skiff-defaults.conf`、`apt-get purge -y fail2ban`；未安装回 503；停止失败不阻断卸载，原因放返回的 `warning` |
-| `fail2ban.jail.ensure` | `jail`、`filter`、`port`、`backend`、`maxretry`、`findtime`、`bantime`、`logpath`(可选) | 写入 `/etc/fail2ban/jail.d/skiff-<jail>.conf` 并重启 fail2ban |
+| `fail2ban.jail.ensure` | `jail`、`filter`、`port`、`backend`、`maxretry`、`findtime`、`bantime`、`logpath`(可选) | 写入 `/etc/fail2ban/jail.d/skiff-<jail>.conf` 并重启 fail2ban；**`filter` 参数目前未使用**（fail2ban 按 jail 名找 filter，调用方须保证两者同名，见上） |
 | `fail2ban.jail.remove` | `jail` | 删除本能力面写入的 jail 文件并重启 fail2ban；只认 `skiff-` 前缀 |
 | `fail2ban.banned` | `jail` | 读取该 jail 的封禁 IP 列表 |
 | `fail2ban.ban` | `jail`、`ip` | 手动封禁一个 IP |
