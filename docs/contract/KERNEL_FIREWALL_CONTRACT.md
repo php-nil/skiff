@@ -73,10 +73,11 @@
 > `{running, jails, residual_jails}`（`residual_jails` = 请求停用但仍在跑，通常是宿主
 > `jail.d` 里排序更晚的文件覆盖了托管默认值）；④ `fail2ban.uninstall` 用 `apt-get purge`、
 > 删 `skiff-defaults.conf`，再用 `rm -df` 清掉因此残留的空 `jail.d` / `/etc/fail2ban`
-> （dpkg 只在目录为空时删目录，purge 那一刻托管文件还在），返回 `{state: "missing", removed: true}`。
-> ⑤ `fail2ban.jail.ensure` 的 `filter` 参数**当前没有落盘**（写出的 jail 文件不含 `filter =` 行，
-> fail2ban 按 jail 名找 filter），jail 名与 filter 名不一致时会拖垮整个服务。属未处理项，
-> 见 `docs/test/TEST_LEDGER.md`「`fail2ban.jail.ensure` 忽略 `filter` 参数」条。
+> （dpkg 只在目录为空时删目录，purge 那一刻托管文件还在），返回 `{state: "missing", removed: true}`；
+> ⑤ `fail2ban.jail.ensure` 显式落盘 `filter = <filter>`（缺省回落到 jail 名），落盘前校验
+> `filter.d/<filter>.conf` 存在，重启后复核该 jail 真的起来了；`restart` 失败或 jail 未出现即
+> **回滚文件并重启恢复**，返回可读错误（2026-11-26 前这一层缺失：`filter` 被静默丢弃，
+> 名字不一致时整个 fail2ban 服务 exit 255，而 `ensure` 仍返回 `ensured: true`）。
 > 回归项与代码位置见 [`TEST_MATRIX/06-FIREWALL_JOBS.md`](../test/TEST_MATRIX/06-FIREWALL_JOBS.md)。
 
 | 方法 | 参数 | 说明 |
@@ -89,11 +90,11 @@
 | `fail2ban.status` | — | 安装/运行状态（`state` = `missing` / `stopped` / `running`）、未运行时的可读 `reason`、jail 列表与启用状态、封禁计数；取不到回 `null` |
 | `fail2ban.install` | — | 安装或复用宿主 fail2ban；新装时写 `skiff-defaults.conf` 关闭 `sshd` jail，随后 `enable` + `restart` 并复核实际启用的 jail 集合（见 §4） |
 | `fail2ban.start` | — | `systemctl enable` + `restart`（不是对已运行服务无效的 `enable --now`）并按 §4 复核 jail；未安装回 503 |
-| `fail2ban.stop` | — | 显式停止并取消开机自启（`systemctl disable --now`）；未安装回 503 |
-| `fail2ban.uninstall` | — | 停止服务、删除本能力面写入的 `skiff-defaults.conf`、`apt-get purge -y fail2ban`；未安装回 503；停止失败不阻断卸载，原因放返回的 `warning` |
-| `fail2ban.jail.ensure` | `jail`、`filter`、`port`、`backend`、`maxretry`、`findtime`、`bantime`、`logpath`(可选) | 写入 `/etc/fail2ban/jail.d/skiff-<jail>.conf` 并重启 fail2ban；**`filter` 参数目前未使用**（fail2ban 按 jail 名找 filter，调用方须保证两者同名，见上） |
-| `fail2ban.jail.remove` | `jail` | 删除本能力面写入的 jail 文件并重启 fail2ban；只认 `skiff-` 前缀 |
-| `fail2ban.banned` | `jail` | 读取该 jail 的封禁 IP 列表 |
+| `fail2ban.stop` | — | `systemctl stop`（不改开机自启）；未安装时由内核面判定回 503 |
+| `fail2ban.uninstall` | — | 停止服务（失败不阻断）、`disable`、`apt-get purge -y fail2ban`（**失败即报错**，不报假成功）、删 `skiff-defaults.conf`、`rm -df` 清残留空目录；返回 `{state: "missing", removed: true}` |
+| `fail2ban.jail.ensure` | `jail`、`filter`(缺省 = jail)、`port`、`backend`、`maxretry`、`findtime`、`bantime`、`logpath`(可选) | 校验名字字符集与 `filter.d/<filter>.conf` 存在 → 写 `/etc/fail2ban/jail.d/skiff-<jail>.conf`（含 `filter =` 行）→ 重启 → 复核 jail 已启用；任一步失败回滚文件并报错。返回 `{ensured, jail, filter, path, jails}` |
+| `fail2ban.jail.remove` | `jail` | 删除本能力面写入的 jail 文件（删不掉即报错）并重启 fail2ban，复核该 jail 已消失；只认 `skiff-` 前缀 |
+| `fail2ban.banned` | `jail` | 读取该 jail 的封禁 IP 列表；`fail2ban-client` 非零退出转成错误（不返回空列表冒充「0 个封禁」） |
 | `fail2ban.ban` | `jail`、`ip` | 手动封禁一个 IP |
 | `fail2ban.unban` | `jail`、`ip` | 解除封禁 |
 
@@ -197,19 +198,21 @@
 | FW-05 | `rule.remove` 用自身 id | 只删自有规则；用其它 id 不误删宿主规则 |
 | FW-06 | `port.allow` | 等价于追加 accept 规则，参数校验与 `rule.add` 一致 |
 | FW-07 | `fail2ban.install`（未安装） | 安装成功、写 `skiff-defaults.conf`、`enable` + `restart`；装完 `fail2ban-client status` 不含 `sshd`；已安装则复用且不动宿主既有 jail |
-| FW-08 | `fail2ban.jail.ensure` | 写 `skiff-<jail>.conf` 并重启 fail2ban；非法 jail 名 400 |
-| FW-09 | `fail2ban.jail.remove` | 只删 `skiff-` 前缀文件；不存在时幂等 |
-| FW-10 | `fail2ban.banned` / `ban` / `unban` | 与 `fail2ban-client` 结果一致 |
+| FW-08 | `fail2ban.jail.ensure` | 写 `skiff-<jail>.conf`（含 `filter =` 行）并重启；jail 未出现在 status 或 restart 失败即回滚文件 + 报错；非法名/不存在的 filter 400；`filter` 缺省回落 jail 名 |
+| FW-09 | `fail2ban.jail.remove` | 只删 `skiff-` 前缀文件；不存在时幂等；删不掉或重启后 jail 仍在则报错 |
+| FW-10 | `fail2ban.banned` / `ban` / `unban` | 与 `fail2ban-client` 结果一致；`fail2ban-client` 非零退出一律转错误（不返回空列表冒充「0 个封禁」） |
 | FW-11 | 非 Native / 非 Linux | 503 |
 | FW-12 | FTP 未装防火墙插件时开启防护 | `available=false` + 原因；FTP 其它功能正常 |
 | FW-13 | FTP 已装防火墙插件时开启防护 | jail `pure-ftpd` 生成，端口取 `listen_port` |
 | FW-14 | FTP 关闭防护 | 只移除 `pure-ftpd` jail，不卸载 fail2ban |
 | FW-15 | `fail2ban.status` 三态 | 未安装 `state=missing`；未运行 `state=stopped` 且 `reason` 可读；运行中 `state=running` |
-| FW-16 | `fail2ban.start` / `stop` | `start` = `enable` + `restart` 并复核 jail（非预期 jail 被 stop/disable），`stop` = `disable --now`，均返回真实状态；未安装 503 |
+| FW-16 | `fail2ban.start` / `stop` | `start` = `enable` + `restart` 并复核 jail（返回 `residual_jails`），`stop` = `systemctl stop`，均返回真实状态；未安装时 `start` 返回可读错误 |
 | FW-17 | `fail2ban.uninstall` | 停服务、删 `skiff-defaults.conf`、`apt-get purge`；返回 `missing`，审计 `firewall.fail2ban.uninstall` |
 
-单元测试随实现一起迁到了插件：`plugins/firewall/src/main.rs` 的 `#[cfg(test)]` 现有 3 条
-（nft 规则解析跳过结构行、iptables 只留 append 行、`port` 参数接受数字与 `a-b` 形式）。
+单元测试随实现一起迁到了插件：`plugins/firewall/src/main.rs` 的 `#[cfg(test)]` 现有 8 条
+（nft 规则解析跳过结构行、iptables 只留 append 行、`port` 参数接受数字与 `a-b` 形式、
+`Jail list` 两种排版、托管默认值只关不启、`residual_jails` 语义、`jail_conf` 必含 `filter =`、
+jail/filter 名字字符集）。
 jail 名 / CIDR 校验、fail2ban 三态、未安装时启停 503 等原内核侧用例已随 `plugin::firewall`
 的实现删掉，现有覆盖只能靠上机回归（TEST_MATRIX 06）。Web 侧 RPC 状态映射见
 `crates/web/src/handlers/plugins.rs` 的 `rpc_error_passes_kernel_status_through`。

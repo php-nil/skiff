@@ -150,6 +150,34 @@ fn light_any(p: &Plugin, binary: &str, argv: &[&str], t: u64) -> Result<String, 
         .to_string())
 }
 
+/// 作业化执行，原样交出 `(是否成功, 退出码, 合并输出)`。
+///
+/// 存在的理由：有些命令**既要看退出码、又要匹配输出文本**（`apt-get install` 失败时
+/// 要从输出里认 `Unable to locate package` 才能决定要不要 update 后重试）。以前这种
+/// 场合只能调 `exec_any`，于是退出码被丢掉——命令失败了照样往下跑，最后报出来的错
+/// 指向别处（或干脆报成功）。2026-11-26 上机就踩到过这类「假成功」。
+fn exec_raw(
+    p: &Plugin,
+    binary: &str,
+    argv: &[&str],
+    stdin: Option<&str>,
+    t: u64,
+) -> Result<(bool, i64, String), RpcError> {
+    let out = p
+        .host_exec_full(binary, argv, stdin, Some(t))
+        .map_err(common::rpc_err)?;
+    let ok = out.get("success").and_then(Value::as_bool) == Some(true);
+    let code = out.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
+    let text = out
+        .get("stdout")
+        .and_then(Value::as_str)
+        .or_else(|| out.get("stderr").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string();
+    Ok((ok, code, text))
+}
+
+/// 作业化执行：非零退出转成 `RpcError`，成功返回输出。
 fn exec_ok(
     p: &Plugin,
     binary: &str,
@@ -157,29 +185,21 @@ fn exec_ok(
     stdin: Option<&str>,
     t: u64,
 ) -> Result<String, RpcError> {
-    let out = p
-        .host_exec_full(binary, argv, stdin, Some(t))
-        .map_err(common::rpc_err)?;
-    if out.get("success").and_then(Value::as_bool) != Some(true) {
-        let code = out.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
-        let detail = out
-            .get("stderr")
-            .and_then(Value::as_str)
-            .or_else(|| out.get("stdout").and_then(Value::as_str))
-            .unwrap_or("未知")
-            .trim()
-            .to_string();
+    let (ok, code, text) = exec_raw(p, binary, argv, stdin, t)?;
+    if !ok {
         return Err(RpcError::internal(format!(
-            "{binary} 退出码 {code}：{detail}"
+            "{binary} 退出码 {code}：{}",
+            if text.trim().is_empty() {
+                "未知"
+            } else {
+                text.trim()
+            }
         )));
     }
-    Ok(out
-        .get("stdout")
-        .and_then(Value::as_str)
-        .or_else(|| out.get("stderr").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string())
+    Ok(text)
 }
+
+/// 作业化执行（不判成败）：`rm -f`、`systemctl stop` 这类「本来就允许失败」的用。
 fn exec_any(
     p: &Plugin,
     binary: &str,
@@ -187,15 +207,7 @@ fn exec_any(
     stdin: Option<&str>,
     t: u64,
 ) -> Result<String, RpcError> {
-    let out = p
-        .host_exec_full(binary, argv, stdin, Some(t))
-        .map_err(common::rpc_err)?;
-    Ok(out
-        .get("stdout")
-        .and_then(Value::as_str)
-        .or_else(|| out.get("stderr").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string())
+    Ok(exec_raw(p, binary, argv, stdin, t)?.2)
 }
 fn command_works(p: &Plugin, binary: &str, argv: &[&str]) -> bool {
     light_probe(p, binary, argv)
@@ -797,14 +809,23 @@ fn h_f2b_install(p: &Plugin) -> Result<Value, RpcError> {
     if fail2ban_installed(p) {
         return Ok(json!({ "installed": true, "already": true }));
     }
-    let out = exec_any(
+    // 用 exec_raw 而不是 exec_any：失败时必须能认出来。老写法丢掉退出码，apt 失败后
+    // 照样往下走，最后报的是 `systemctl enable` 的错（或什么都没报）。
+    let (ok, code, out) = exec_raw(
         p,
         APT_GET,
         &["install", "-y", "--no-install-recommends", "fail2ban"],
         None,
         900,
     )?;
-    if out.contains("Unable to locate package") {
+    if !ok {
+        // 源里找不到包时先 update 再重试一次（离线/旧索引的常见情形）。
+        if !out.contains("Unable to locate package") {
+            return Err(RpcError::internal(format!(
+                "apt-get install fail2ban 退出码 {code}：{}",
+                out.trim()
+            )));
+        }
         exec_ok(p, APT_GET, &["update"], None, 900)?;
         exec_ok(
             p,
@@ -858,7 +879,10 @@ fn h_f2b_uninstall(p: &Plugin) -> Result<Value, RpcError> {
     let _ = exec_any(p, SYSTEMCTL, &["disable", F2B_SERVICE], None, 900);
     // purge 而不是 remove：`remove` 会把 `/etc/fail2ban` 留在宿主上（dpkg 状态 rc），
     // 下次装上时又带着旧配置回来。托管文件随包一起清掉，宿主自己的 jail 不受影响。
-    let _ = exec_any(p, APT_GET, &["purge", "-y", "fail2ban"], None, 900);
+    //
+    // 这一步**必须看退出码**：purge 失败（dpkg 锁被占、依赖破裂）时若吞掉错误直接返回
+    // `removed: true`，面板会显示已卸载而包其实还在——包不在了才允许往下清理残留。
+    exec_ok(p, APT_GET, &["purge", "-y", "fail2ban"], None, 900)?;
     let _ = exec_any(p, RM, &["-f", &managed_defaults_path()], None, 30);
     // dpkg 只在目录为空时删目录，而 purge 跑的时候托管文件还在 → `/etc/fail2ban/jail.d`
     // 会被留下（2026-11-26 上机实测：`/etc/fail2ban` 只剩空 `jail.d/`）。`rm -d` 只删**空**
@@ -867,6 +891,44 @@ fn h_f2b_uninstall(p: &Plugin) -> Result<Value, RpcError> {
     f2b_probe_invalidate();
     Ok(json!({ "state": "missing", "removed": true }))
 }
+/// jail / filter 名：只允许 fail2ban 认得的字符集，顺带挡掉路径分隔符与换行
+/// （名字会拼进 `jail.d/skiff-<jail>.conf` 路径与 ini 段名）。
+fn valid_f2b_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// 受管 jail 文件正文。
+///
+/// `filter` 必须落盘：fail2ban 缺省按 **jail 名**去找 `filter.d/<jail>.conf`，
+/// 名字与 filter 不同时不写 `filter =` 行就起不来（2026-11-26 实测：`ftptest` →
+/// `Found no accessible config files for 'filter.d/ftptest'`，整个服务 exit 255）。
+fn jail_conf(
+    jail: &str,
+    filter: &str,
+    port: &str,
+    backend: &str,
+    maxretry: u64,
+    findtime: u64,
+    bantime: u64,
+) -> String {
+    format!(
+        "[{jail}]\nenabled = true\nfilter = {filter}\nport = {port}\nbackend = {backend}\n\
+         maxretry = {maxretry}\nfindtime = {findtime}\nbantime = {bantime}\n"
+    )
+}
+
+/// filter 定义是否存在。Debian 把随包 filter 装进 `/etc/fail2ban/filter.d`，
+/// 上游/其它发行版也可能放 `/usr/share/fail2ban/filter.d`，两处都认。
+fn filter_exists(p: &Plugin, filter: &str) -> bool {
+    ["/etc/fail2ban/filter.d", "/usr/share/fail2ban/filter.d"]
+        .iter()
+        .any(|dir| light_probe(p, LS, &[&format!("{dir}/{filter}.conf")]))
+}
+
 fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let jail = params
         .get("jail")
@@ -883,35 +945,103 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         .and_then(Value::as_str)
         .unwrap_or("ftp")
         .to_string();
+    // 缺省回落到 jail 名：与 fail2ban 的默认查找规则一致，老调用方（只传 jail）行为不变。
+    let filter = params
+        .get("filter")
+        .and_then(Value::as_str)
+        .unwrap_or(&jail)
+        .to_string();
     let maxretry = u64_param(params, "maxretry", 5);
     let findtime = u64_param(params, "findtime", 600);
     let bantime = u64_param(params, "bantime", 3600);
-    if jail.is_empty() {
-        return Err(RpcError::invalid_params("缺少 jail 名称"));
+    if !valid_f2b_name(&jail) {
+        return Err(RpcError::invalid_params(
+            "jail 名只能包含字母、数字、点、下划线、连字符（1–64 字符）",
+        ));
+    }
+    if !valid_f2b_name(&filter) {
+        return Err(RpcError::invalid_params(
+            "filter 名只能包含字母、数字、点、下划线、连字符（1–64 字符）",
+        ));
     }
     if !fail2ban_installed(p) {
         return Err(RpcError::internal("fail2ban 尚未安装"));
     }
-    let content = format!("[{jail}]\nenabled = true\nport = {port}\nbackend = {backend}\nmaxretry = {maxretry}\nfindtime = {findtime}\nbantime = {bantime}\n");
+    // 先校验 filter 存在，再落盘。缺 filter 时 fail2ban 会**整个服务起不来**
+    // （不是只跳过这个 jail），而错误现场只有 systemctl 的 stderr——提前挡住。
+    if !filter_exists(p, &filter) {
+        return Err(RpcError::internal(format!(
+            "找不到 filter `{filter}`（应存在 /etc/fail2ban/filter.d/{filter}.conf 或 \
+             /usr/share/fail2ban/filter.d/{filter}.conf）；jail 名与 filter 名不同时必须显式传 filter"
+        )));
+    }
+    let content = jail_conf(&jail, &filter, &port, &backend, maxretry, findtime, bantime);
     let _ = exec_ok(p, "/usr/bin/mkdir", &["-p", JAIL_DIR], None, 900);
     let path = format!("{JAIL_DIR}/{JAIL_PREFIX}{jail}.conf");
     write_managed_file(p, &path, &content)?;
-    restart_fail2ban(p)?;
-    Ok(json!({ "ensured": true, "jail": jail, "path": path }))
+    // 落盘后必须复核：配置被 fail2ban 拒绝时 `systemctl restart` 会失败，但那已经是
+    // 「服务躺了」的状态。回滚文件、重启恢复，再把原因交给调用方。
+    if let Err(e) = restart_fail2ban(p) {
+        rollback_jail(p, &path);
+        return Err(RpcError::internal(format!(
+            "jail `{jail}` 的配置被 fail2ban 拒绝，已回滚 {path}：{}",
+            e.message
+        )));
+    }
+    let jails = jail_list_from_status(&f2b_status_text(p));
+    if !jails.iter().any(|j| j == &jail) {
+        // 服务活着但 jail 没起来（被宿主更晚的配置覆盖、filter 缺可选项等）。
+        // 留着文件会让下一次重启继续失败，同样回滚。
+        rollback_jail(p, &path);
+        return Err(RpcError::internal(format!(
+            "jail `{jail}` 写入后未出现在 fail2ban 的 jail 列表（当前：{}），已回滚 {path}",
+            if jails.is_empty() {
+                "无".to_string()
+            } else {
+                jails.join(", ")
+            }
+        )));
+    }
+    Ok(json!({
+        "ensured": true,
+        "jail": jail,
+        "filter": filter,
+        "path": path,
+        "jails": jails,
+    }))
 }
+
+/// 删掉刚写的受管 jail 文件并尽力重启，让服务回到写入前的状态。
+fn rollback_jail(p: &Plugin, path: &str) {
+    let _ = exec_any(p, RM, &["-f", path], None, 30);
+    let _ = restart_fail2ban(p);
+}
+
 fn h_f2b_jail_remove(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let jail = params
         .get("jail")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    if jail.is_empty() {
-        return Err(RpcError::invalid_params("缺少 jail 名称"));
+    if !valid_f2b_name(&jail) {
+        return Err(RpcError::invalid_params(
+            "jail 名只能包含字母、数字、点、下划线、连字符（1–64 字符）",
+        ));
     }
     let path = format!("{JAIL_DIR}/{JAIL_PREFIX}{jail}.conf");
-    let _ = exec_any(p, RM, &["-f", &path], None, 900);
+    // `rm -f` 对不存在的文件返回 0，所以这里可以判退出码：删不掉（权限/只读挂载）
+    // 就必须报错，否则下面 restart 完 jail 还在，调用方却收到 removed: true。
+    exec_ok(p, RM, &["-f", &path], None, 900)?;
     if fail2ban_installed(p) {
         restart_fail2ban(p)?;
+        let jails = jail_list_from_status(&f2b_status_text(p));
+        if jails.iter().any(|j| j == &jail) {
+            return Err(RpcError::internal(format!(
+                "jail `{jail}` 的文件已删除，但重启后仍在运行（当前：{}）——\
+                 可能是宿主自己的 jail.d 配置又启用了它",
+                jails.join(", ")
+            )));
+        }
     }
     Ok(json!({ "removed": true, "jail": jail }))
 }
@@ -927,7 +1057,9 @@ fn h_f2b_banned(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     if !fail2ban_installed(p) {
         return Ok(json!({ "banned": [], "available": false }));
     }
-    let out = exec_any(p, FAIL2BAN_CLIENT, &["get", &jail, "banned"], None, 30)?;
+    // 只读查询走 `light_ok`：它会检查退出码。以前用 `exec_any`，服务停摆时
+    // `fail2ban-client` 返回非零、输出为空，面板就显示「0 个封禁」而不是报错。
+    let out = light_ok(p, FAIL2BAN_CLIENT, &["get", &jail, "banned"], 30)?;
     let mut ips = Vec::new();
     for line in out.lines() {
         for tok in line.split([' ', ',', '\t']) {
@@ -1122,5 +1254,44 @@ mod tests {
         );
         assert!(residual_jails(&[], MANAGED_DEFAULTS_JAILS).is_empty());
         assert!(residual_jails(&["skiff-ftp".to_string()], MANAGED_DEFAULTS_JAILS).is_empty());
+    }
+
+    #[test]
+    fn jail_conf_always_declares_filter() {
+        // filter 与 jail 同名也必须显式写：fail2ban 的默认规则是「按 jail 名找 filter」，
+        // 一旦有人改了 jail 名却沿用旧 filter，缺这一行就是整个服务起不来。
+        let conf = jail_conf("ftp", "pure-ftpd", "21", "auto", 5, 600, 3600);
+        assert!(conf.contains("[ftp]"), "{conf}");
+        assert!(
+            conf.contains("filter = pure-ftpd"),
+            "必须落盘 filter: {conf}"
+        );
+        assert!(conf.contains("enabled = true"), "{conf}");
+        assert!(conf.contains("port = 21"), "{conf}");
+
+        // 同名时也写出来，不依赖 fail2ban 的隐式回退。
+        let same = jail_conf("pure-ftpd", "pure-ftpd", "ftp", "auto", 3, 60, 120);
+        assert!(same.contains("filter = pure-ftpd"), "{same}");
+
+        // 写出来的受管文件必须能被自己的 enabled_jails 认成「启用」。
+        assert_eq!(enabled_jails(&conf), vec!["ftp".to_string()]);
+    }
+
+    #[test]
+    fn f2b_names_reject_path_separators() {
+        for ok in ["ftp", "pure-ftpd", "skiff.ftp", "a_b"] {
+            assert!(valid_f2b_name(ok), "{ok} 应合法");
+        }
+        for bad in [
+            "",
+            "../x",
+            "a/b",
+            "a b",
+            "a\nb",
+            "[x]",
+            "a".repeat(65).as_str(),
+        ] {
+            assert!(!valid_f2b_name(bad), "{bad:?} 应被拒");
+        }
     }
 }
