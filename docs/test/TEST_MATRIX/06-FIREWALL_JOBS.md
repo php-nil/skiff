@@ -11,9 +11,10 @@
 > 2026-11-26 已上机核对并复验 firewall / fail2ban 段：`a915b6e` 上 FW-04/15/16/17 全 FAIL
 > （`149de92` 迁移时丢了托管默认值、复核与 purge，插件侧另有一处探测缓存不失效）；修复后在新包
 > `64f64cc`（sha256 `3098f223…`）上四项 **全部 PASS**，FW-19 亦 PASS。
-> 同日在 `804140c`（sha256 `5e333f7f…`）上补验 FW-05 与新增 FW-20 五项：jail 文件含
+> 同日最终包 `82cadce`（sha256 `b009e97d…`）上补验 FW-05 与新增 FW-20 五项：jail 文件含
 > `filter =`、名字不一致时 jail 正常起来、缺 filter / 非法 backend / 路径注入均 400 或不落盘、
-> 宿主 `zz-*.conf` 覆盖时回滚且服务仍 active——**全部 PASS**。
+> 宿主 `zz-*.conf` 覆盖时回滚且服务仍 active；另验证「glob logpath 匹配不到日志」会带出 fail2ban
+> 原文并撤回文件——**全部 PASS**。
 > 契约见 [KERNEL_FIREWALL_CONTRACT.md](../../contract/KERNEL_FIREWALL_CONTRACT.md)。
 
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
