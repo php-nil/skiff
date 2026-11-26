@@ -161,7 +161,7 @@
     compose / tasks / jobs / store / plugins / settings / audit / docker-settings）、`/{p}/logout`、`/{p}/password`、
     `/{p}/totp*`、`POST /{p}/plugins/install`（multipart 上传）一并删除。
   - 2026-11-23：`/{p}/files/*` 遗留文件处理器（22 路由，含 `page`/`trash_shell`/`quotas_shell` 壳页与 `tree`）、
-    `/{p}/files/api/*` 308 兼容；JSON 全收口到 `/ui/v1/files/*`，页面改壳页回落（C12 收口）。
+    `/{p}/files/api/*` 308 兼容；JSON 全收口到 `/ui/v1/files/*`，页面改壳页回落。
   - 2026-11-24：`/{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}`、`/{p}/jobs/{id}/logs`、
     `/{p}/settings/audit`（收编为 `/{p}/tasks/scheduled`、`/{p}/tasks/jobs`、`/{p}/tasks/audit`；SSE 同步迁到
     `/{p}/tasks/jobs/{id}/logs/stream`）。
