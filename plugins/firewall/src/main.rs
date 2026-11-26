@@ -860,6 +860,10 @@ fn h_f2b_uninstall(p: &Plugin) -> Result<Value, RpcError> {
     // 下次装上时又带着旧配置回来。托管文件随包一起清掉，宿主自己的 jail 不受影响。
     let _ = exec_any(p, APT_GET, &["purge", "-y", "fail2ban"], None, 900);
     let _ = exec_any(p, RM, &["-f", &managed_defaults_path()], None, 30);
+    // dpkg 只在目录为空时删目录，而 purge 跑的时候托管文件还在 → `/etc/fail2ban/jail.d`
+    // 会被留下（2026-11-26 上机实测：`/etc/fail2ban` 只剩空 `jail.d/`）。`rm -d` 只删**空**
+    // 目录，宿主自己的 jail 文件还在就报错跳过——不留空壳，也不误删宿主文件。
+    let _ = exec_any(p, RM, &["-df", JAIL_DIR, "/etc/fail2ban"], None, 30);
     f2b_probe_invalidate();
     Ok(json!({ "state": "missing", "removed": true }))
 }
