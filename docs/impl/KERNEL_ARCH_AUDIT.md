@@ -20,7 +20,7 @@
 | 2 职责边界 | **主线清楚，靠命名与注释维持** | `app` 自述「不含表现层」；`/ui/v1` 行装配读 `app/src/views/*`，模板与 DTO 各自映射；`web` 不再有 `state` 别名，`skiff_app::` 出现在调用点 |
 | 3 依赖关系 | **无环、无 feature 分叉** | 依赖表与能力面分布表见 `docs/sections/08-engineering.md`、AGENTS.md；`app` 仅对 `tools/skiff-server` 有 dev-dependency（撤包原因端到端用例） |
 | 4 复用性 | **主要重复已收口** | `run_host` → `skiff_host`；权限通配 → `Grant::permits`；路径代数 → `skiff_model::path`；签名协议 → `skiff-sign`（2026-11-21 第四轮补上 `catalog/verify.rs` 这处绕过）；插件生命周期 → `app/commands/plugin.rs`；列表分页 → `ui::paginate`；运行环境容器名 → `sites::runtime_container_name_for`；暂存文件清理 → `commands/incoming.rs`；本地时间格式化 → `web/util.rs::fmt_local_time` |
-| 5 过度设计 | **轻微** | 单实现 trait 均有测试替身或依赖倒置理由；无空转发层（`web/src/menu.rs`、`crate::state` 别名均已删）。2026-11-21 第四轮清掉三处：`sched::Executor`（只有自己测试实现，文档还误称 core 有）、`plugin::FirewallHost`（`dispatch` 明确不使用该参数）、`runtime_catalog` 三个零调用函数；2026-11-26 删 `app/commands/file.rs`（446 行）——文件写路径改为处理器直连 `AdminFs`，动作表的 `command` 写 `admin_fs::<方法>`，登记名由 `admin_fs::COMMANDS` 编译期钉子核对（改名即编译失败） |
+| 5 过度设计 | **轻微** | 单实现 trait 均有测试替身或依赖倒置理由；无空转发层（`web/src/menu.rs`、`crate::state` 别名均已删）。2026-11-21 第四轮清掉三处：`sched::Executor`（只有自己测试实现，文档还误称 core 有）、`plugin::FirewallHost`（`dispatch` 明确不使用该参数）、`runtime_catalog` 三个零调用函数；2026-11-26 删 `app/commands/file.rs`（446 行，文件写路径改为处理器直连 `AdminFs`），同日再删动作表的「领域命令」列——80 条声明里 18 条指向不存在的函数且零消费方，表回到 `动作/资源/权限/危险` 四列 |
 | 6 与 UI 解耦 | **读模型已下沉，展示属性仍在 app** | `app/src/views/*` 是 SSR/JSON 共用读模型，并预拼部分中文展示串（归属口径见 §2 N26）；JSON 侧 DTO 形状独立于模板 |
 | 7 健壮性 | **整体强** | 审计改同步写库 + 失败落盘兜底；`systemd-run` 超时清单元；`systemctl restart docker` 20s 总预算；`nginx -t` 10s 上限 + Drop 守卫；loopback 旁路不采信客户端身份头（2026-11-21 第四轮修复） |
 
