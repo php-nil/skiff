@@ -15,22 +15,6 @@ use skiff_model::ContainerSpec;
 use super::Actor;
 use crate::AppState;
 
-/// 命令名（与 `actions` 表里的 `command` 后缀一一对应），供漂移测试使用。
-pub const NAMES: &[&str] = &[
-    "container_create",
-    "container_update",
-    "container_action",
-    "image_pull",
-    "image_remove",
-    "network_create",
-    "network_remove",
-    "volume_create",
-    "volume_remove",
-    "compose_up",
-    "compose_down",
-    "compose_project_action",
-];
-
 /// 命令错误：与 `SiteError` 同形，由传输层映射到 HTTP 状态与文案。
 #[derive(Debug, Clone)]
 pub enum DockerCommandError {

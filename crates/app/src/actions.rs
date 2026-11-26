@@ -1,18 +1,17 @@
-//! 动作注册表：**动作 → 资源 → 权限 → 领域命令** 的唯一声明处。
+//! 动作注册表：**动作 → 资源 → 权限** 的唯一声明处。
 //!
 //! 为什么需要它：旧 UI 里「哪个角色能做什么」散落在 `require_admin`、`policy.check`、
 //! `AdminUser` 提取器和 `user.can` 四处；SDUI 的动作端点还需要同一份答案来生成
 //! 「可见动作」与执行前校验。把它们收成一张表后：
 //!
-//! - 新增写路径只在这里登记一次，权限与命令名同时确定；
+//! - 新增写路径只在这里登记一次，资源与权限同时确定；
 //! - `crates/web` 的 `authz::authorize` 直接查表，不再各自手写角色判断；
 //! - 一致性由单测守护：动作 id 唯一、Docker 动作与 `Verb::permission` 对齐、
 //!   动作 × 角色矩阵与 `RoleExt::can` 一致。
 //!
-//! 这里**只有声明**：不做 I/O、不调用命令、不渲染。`command` 是领域命令的稳定
-//! 名称（`模块::函数`），供后续动作端点分发与审计映射使用，不参与编译期绑定。
-//! 文件组是例外：文件写路径没有命令层，名字直接指向 `AdminFs` 方法，由
-//! `admin_fs::COMMANDS` 的编译期钉子保证「登记名 = 真实方法」。
+//! 这里**只有声明**：不做 I/O、不调用命令、不渲染。**不登记「哪条命令服务这个动作」**：
+//! 设置 / Web / 作业三组的实现在 handler 里、没有命令层，硬填一列字符串只会变成假声明
+//! 与两张自说自话的清单；真要做按名字分发时，按资源组做「类型 → 函数」的编译期绑定。
 //!
 //! **勿按「死代码」处理**：容器/镜像/网络/卷/Compose（16 条）与插件（5 条）
 //! 目前**运行期没有调用方**——容器动作走 `policy.check` + `Verb`，插件写路径走
@@ -87,13 +86,11 @@ impl fmt::Display for Action {
 #[derive(Debug, Clone, Copy)]
 pub struct ActionSpec {
     pub action: Action,
-    /// 稳定 id；与 `action.id()` 相同，落表是为了让声明本身可直接序列化。
+    /// 稳定 id；与 `action.id()` 相同，落表让声明自身可读、可直接打印。
     pub id: &'static str,
     pub resource: Resource,
     /// `None` 表示「只需登录」，用于用户级偏好等无特权动作。
     pub permission: Option<Permission>,
-    /// 领域命令的稳定名称（`模块::函数`），不参与编译期绑定。
-    pub command: &'static str,
     /// 危险或不可逆动作：供确认流程与审计分级使用，不替代后端校验。
     pub dangerous: bool,
 }
@@ -109,7 +106,7 @@ impl ActionSpec {
 }
 
 macro_rules! action_table {
-    ($( $name:ident = $id:literal : $resource:ident, $permission:expr, $command:literal, $dangerous:literal ; )*) => {
+    ($( $name:ident = $id:literal : $resource:ident, $permission:expr, $dangerous:literal ; )*) => {
         $(
             pub const $name: Action = Action::new($id);
         )*
@@ -122,7 +119,6 @@ macro_rules! action_table {
                     id: $id,
                     resource: Resource::$resource,
                     permission: $permission,
-                    command: $command,
                     dangerous: $dangerous,
                 },
             )*
@@ -132,105 +128,104 @@ macro_rules! action_table {
 
 action_table! {
     // ---- 站点（Admin：建站、改配置、域名、SSL、备份、删除）----
-    SITE_CREATE = "site.create": Site, Some(Permission::Admin), "commands::site::create", false;
-    SITE_BATCH_CREATE = "site.batch_create": Site, Some(Permission::Admin), "commands::site::batch", false;
-    SITE_SAVE_CONFIG = "site.save_config": Site, Some(Permission::Admin), "commands::site::save_config", false;
-    SITE_DELETE = "site.delete": Site, Some(Permission::Admin), "commands::site::delete", true;
-    SITE_ACTION = "site.action": Site, Some(Permission::Admin), "commands::site::power", false;
-    SITE_SET_DEFAULT = "site.set_default": Site, Some(Permission::Admin), "commands::site::set_default", false;
-    SITE_UPDATE_DOMAINS = "site.update_domains": Site, Some(Permission::Admin), "commands::site::update_domains", false;
-    SITE_SSL = "site.ssl": Site, Some(Permission::Admin), "commands::site::ssl", false;
-    SITE_SET_BACKUP = "site.set_backup": Site, Some(Permission::Admin), "commands::site::backup", false;
+    SITE_CREATE = "site.create": Site, Some(Permission::Admin), false;
+    SITE_BATCH_CREATE = "site.batch_create": Site, Some(Permission::Admin), false;
+    SITE_SAVE_CONFIG = "site.save_config": Site, Some(Permission::Admin), false;
+    SITE_DELETE = "site.delete": Site, Some(Permission::Admin), true;
+    SITE_ACTION = "site.action": Site, Some(Permission::Admin), false;
+    SITE_SET_DEFAULT = "site.set_default": Site, Some(Permission::Admin), false;
+    SITE_UPDATE_DOMAINS = "site.update_domains": Site, Some(Permission::Admin), false;
+    SITE_SSL = "site.ssl": Site, Some(Permission::Admin), false;
+    SITE_SET_BACKUP = "site.set_backup": Site, Some(Permission::Admin), false;
     // 恢复会覆盖站点目录，与删除同档：破坏性动作必须在动作表里显式标记。
-    SITE_RESTORE = "site.restore": Site, Some(Permission::Admin), "commands::site::restore", true;
-    SITE_SET_POLICY = "site.set_policy": Site, Some(Permission::Admin), "commands::site::set_policy", false;
+    SITE_RESTORE = "site.restore": Site, Some(Permission::Admin), true;
+    SITE_SET_POLICY = "site.set_policy": Site, Some(Permission::Admin), false;
 
     // ---- 运行环境（Admin：安装、克隆、扩缩、配置、扩展、探测）----
-    RUNTIME_CREATE = "runtime.create": Runtime, Some(Permission::Admin), "commands::runtime::create", false;
-    RUNTIME_SAVE_IMAGES = "runtime.save_images": Runtime, Some(Permission::Admin), "commands::runtime::save_images", false;
-    RUNTIME_SAVE_CONFIG = "runtime.save_config": Runtime, Some(Permission::Admin), "commands::runtime::save_config", false;
-    RUNTIME_SAVE_NODE_CONFIG = "runtime.save_node_config": Runtime, Some(Permission::Admin), "commands::runtime::save_node_config", false;
-    RUNTIME_SAVE_CONFIG_FILE = "runtime.save_config_file": Runtime, Some(Permission::Admin), "commands::runtime::save_config_file", false;
-    RUNTIME_SAVE_PORT = "runtime.save_port": Runtime, Some(Permission::Admin), "commands::runtime::save_port", false;
-    RUNTIME_SAVE_PUBLISH = "runtime.save_publish": Runtime, Some(Permission::Admin), "commands::runtime::save_publish", false;
-    RUNTIME_CLONE = "runtime.clone": Runtime, Some(Permission::Admin), "commands::runtime::clone", false;
-    RUNTIME_ACTION = "runtime.action": Runtime, Some(Permission::Admin), "commands::runtime::action", false;
-    RUNTIME_SAVE_EXTENSIONS = "runtime.save_extensions": Runtime, Some(Permission::Admin), "commands::runtime::save_extensions", false;
-    RUNTIME_INSTALL_EXTENSION = "runtime.install_extension": Runtime, Some(Permission::Admin), "commands::runtime::install_extension", false;
-    RUNTIME_UNINSTALL_EXTENSION = "runtime.uninstall_extension": Runtime, Some(Permission::Admin), "commands::runtime::uninstall_extension", false;
-    RUNTIME_BATCH_EXTENSIONS = "runtime.batch_extensions": Runtime, Some(Permission::Admin), "commands::runtime::batch_extensions", false;
-    RUNTIME_INSTALL_PECL = "runtime.install_pecl": Runtime, Some(Permission::Admin), "commands::runtime::install_pecl", false;
-    RUNTIME_PROBE = "runtime.probe": Runtime, Some(Permission::Admin), "commands::runtime::probe", false;
-    RUNTIME_UNBIND_SITE = "runtime.unbind_site": Runtime, Some(Permission::Admin), "commands::runtime::unbind_site", false;
+    RUNTIME_CREATE = "runtime.create": Runtime, Some(Permission::Admin), false;
+    RUNTIME_SAVE_IMAGES = "runtime.save_images": Runtime, Some(Permission::Admin), false;
+    RUNTIME_SAVE_CONFIG = "runtime.save_config": Runtime, Some(Permission::Admin), false;
+    RUNTIME_SAVE_NODE_CONFIG = "runtime.save_node_config": Runtime, Some(Permission::Admin), false;
+    RUNTIME_SAVE_CONFIG_FILE = "runtime.save_config_file": Runtime, Some(Permission::Admin), false;
+    RUNTIME_SAVE_PORT = "runtime.save_port": Runtime, Some(Permission::Admin), false;
+    RUNTIME_SAVE_PUBLISH = "runtime.save_publish": Runtime, Some(Permission::Admin), false;
+    RUNTIME_CLONE = "runtime.clone": Runtime, Some(Permission::Admin), false;
+    RUNTIME_ACTION = "runtime.action": Runtime, Some(Permission::Admin), false;
+    RUNTIME_SAVE_EXTENSIONS = "runtime.save_extensions": Runtime, Some(Permission::Admin), false;
+    RUNTIME_INSTALL_EXTENSION = "runtime.install_extension": Runtime, Some(Permission::Admin), false;
+    RUNTIME_UNINSTALL_EXTENSION = "runtime.uninstall_extension": Runtime, Some(Permission::Admin), false;
+    RUNTIME_BATCH_EXTENSIONS = "runtime.batch_extensions": Runtime, Some(Permission::Admin), false;
+    RUNTIME_INSTALL_PECL = "runtime.install_pecl": Runtime, Some(Permission::Admin), false;
+    RUNTIME_PROBE = "runtime.probe": Runtime, Some(Permission::Admin), false;
+    RUNTIME_UNBIND_SITE = "runtime.unbind_site": Runtime, Some(Permission::Admin), false;
 
     // ---- 容器与 Docker 资源（权限来自 `Verb::permission`，由单测对齐）----
-    CONTAINER_CREATE = "container.create": Container, Some(Permission::DockerLifecycle), "commands::docker::container_create", false;
-    CONTAINER_UPDATE = "container.update": Container, Some(Permission::DockerLifecycle), "commands::docker::container_update", false;
-    CONTAINER_START = "container.start": Container, Some(Permission::DockerOperate), "commands::docker::container_action", false;
-    CONTAINER_STOP = "container.stop": Container, Some(Permission::DockerOperate), "commands::docker::container_action", false;
-    CONTAINER_RESTART = "container.restart": Container, Some(Permission::DockerOperate), "commands::docker::container_action", false;
-    CONTAINER_KILL = "container.kill": Container, Some(Permission::DockerOperate), "commands::docker::container_action", false;
-    CONTAINER_REMOVE = "container.remove": Container, Some(Permission::DockerLifecycle), "commands::docker::container_action", true;
+    CONTAINER_CREATE = "container.create": Container, Some(Permission::DockerLifecycle), false;
+    CONTAINER_UPDATE = "container.update": Container, Some(Permission::DockerLifecycle), false;
+    CONTAINER_START = "container.start": Container, Some(Permission::DockerOperate), false;
+    CONTAINER_STOP = "container.stop": Container, Some(Permission::DockerOperate), false;
+    CONTAINER_RESTART = "container.restart": Container, Some(Permission::DockerOperate), false;
+    CONTAINER_KILL = "container.kill": Container, Some(Permission::DockerOperate), false;
+    CONTAINER_REMOVE = "container.remove": Container, Some(Permission::DockerLifecycle), true;
     // exec 是 WS 流式通道，持票据直连 hijack，不经命令层。
-    CONTAINER_EXEC = "container.exec": Container, Some(Permission::DockerExec), "docker::execute", true;
-    IMAGE_PULL = "image.pull": Image, Some(Permission::DockerLifecycle), "commands::docker::image_pull", false;
-    IMAGE_REMOVE = "image.remove": Image, Some(Permission::DockerLifecycle), "commands::docker::image_remove", true;
-    NETWORK_CREATE = "network.create": Network, Some(Permission::DockerLifecycle), "commands::docker::network_create", false;
-    NETWORK_REMOVE = "network.remove": Network, Some(Permission::DockerLifecycle), "commands::docker::network_remove", true;
-    VOLUME_CREATE = "volume.create": Volume, Some(Permission::DockerLifecycle), "commands::docker::volume_create", false;
-    VOLUME_REMOVE = "volume.remove": Volume, Some(Permission::DockerLifecycle), "commands::docker::volume_remove", true;
-    COMPOSE_UP = "compose.up": Compose, Some(Permission::DockerLifecycle), "commands::docker::compose_up", false;
-    COMPOSE_DOWN = "compose.down": Compose, Some(Permission::DockerLifecycle), "commands::docker::compose_down", true;
+    CONTAINER_EXEC = "container.exec": Container, Some(Permission::DockerExec), true;
+    IMAGE_PULL = "image.pull": Image, Some(Permission::DockerLifecycle), false;
+    IMAGE_REMOVE = "image.remove": Image, Some(Permission::DockerLifecycle), true;
+    NETWORK_CREATE = "network.create": Network, Some(Permission::DockerLifecycle), false;
+    NETWORK_REMOVE = "network.remove": Network, Some(Permission::DockerLifecycle), true;
+    VOLUME_CREATE = "volume.create": Volume, Some(Permission::DockerLifecycle), false;
+    VOLUME_REMOVE = "volume.remove": Volume, Some(Permission::DockerLifecycle), true;
+    COMPOSE_UP = "compose.up": Compose, Some(Permission::DockerLifecycle), false;
+    COMPOSE_DOWN = "compose.down": Compose, Some(Permission::DockerLifecycle), true;
 
-    // ---- 文件管理（Admin：全部经 `skiff-fs` 管理员客户端；无独立命令层，
-    //      名字直接指向 `AdminFs` 方法，由 `admin_fs::COMMANDS` 编译期核对）----
-    FILE_BROWSE = "file.browse": File, Some(Permission::Admin), "admin_fs::list", false;
-    FILE_READ = "file.read": File, Some(Permission::Admin), "admin_fs::read", false;
-    FILE_WRITE = "file.write": File, Some(Permission::Admin), "admin_fs::write", false;
-    FILE_MKDIR = "file.mkdir": File, Some(Permission::Admin), "admin_fs::mkdir", false;
-    FILE_RENAME = "file.rename": File, Some(Permission::Admin), "admin_fs::rename", false;
-    FILE_REMOVE = "file.remove": File, Some(Permission::Admin), "admin_fs::remove", true;
-    FILE_COPY = "file.copy": File, Some(Permission::Admin), "admin_fs::copy", false;
-    FILE_CHMOD = "file.chmod": File, Some(Permission::Admin), "admin_fs::chmod", false;
-    FILE_CHOWN = "file.chown": File, Some(Permission::Admin), "admin_fs::chown", false;
-    FILE_ARCHIVE = "file.archive": File, Some(Permission::Admin), "admin_fs::archive", false;
-    FILE_EXTRACT = "file.extract": File, Some(Permission::Admin), "admin_fs::extract", true;
-    FILE_UPLOAD = "file.upload": File, Some(Permission::Admin), "admin_fs::upload_chunk", false;
-    FILE_TRASH_READ = "file.trash_read": File, Some(Permission::Admin), "admin_fs::trash_list", false;
-    FILE_TRASH_RESTORE = "file.trash_restore": File, Some(Permission::Admin), "admin_fs::trash_restore", false;
-    FILE_TRASH_PURGE = "file.trash_purge": File, Some(Permission::Admin), "admin_fs::trash_purge", true;
-    FILE_TRASH_CLEAR = "file.trash_clear": File, Some(Permission::Admin), "admin_fs::trash_clear", true;
-    FILE_QUOTA_READ = "file.quota_read": File, Some(Permission::Admin), "admin_fs::quota_list", false;
-    FILE_QUOTA_SET = "file.quota_set": File, Some(Permission::Admin), "admin_fs::quota_set", false;
-    FILE_QUOTA_CANCEL = "file.quota_cancel": File, Some(Permission::Admin), "admin_fs::quota_cancel", false;
-    FILE_QUOTA_SCAN = "file.quota_scan": File, Some(Permission::Admin), "admin_fs::quota_scan", false;
+    // ---- 文件管理（Admin：全部经 `skiff-fs` 管理员客户端，无独立命令层）----
+    FILE_BROWSE = "file.browse": File, Some(Permission::Admin), false;
+    FILE_READ = "file.read": File, Some(Permission::Admin), false;
+    FILE_WRITE = "file.write": File, Some(Permission::Admin), false;
+    FILE_MKDIR = "file.mkdir": File, Some(Permission::Admin), false;
+    FILE_RENAME = "file.rename": File, Some(Permission::Admin), false;
+    FILE_REMOVE = "file.remove": File, Some(Permission::Admin), true;
+    FILE_COPY = "file.copy": File, Some(Permission::Admin), false;
+    FILE_CHMOD = "file.chmod": File, Some(Permission::Admin), false;
+    FILE_CHOWN = "file.chown": File, Some(Permission::Admin), false;
+    FILE_ARCHIVE = "file.archive": File, Some(Permission::Admin), false;
+    FILE_EXTRACT = "file.extract": File, Some(Permission::Admin), true;
+    FILE_UPLOAD = "file.upload": File, Some(Permission::Admin), false;
+    FILE_TRASH_READ = "file.trash_read": File, Some(Permission::Admin), false;
+    FILE_TRASH_RESTORE = "file.trash_restore": File, Some(Permission::Admin), false;
+    FILE_TRASH_PURGE = "file.trash_purge": File, Some(Permission::Admin), true;
+    FILE_TRASH_CLEAR = "file.trash_clear": File, Some(Permission::Admin), true;
+    FILE_QUOTA_READ = "file.quota_read": File, Some(Permission::Admin), false;
+    FILE_QUOTA_SET = "file.quota_set": File, Some(Permission::Admin), false;
+    FILE_QUOTA_CANCEL = "file.quota_cancel": File, Some(Permission::Admin), false;
+    FILE_QUOTA_SCAN = "file.quota_scan": File, Some(Permission::Admin), false;
 
     // ---- 定时任务（Admin：启停、立即执行、删除）----
-    TASK_TOGGLE = "task.toggle": Task, Some(Permission::Admin), "tasks::toggle", false;
-    TASK_RUN = "task.run": Task, Some(Permission::Admin), "tasks::run", false;
-    TASK_DELETE = "task.delete": Task, Some(Permission::Admin), "tasks::delete", true;
+    TASK_TOGGLE = "task.toggle": Task, Some(Permission::Admin), false;
+    TASK_RUN = "task.run": Task, Some(Permission::Admin), false;
+    TASK_DELETE = "task.delete": Task, Some(Permission::Admin), true;
 
     // ---- 插件（PluginManage：安装、确认、启停、移除、RPC）----
-    PLUGIN_INSTALL = "plugin.install": Plugin, Some(Permission::PluginManage), "plugin::install", false;
-    PLUGIN_CONFIRM = "plugin.confirm": Plugin, Some(Permission::PluginManage), "plugin::confirm", false;
-    PLUGIN_TOGGLE = "plugin.toggle": Plugin, Some(Permission::PluginManage), "plugin::toggle", false;
-    PLUGIN_REMOVE = "plugin.remove": Plugin, Some(Permission::PluginManage), "plugin::uninstall", true;
-    PLUGIN_RPC = "plugin.rpc": Plugin, Some(Permission::PluginManage), "plugin::rpc", false;
+    PLUGIN_INSTALL = "plugin.install": Plugin, Some(Permission::PluginManage), false;
+    PLUGIN_CONFIRM = "plugin.confirm": Plugin, Some(Permission::PluginManage), false;
+    PLUGIN_TOGGLE = "plugin.toggle": Plugin, Some(Permission::PluginManage), false;
+    PLUGIN_REMOVE = "plugin.remove": Plugin, Some(Permission::PluginManage), true;
+    PLUGIN_RPC = "plugin.rpc": Plugin, Some(Permission::PluginManage), false;
 
     // ---- 设置（Admin；菜单偏好属用户级，不登记为特权动作）----
-    SETTINGS_PANEL_UPDATE = "settings.panel_update": Settings, Some(Permission::Admin), "panel_settings::update", false;
-    SETTINGS_KEY_IMPORT = "settings.key_import": Settings, Some(Permission::Admin), "panel_settings::import_key", false;
-    SETTINGS_KEY_REMOVE = "settings.key_remove": Settings, Some(Permission::Admin), "panel_settings::remove_key", true;
-    SETTINGS_DOCKER_DAEMON_SAVE = "settings.docker_daemon_save": Settings, Some(Permission::Admin), "docker_daemon::save", true;
+    SETTINGS_PANEL_UPDATE = "settings.panel_update": Settings, Some(Permission::Admin), false;
+    SETTINGS_KEY_IMPORT = "settings.key_import": Settings, Some(Permission::Admin), false;
+    SETTINGS_KEY_REMOVE = "settings.key_remove": Settings, Some(Permission::Admin), true;
+    SETTINGS_DOCKER_DAEMON_SAVE = "settings.docker_daemon_save": Settings, Some(Permission::Admin), true;
 
     // ---- 网站运行环境（nginx 主配置/参数）----
-    WEB_CONFIG_MAIN_SAVE = "web.config_main_save": Web, Some(Permission::Admin), "nginx::save_main", false;
-    WEB_CONFIG_PARAMS_SAVE = "web.config_params_save": Web, Some(Permission::Admin), "nginx::save_params", false;
+    WEB_CONFIG_MAIN_SAVE = "web.config_main_save": Web, Some(Permission::Admin), false;
+    WEB_CONFIG_PARAMS_SAVE = "web.config_params_save": Web, Some(Permission::Admin), false;
 
     // ---- 作业（Admin：取消、重试、读日志）----
-    JOB_CANCEL = "job.cancel": Job, Some(Permission::Admin), "jobs::cancel", false;
-    JOB_RETRY = "job.retry": Job, Some(Permission::Admin), "jobs::retry", false;
-    JOB_LOGS = "job.logs": Job, Some(Permission::Admin), "jobs::logs", false;
+    JOB_CANCEL = "job.cancel": Job, Some(Permission::Admin), false;
+    JOB_RETRY = "job.retry": Job, Some(Permission::Admin), false;
+    JOB_LOGS = "job.logs": Job, Some(Permission::Admin), false;
 }
 
 /// 查表。`Action` 只能由本模块常量构造，未登记属于编码错误。
@@ -279,15 +274,9 @@ mod tests {
     }
 
     #[test]
-    fn every_action_has_a_command_and_lookup_roundtrips() {
+    fn every_action_has_an_id_and_lookup_roundtrips() {
         for entry in ACTIONS {
-            assert!(!entry.command.is_empty(), "{} 缺少领域命令", entry.id);
-            assert!(
-                entry.command.contains("::"),
-                "{} 的命令应写成 模块::函数：{}",
-                entry.id,
-                entry.command
-            );
+            assert!(!entry.id.is_empty(), "{} 缺少动作 id", entry.id);
             assert_eq!(spec(entry.action).id, entry.id);
             assert_eq!(find(entry.id).map(|s| s.action), Some(entry.action));
         }
@@ -413,66 +402,6 @@ mod tests {
         ] {
             assert!(!resource.as_str().is_empty());
             assert_eq!(resource.as_str(), resource.as_str().to_ascii_lowercase());
-        }
-    }
-
-    #[test]
-    fn converted_groups_point_at_registered_commands() {
-        // 已完成 P1 命令拆分的资源组：动作登记的命令名必须真实存在于对应命令模块。
-        // 文件组没有命令模块，名字指向 `AdminFs` 方法（编译期已由 `COMMANDS` 的钉子核对）。
-        for (resource, prefix, names) in [
-            (
-                Resource::Site,
-                "commands::site::",
-                crate::commands::site::NAMES,
-            ),
-            (
-                Resource::Runtime,
-                "commands::runtime::",
-                crate::commands::runtime::NAMES,
-            ),
-            (
-                Resource::Container,
-                "commands::docker::",
-                crate::commands::docker::NAMES,
-            ),
-            (
-                Resource::Image,
-                "commands::docker::",
-                crate::commands::docker::NAMES,
-            ),
-            (
-                Resource::Network,
-                "commands::docker::",
-                crate::commands::docker::NAMES,
-            ),
-            (
-                Resource::Volume,
-                "commands::docker::",
-                crate::commands::docker::NAMES,
-            ),
-            (
-                Resource::Compose,
-                "commands::docker::",
-                crate::commands::docker::NAMES,
-            ),
-            (Resource::File, "admin_fs::", crate::admin_fs::COMMANDS),
-        ] {
-            for spec in for_resource(resource) {
-                // exec 走 WS 流式通道，没有命令层入口（见动作表注释）。
-                if spec.command == "docker::execute" {
-                    continue;
-                }
-                let name = spec.command.strip_prefix(prefix).unwrap_or_else(|| {
-                    panic!("{} 的命令未指向 {prefix}：{}", spec.id, spec.command)
-                });
-                assert!(
-                    names.contains(&name),
-                    "{} 指向了未登记的命令 {}",
-                    spec.id,
-                    name
-                );
-            }
         }
     }
 

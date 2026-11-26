@@ -14,26 +14,6 @@ use crate::sites::{
 };
 use crate::AppState;
 
-/// 命令名（与 `actions` 表里的 `command` 后缀一一对应），供漂移测试使用。
-pub const NAMES: &[&str] = &[
-    "create",
-    "save_images",
-    "save_config",
-    "save_node_config",
-    "save_config_file",
-    "save_port",
-    "save_publish",
-    "clone",
-    "action",
-    "save_extensions",
-    "install_extension",
-    "uninstall_extension",
-    "batch_extensions",
-    "install_pecl",
-    "probe",
-    "unbind_site",
-];
-
 /// 新建运行环境。`kind` 为空时落 `php`（默认类型），由命令兜底。
 #[derive(Debug, Clone)]
 pub struct CreateRuntime {

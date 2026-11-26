@@ -134,7 +134,7 @@
 | 项 | 位置 | 状态 |
 |---|---|---|
 | 稳定错误码与统一 JSON 形状 | `crates/model/src/error.rs`（`ErrorCode` / `ErrorCategory`）、`crates/web/src/error.rs`（`ErrorEnvelope`） | 已落地；HTML 页行为与状态码不变，`/api/v1` 改用统一载荷 |
-| 动作注册表（动作 → 权限 → 领域命令） | `crates/app/src/actions.rs` | 已落地；覆盖站点、运行时、容器/Docker 资源、文件、任务、插件、设置、网站配置、作业 |
+| 动作注册表（动作 → 资源 → 权限） | `crates/app/src/actions.rs` | 已落地；覆盖站点、运行时、容器/Docker 资源、文件、任务、插件、设置、网站配置、作业。不登记「哪条命令服务这个动作」——设置 / Web / 作业三组没有命令层（实现在 handler），该列曾是假声明，2026-11-26 整体删除 |
 | 授权唯一入口 | `crates/web/src/authz.rs` | 已落地；站点/运行时/文件/任务/作业/网站配置写路径改走 `authorize`，读页与提取器守门路径保持不变 |
 | 一致性测试 | `crates/app/src/actions.rs`、`crates/web/src/authz.rs`、`crates/web/src/error.rs` | 动作 × 角色矩阵、错误码映射、注册表与旧 `require_admin`/提取器口径对齐 |
 

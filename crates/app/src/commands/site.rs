@@ -1,4 +1,4 @@
-//! 站点领域命令（对应 `actions::Resource::Site` 的动作，清单见 [`NAMES`]）。
+//! 站点领域命令（对应 `actions::Resource::Site` 的 11 个动作）。
 //!
 //! 入参 DTO 只包含业务输入与 [`Actor`]；`handler` 负责表单解析、CSRF、文案与跳转，
 //! 这里负责语义校验、执行与审计。错误统一用 [`SiteError`] 表达，由传输层映射。
@@ -15,21 +15,6 @@ use crate::sites::{
 };
 use crate::tasks::TaskService;
 use crate::AppState;
-
-/// 命令名（与 `actions` 表里的 `command` 后缀一一对应），供漂移测试使用。
-pub const NAMES: &[&str] = &[
-    "create",
-    "batch",
-    "save_config",
-    "delete",
-    "power",
-    "set_default",
-    "update_domains",
-    "ssl",
-    "backup",
-    "restore",
-    "set_policy",
-];
 
 /// 新建站点。`domain` / `root_dir` 是**原始输入**，规范化与路径推导在命令内完成。
 #[derive(Debug, Clone)]
