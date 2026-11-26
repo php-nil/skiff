@@ -11,6 +11,7 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use skiff_app::db_async;
 use skiff_app::AppState;
@@ -18,26 +19,113 @@ use skiff_docker::{Actor, Verb};
 
 use skiff_plugin::capability as cap;
 
-// 能力面 handler 的薄适配层：把 axum 的 `State<Arc<AppState>>` 收敛成
-// `&impl CapabilityHost`。能力面的实现因此不必依赖 `skiff-app`——否则
-// `skiff-app → skiff-plugin → skiff-app` 成环。
+// ---- HTTP 形状的唯一归属地 -------------------------------------------------
+//
+// `skiff-plugin` 的能力面只回「状态码数字 + 消息」（`CapError`），不碰 axum：
+// 请求体解析、`Response` 组装与状态码映射都在本文件。口径见
+// `docs/sections/08-engineering.md` 的「能力面 × 实现位置」表。
+
+/// 已通过双重鉴权的插件 id（`plugin_auth` 中间件插入 request extension）。
+pub(super) fn plugin_of(req: &Request<Body>) -> String {
+    req.extensions()
+        .get::<cap::PluginId>()
+        .map(|p| p.0.clone())
+        .unwrap_or_default()
+}
+
+/// 读 JSON 请求体；解析失败按 `Null` 处理（缺字段由各能力面自己判）。
+pub(super) async fn read_json(req: Request<Body>) -> Value {
+    let bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return Value::Null,
+    };
+    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+/// 能力面错误 → 响应：状态码由 `plugin` 给出数字，这里只做映射与组装。
+fn cap_response(e: cap::CapError) -> Response {
+    (status_of(e.status()), e.message().to_string()).into_response()
+}
+
+/// 能力面给的状态码数字 → axum 状态码。未登记的码按 500，不伪装成功。
+pub(super) fn status_of(code: u16) -> StatusCode {
+    StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+// 6 个 fs handler 都是「取插件 id → 解析请求体 → 调 `skiff_plugin` 的判定与编排
+// → 组装响应」。`*_impl` 与 axum handler 分开一层：`kernel/tests.rs` 直接调实现，
+// 不必构造 `State`；宿主上下文（`&AppState`）由 `CapabilityHost` 注入，`plugin`
+// 因此不必依赖 `skiff-app`——否则 `skiff-app → skiff-plugin → skiff-app` 成环。
 pub(super) async fn fs_read(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
-    cap::fs_read(&*state, req).await
+    fs_read_impl(&state, req).await
 }
+pub(super) async fn fs_read_impl(state: &AppState, req: Request<Body>) -> Response {
+    let id = plugin_of(&req);
+    let body = read_json(req).await;
+    match cap::fs_read(state, &id, &body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => cap_response(e),
+    }
+}
+
 pub(super) async fn fs_write(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
-    cap::fs_write(&*state, req).await
+    fs_write_impl(&state, req).await
 }
+pub(super) async fn fs_write_impl(state: &AppState, req: Request<Body>) -> Response {
+    let id = plugin_of(&req);
+    let body = read_json(req).await;
+    match cap::fs_write(state, &id, &body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => cap_response(e),
+    }
+}
+
 pub(super) async fn fs_list(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
-    cap::fs_list(&*state, req).await
+    fs_list_impl(&state, req).await
 }
+pub(super) async fn fs_list_impl(state: &AppState, req: Request<Body>) -> Response {
+    let id = plugin_of(&req);
+    let body = read_json(req).await;
+    match cap::fs_list(state, &id, &body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => cap_response(e),
+    }
+}
+
 pub(super) async fn fs_mkdir(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
-    cap::fs_mkdir(&*state, req).await
+    fs_mkdir_impl(&state, req).await
 }
+pub(super) async fn fs_mkdir_impl(state: &AppState, req: Request<Body>) -> Response {
+    let id = plugin_of(&req);
+    let body = read_json(req).await;
+    match cap::fs_mkdir(state, &id, &body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => cap_response(e),
+    }
+}
+
 pub(super) async fn fs_remove(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
-    cap::fs_remove(&*state, req).await
+    fs_remove_impl(&state, req).await
 }
+pub(super) async fn fs_remove_impl(state: &AppState, req: Request<Body>) -> Response {
+    let id = plugin_of(&req);
+    let body = read_json(req).await;
+    match cap::fs_remove(state, &id, &body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => cap_response(e),
+    }
+}
+
 pub(super) async fn fs_rename(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
-    cap::fs_rename(&*state, req).await
+    fs_rename_impl(&state, req).await
+}
+pub(super) async fn fs_rename_impl(state: &AppState, req: Request<Body>) -> Response {
+    let id = plugin_of(&req);
+    let body = read_json(req).await;
+    match cap::fs_rename(state, &id, &body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => cap_response(e),
+    }
 }
 
 pub(super) async fn identity_self(
@@ -175,7 +263,7 @@ pub(super) async fn scheduler_call(
             .into_response();
     }
 
-    let body = cap::read_json(req).await;
+    let body = read_json(req).await;
     let method = body.get("method").and_then(Value::as_str).unwrap_or("");
     let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
     match tasks.capability(&id, method, params).await {
@@ -207,7 +295,7 @@ pub(super) async fn docker_call(
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let body = cap::read_json(req).await;
+    let body = read_json(req).await;
     let verb_str = body.get("verb").and_then(|v| v.as_str()).unwrap_or("");
     let Some(verb) = Verb::parse(verb_str) else {
         return (StatusCode::FORBIDDEN, "动词不在白名单").into_response();

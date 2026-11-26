@@ -12,7 +12,7 @@ use skiff_plugin::{Supervisor, SupervisorConfig};
 use skiff_store::{Db, Grant, PluginRecord};
 use tower::ServiceExt;
 
-use skiff_plugin::capability::{self as cap, PluginId};
+use skiff_plugin::capability::PluginId;
 
 fn test_state(data_dir: std::path::PathBuf) -> Arc<AppState> {
     let db = Arc::new(Db::open_in_memory().unwrap());
@@ -191,12 +191,12 @@ async fn host_fs_requires_perm_and_path_grant() {
     let id = "com.example.demo";
 
     // 未安装 → 无权限
-    let r = cap::fs_read(&*state, fs_req(id, json!({ "path": abs }))).await;
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": abs }))).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
 
     // 只有 fs:read，没有 path: 授权 → 仍是 403
     seed_plugin(&state, id, &["fs:read"], &[]);
-    let r = cap::fs_read(&*state, fs_req(id, json!({ "path": abs }))).await;
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": abs }))).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
 
     // 补上 path: 授权 → 放行
@@ -206,7 +206,7 @@ async fn host_fs_requires_perm_and_path_grant() {
         &["fs:read"],
         &[&format!("path:{}", root.display())],
     );
-    let r = cap::fs_read(&*state, fs_req(id, json!({ "path": abs }))).await;
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": abs }))).await;
     assert_eq!(r.status(), StatusCode::OK);
     let v = json_body(r).await;
     assert_eq!(v["data"], "server {}");
@@ -224,7 +224,7 @@ async fn host_fs_requires_perm_and_path_grant() {
             &format!("path:{}", tmp.path().display()),
         ],
     );
-    let r = cap::fs_read(&*state, fs_req(id, json!({ "path": db }))).await;
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": db }))).await;
     assert_eq!(
         r.status(),
         StatusCode::FORBIDDEN,
@@ -251,14 +251,15 @@ async fn host_fs_write_is_confined_and_roots_are_protected() {
     );
 
     let target = root.join("new.conf").display().to_string();
-    let r = cap::fs_write(&*state, fs_req(id, json!({ "path": target, "data": "x" }))).await;
+    let r =
+        capability::fs_write_impl(&state, fs_req(id, json!({ "path": target, "data": "x" }))).await;
     assert_eq!(r.status(), StatusCode::OK);
     assert!(root.join("new.conf").exists());
 
     // 根外写入必须被拒（且不落盘）
     let outside = tmp.path().join("evil.conf");
-    let r = cap::fs_write(
-        &*state,
+    let r = capability::fs_write_impl(
+        &state,
         fs_req(
             id,
             json!({ "path": outside.display().to_string(), "data": "x" }),
@@ -270,23 +271,23 @@ async fn host_fs_write_is_confined_and_roots_are_protected() {
 
     // 建目录
     let sub = root.join("sub");
-    let r = cap::fs_mkdir(
-        &*state,
+    let r = capability::fs_mkdir_impl(
+        &state,
         fs_req(id, json!({ "path": sub.display().to_string() })),
     )
     .await;
     assert_eq!(r.status(), StatusCode::OK);
 
     // 删授权根本身 → 拒；删根内文件 → 放行
-    let r = cap::fs_remove(
-        &*state,
+    let r = capability::fs_remove_impl(
+        &state,
         fs_req(id, json!({ "path": root.display().to_string() })),
     )
     .await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert!(root.exists(), "授权根不能被插件删掉");
 
-    let r = cap::fs_remove(&*state, fs_req(id, json!({ "path": target }))).await;
+    let r = capability::fs_remove_impl(&state, fs_req(id, json!({ "path": target }))).await;
     assert_eq!(r.status(), StatusCode::OK);
     assert!(!root.join("new.conf").exists());
 
@@ -301,8 +302,8 @@ async fn host_fs_write_is_confined_and_roots_are_protected() {
         ],
     );
     let pwn = data.join("pwn.txt");
-    let r = cap::fs_write(
-        &*state,
+    let r = capability::fs_write_impl(
+        &state,
         fs_req(
             id,
             json!({ "path": pwn.display().to_string(), "data": "x" }),
@@ -321,19 +322,91 @@ async fn data_dir_roundtrip_still_uses_relative_paths() {
     let id = "com.example.demo";
     seed_plugin(&state, id, &["fs:read", "fs:write"], &[]);
 
-    let r = cap::fs_write(
-        &*state,
+    let r = capability::fs_write_impl(
+        &state,
         fs_req(id, json!({ "path": "notes.json", "data": "{\"a\":1}" })),
     )
     .await;
     assert_eq!(r.status(), StatusCode::OK);
 
-    let r = cap::fs_read(&*state, fs_req(id, json!({ "path": "notes.json" }))).await;
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": "notes.json" }))).await;
     assert_eq!(r.status(), StatusCode::OK);
     let v = json_body(r).await;
     assert_eq!(v["data"], "{\"a\":1}");
 
     // 同一插件对绝对路径没有授权 → 拒
-    let r = cap::fs_read(&*state, fs_req(id, json!({ "path": "/etc/passwd" }))).await;
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": "/etc/passwd" }))).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
+}
+
+// ---- 能力面审计口径 --------------------------------------------------------
+//
+// `action` / `result` 是安全记录（审计按 action 过滤、按 result 认越权），且是
+// 「响应组装层搬去 core」时最容易悄悄改掉的东西——旧用例只断言状态码，这里补齐。
+
+/// 最新一条审计：`(action, result, detail)`。
+fn latest_audit(state: &AppState) -> (String, String, String) {
+    let rows = state.db().recent_audit(1).unwrap();
+    let e = rows.first().expect("应有审计行");
+    (e.action.clone(), e.result.clone(), e.detail.clone())
+}
+
+#[tokio::test]
+async fn fs_capability_audits_action_and_result() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("grant");
+    std::fs::create_dir_all(&root).unwrap();
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let state = test_state(data.clone());
+    let id = "com.example.demo";
+
+    // 1) 缺授权：`fs.read` / deny / 缺少授权
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": "notes.json" }))).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        latest_audit(&state),
+        ("fs.read".into(), "deny".into(), "缺少授权".into())
+    );
+
+    seed_plugin(
+        &state,
+        id,
+        &["fs:read"],
+        &[&format!("path:{}", root.display())],
+    );
+
+    // 2) 授权根内但不存在的文件：`fs.read` / fail（不是 deny）
+    let missing = root.join("missing.conf").display().to_string();
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": missing }))).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let (action, result, _) = latest_audit(&state);
+    assert_eq!((action.as_str(), result.as_str()), ("fs.read", "fail"));
+
+    // 3) 授权根覆盖数据根后读 `skiff.db`：`fs.protected` / deny，优先于普通越权口径
+    std::fs::write(data.join("skiff.db"), b"db").unwrap();
+    seed_plugin(
+        &state,
+        id,
+        &["fs:read"],
+        &[&format!("path:{}", tmp.path().display())],
+    );
+    let db = data.join("skiff.db").display().to_string();
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": db }))).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let (action, result, detail) = latest_audit(&state);
+    assert_eq!((action.as_str(), result.as_str()), ("fs.protected", "deny"));
+    assert!(
+        detail.contains("受保护路径"),
+        "detail 应说明受保护: {detail}"
+    );
+
+    // 4) 成功：`fs.read` / ok，detail 带命中的授权根（定责要能看出哪个根）
+    std::fs::write(root.join("site.conf"), b"server {}").unwrap();
+    let ok_path = root.join("site.conf").display().to_string();
+    let r = capability::fs_read_impl(&state, fs_req(id, json!({ "path": ok_path }))).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let (action, result, detail) = latest_audit(&state);
+    assert_eq!((action.as_str(), result.as_str()), ("fs.read", "ok"));
+    assert!(detail.contains("grant="), "detail 应带授权根: {detail}");
 }

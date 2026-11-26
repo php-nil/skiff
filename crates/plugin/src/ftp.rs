@@ -16,7 +16,6 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use serde_json::json;
@@ -77,29 +76,35 @@ pub struct FtpContext {
     pub sites_root: std::path::PathBuf,
 }
 
-/// 能力面错误。`status` 用 HTTP 语义，内核 handler 直接映射成响应码。
+/// 能力面错误。`status` 只带状态码数字，不引入 HTTP 类型：与 `fsops::FsError`
+/// 同口径，映射成响应由 `crates/core/src/kernel/ftp.rs` 负责。
 #[derive(Debug)]
 pub struct FtpError {
-    pub status: StatusCode,
+    pub status: u16,
     pub message: String,
 }
 
 impl FtpError {
+    /// 越权类（403）在审计里记 `deny` 而不是 `fail`。
+    pub fn is_denied(&self) -> bool {
+        self.status == 403
+    }
+
     pub fn deny(msg: impl Into<String>) -> Self {
         Self {
-            status: StatusCode::FORBIDDEN,
+            status: 403,
             message: msg.into(),
         }
     }
     pub fn unavailable(msg: impl Into<String>) -> Self {
         Self {
-            status: StatusCode::SERVICE_UNAVAILABLE,
+            status: 503,
             message: msg.into(),
         }
     }
     pub fn internal(msg: impl Into<String>) -> Self {
         Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
+            status: 500,
             message: msg.into(),
         }
     }

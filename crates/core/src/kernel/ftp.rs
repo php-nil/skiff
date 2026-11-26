@@ -11,6 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use super::capability::{read_json, status_of};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
@@ -102,7 +103,7 @@ pub(super) async fn ftp_call(State(state): State<Arc<AppState>>, req: Request<Bo
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let body = cap::read_json(req).await;
+    let body = read_json(req).await;
     let method = body
         .get("method")
         .and_then(Value::as_str)
@@ -155,16 +156,12 @@ pub(super) async fn ftp_call(State(state): State<Arc<AppState>>, req: Request<Bo
                 "uds",
                 &format!("ftp.{method}"),
                 "",
-                if e.status == StatusCode::FORBIDDEN {
-                    "deny"
-                } else {
-                    "fail"
-                },
+                if e.is_denied() { "deny" } else { "fail" },
                 &e.message,
             ) {
                 tracing::error!(error = %ae, "ftp 失败审计写入失败");
             }
-            (e.status, e.message).into_response()
+            (status_of(e.status), e.message).into_response()
         }
     }
 }

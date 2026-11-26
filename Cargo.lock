@@ -2040,11 +2040,9 @@ dependencies = [
 name = "skiff-plugin"
 version = "0.1.0"
 dependencies = [
- "axum",
  "base64",
  "chrono",
  "hex",
- "http-body-util",
  "libc",
  "rand 0.8.8",
  "serde",

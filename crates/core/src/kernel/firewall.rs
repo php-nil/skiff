@@ -3,6 +3,10 @@
 //! 判定与命令编排在 `skiff_plugin::firewall`（能力面实现单一来源）；这里只做
 //! 两件内核侧的事：查授权、审计。宿主命令编排已整体迁到插件侧（`plugins/firewall`
 //! 经 exec 能力面提交），本能力面对所有方法统一返回迁移提示。
+//!
+//! **「统一 400」是冻结决定而非欠账**（`docs/plugin/HOST_EXEC_DESIGN.md` §五）：
+//! `CAP_FIREWALL_CALL` 连同 SDK 的 `firewall_call` 一起保留，让旧调用方拿到可读的
+//! 「已迁移」提示。授权与形态判定放在统一拒绝之前，是为了越权调用照样落 `deny` 审计。
 //! 方法清单与动词见 `docs/contract/KERNEL_FIREWALL_CONTRACT.md`。
 
 use std::sync::Arc;
@@ -16,6 +20,7 @@ use serde_json::{json, Value};
 use skiff_app::AppState;
 use skiff_model::Form;
 
+use super::capability::{read_json, status_of};
 use skiff_plugin::capability as cap;
 
 pub(super) async fn firewall_call(
@@ -27,7 +32,7 @@ pub(super) async fn firewall_call(
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let body = cap::read_json(req).await;
+    let body = read_json(req).await;
     let method = body
         .get("method")
         .and_then(Value::as_str)
@@ -89,14 +94,10 @@ pub(super) async fn firewall_call(
                 &state,
                 &id,
                 &format!("firewall.{method}"),
-                if e.status == StatusCode::FORBIDDEN {
-                    "deny"
-                } else {
-                    "fail"
-                },
+                if e.is_denied() { "deny" } else { "fail" },
                 &format!("{}：{}", audit_detail(&method, &params, false), e.message),
             );
-            (e.status, e.message).into_response()
+            (status_of(e.status), e.message).into_response()
         }
     }
 }

@@ -68,7 +68,7 @@ skiff/
 | `cron` | chrono | `store`、`docker`、`web` |
 | `wire` | serde_json | `store`、`docker`、`web` |
 | `docker` | `policy`、`compose`、`model`、bollard | `web`、`core` |
-| `plugin` | `pkgfmt`、`wire`、`store`、`model`（+ `axum`/`http-body-util`：仅能力面 handler 的 HTTP 形状） | `docker`、`web`、`core`、`app` |
+| `plugin` | `pkgfmt`、`wire`、`store`、`model`（不含 HTTP 框架：能力面只回「状态码数字 + 消息」，响应组装在 `core`） | `docker`、`web`、`core`、`app` |
 | `sdk` | `pkgfmt`、`wire` | `store`、`docker`、`web` |
 | `host` | tokio（+ tracing） | `store`、`docker`、`web`、`app`、`plugin` |
 | `fs` | `model`（+ serde / sha2 / 系统调用封装） | `store`、`docker`、`web`、`app` |

@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use super::capability::read_json;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
@@ -301,7 +302,7 @@ pub(super) async fn exec_run(State(state): State<Arc<AppState>>, req: Request<Bo
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let body = cap::read_json(req).await;
+    let body = read_json(req).await;
 
     let (parsed, bin_display, risk) = match pre_check_exec(
         &body,
@@ -436,7 +437,7 @@ pub(super) async fn exec_run_light(
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let body = cap::read_json(req).await;
+    let body = read_json(req).await;
 
     let (parsed, bin_display, risk) = match pre_check_exec(
         &body,
@@ -531,7 +532,7 @@ pub(super) async fn exec_status(
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let body = cap::read_json(req).await;
+    let body = read_json(req).await;
     let job_id = match body.get("job_id").and_then(Value::as_str) {
         Some(s) if !s.trim().is_empty() => s.trim().to_string(),
         _ => return (StatusCode::BAD_REQUEST, "缺少 job_id").into_response(),
@@ -576,7 +577,7 @@ pub(super) async fn exec_cancel(
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let body = cap::read_json(req).await;
+    let body = read_json(req).await;
     let job_id = match body.get("job_id").and_then(Value::as_str) {
         Some(s) if !s.trim().is_empty() => s.trim().to_string(),
         _ => return (StatusCode::BAD_REQUEST, "缺少 job_id").into_response(),

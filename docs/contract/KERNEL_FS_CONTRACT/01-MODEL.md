@@ -25,11 +25,11 @@
 
 | 事实 | 位置 |
 | --- | --- |
-| 插件 fs 能力面已有 `fs_list / fs_write / fs_mkdir / fs_remove / fs_rename`，每次操作写审计 | `crates/plugin/src/capability.rs:200-339` |
+| 插件 fs 能力面已有 `fs_list / fs_write / fs_mkdir / fs_remove / fs_rename`，每次操作写审计 | `crates/plugin/src/capability.rs` 的 `fs_*`；HTTP 响应组装在 `crates/core/src/kernel/capability.rs` |
 | 单次读写上限 256 KiB（`MAX_IO`） | `crates/plugin/src/fsops.rs:25-27` |
 | 路径解析拒绝相对路径、`..`、NUL；读操作 canonicalize 后检查授权根 | `crates/plugin/src/fsops.rs:82-151` |
 | 授权根必须是绝对路径、无 `..`；创建看父目录、读取看目标 | `crates/plugin/src/fsgrant.rs:75-124` |
-| 删除禁止删授权根本身；改名禁止覆盖目标、禁止在 `data/` 与宿主路径间搬运 | `crates/plugin/src/capability.rs:263-339` |
+| 删除禁止删授权根本身；改名禁止覆盖目标、禁止在 `data/` 与宿主路径间搬运 | `crates/plugin/src/capability.rs` 的 `fs_remove` / `fs_rename` |
 | 官方插件按需申请 verbs（`guard` read/write/list、`monitor` read/list、`sources` read/write、`testkit` read/list），按 256 KiB 分页读写 | `plugins/guard/manifest.toml:32-33`、`plugins/monitor/manifest.toml:29-30`、`plugins/sources/manifest.toml:29-30`、`plugins/testkit/manifest.toml:23-24` |
 | 内核站点页只有**只读**目录浏览（`?tab=dir`），无写入接口 | `crates/app/src/sites.rs:331-349,770-812` |
 | 站点删除是整目录 `remove_dir_all`，没有回收站 | `crates/app/src/sites.rs:2523-2558` |

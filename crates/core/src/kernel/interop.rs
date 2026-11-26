@@ -15,7 +15,7 @@ use axum::Json;
 use serde_json::{json, Value};
 use skiff_app::AppState;
 
-use skiff_plugin::capability as cap;
+use super::capability::{plugin_of, read_json};
 use skiff_plugin::interop::{self, InteropDeny};
 
 /// 插件间调用的单次上限：目标插件被自动拉起 + 一次 RPC。超时只断这次调用，
@@ -72,7 +72,7 @@ pub(super) async fn interop_catalog(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Response {
-    let caller = cap::plugin_of(&req);
+    let caller = plugin_of(&req);
     let Some(rec) = state.db().plugin(&caller).ok().flatten() else {
         return interop_deny(
             &state,
@@ -124,8 +124,8 @@ pub(super) async fn interop_call(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Response {
-    let caller = cap::plugin_of(&req);
-    let body = cap::read_json(req).await;
+    let caller = plugin_of(&req);
+    let body = read_json(req).await;
     let target = body
         .get("plugin")
         .and_then(Value::as_str)

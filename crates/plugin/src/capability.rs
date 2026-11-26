@@ -1,34 +1,25 @@
-//! 插件能力面的 `fs` 路由实现（内核侧）。
+//! 插件能力面的 `fs` 实现（内核侧，**不含 HTTP**）。
 //!
-//! 这一层**不依赖 unix**：`kernel.sock` 的监听只存在于 unix（`skiff::kernel`），
-//! 但路径判定、分页读写、审计这些逻辑与平台无关。把它们放在独立 crate，
-//! Windows 上的单测也能真跑（否则「只在 Linux CI 编得到」的代码在开发机上
-//! 连类型检查都过不了）。
+//! 入参是已解析的 JSON 体（`&Value`），出参是 `Result<Value, CapError>`：权限判定、
+//! 路径解析、分页读写与审计都在这里；**状态码映射与响应组装在**
+//! `crates/core/src/kernel/capability.rs`（口径见 `docs/sections/08-engineering.md`
+//! 的「能力面 × 实现位置」表）。因此本 crate 不依赖 HTTP 框架，判定与编排在
+//! Windows 开发机上也能真跑单测。
 //!
 //! 权限与路径是**两把钥匙**：
 //! - 权限串（`fs:read` / `fs:write` / `fs:list` / `fs:mkdir` / `fs:remove` / `fs:rename`）；
 //! - 绝对路径（宿主文件）额外要求命中安装时确认的 `path:` 对象授权根。
 //!
-//! 判定与 IO 细节见 [`crate::fsops`]，这里只负责 HTTP 形态、权限与审计。
+//! 判定与 IO 细节见 [`crate::fsops`]，这里只负责权限、编排与审计。
 //!
 //! **依赖倒置**：本模块住在 `skiff-plugin`（能力面的正确归属地），但 `skiff-plugin`
 //! 不能依赖 `skiff-app`（后者依赖前者，会成环）。因此宿主上下文由
 //! [`CapabilityHost`] 抽象，`skiff-app::AppState` 实现它。
 
-// 这些 handler 只在 unix 上挂到 `kernel.sock` 的路由表；Windows 的
-// 普通编译单元里没人调用它们，`-D dead_code` 会当成死代码——那是平台差异，不是真死。
-// 只在本模块放宽，别扩大到整个 crate（Linux clippy 仍按真接线复核）。
-#![cfg_attr(not(unix), allow(dead_code))]
-
 use std::path::Path;
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use axum::response::{IntoResponse, Response};
-use axum::Json;
 use base64::Engine;
-use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use skiff_store::Grant;
 
@@ -62,22 +53,51 @@ pub trait CapabilityHost {
 #[derive(Clone, Debug)]
 pub struct PluginId(pub String);
 
-pub fn plugin_of(req: &Request<Body>) -> String {
-    req.extensions()
-        .get::<PluginId>()
-        .map(|p| p.0.clone())
-        .unwrap_or_default()
+/// 能力面结果。
+///
+/// 只带「状态码数字 + 消息」，不碰任何 HTTP 类型：传输层按 [`CapError::status`]
+/// 自己造响应（HTTP 4xx/5xx、CLI 退出码、SDUI 提示各管各的）。原因到状态码的
+/// 对照仍由 [`fsops::FsError`] 持有，见 `docs/contract/KERNEL_FS_CONTRACT.md` §7.3。
+#[derive(Debug)]
+pub enum CapError {
+    /// `fs` 判定或 IO 失败；审计已由调用点落库。
+    Fs(fsops::FsError),
+    /// 请求体本身不合法（base64 解码失败、单次写入超限）：装配层直接拒绝，**不落审计**。
+    Rejected { status: u16, message: String },
 }
 
-pub fn grants_of<H: CapabilityHost>(host: &H, id: &str) -> Arc<[Grant]> {
+impl CapError {
+    pub fn status(&self) -> u16 {
+        match self {
+            Self::Fs(e) => e.status(),
+            Self::Rejected { status, .. } => *status,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Fs(e) => e.message(),
+            Self::Rejected { message, .. } => message,
+        }
+    }
+}
+
+impl From<fsops::FsError> for CapError {
+    fn from(e: fsops::FsError) -> Self {
+        Self::Fs(e)
+    }
+}
+
+fn grants_of<H: CapabilityHost>(host: &H, id: &str) -> Arc<[Grant]> {
     host.plugin_grants(id)
 }
 
-pub fn has_perm<H: CapabilityHost>(host: &H, id: &str, perm: &str) -> bool {
+fn has_perm<H: CapabilityHost>(host: &H, id: &str, perm: &str) -> bool {
     host.plugin_grants(id).iter().any(|g| g.permits(perm))
 }
 
-pub fn deny<H: CapabilityHost>(host: &H, id: &str, perm: &str) -> Response {
+/// 缺授权：审计后返回拒绝（响应由传输层组装）。
+fn deny<H: CapabilityHost>(host: &H, id: &str, perm: &str) -> CapError {
     // 权限名是 `fs:read` 形态，审计动作统一用点分（`fs.read`）——否则按 action
     // 过滤审计时同一个能力面会出现冒号与点两套拼法。
     host.audit(
@@ -88,15 +108,7 @@ pub fn deny<H: CapabilityHost>(host: &H, id: &str, perm: &str) -> Response {
         "deny",
         "缺少授权",
     );
-    (StatusCode::FORBIDDEN, format!("缺少授权 {perm}")).into_response()
-}
-
-pub async fn read_json(req: Request<Body>) -> Value {
-    let bytes = match req.into_body().collect().await {
-        Ok(c) => c.to_bytes(),
-        Err(_) => return Value::Null,
-    };
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    fsops::FsError::Forbidden(format!("缺少授权 {perm}")).into()
 }
 
 /// 审计附加字段：命中的授权根 + 站点域名。
@@ -129,14 +141,14 @@ fn audit_scope<H: CapabilityHost>(host: &H, id: &str, target: &str) -> String {
     out
 }
 
-/// fs 类失败统一出口：审计 + 状态码（越权记 `deny`，其余记 `fail`）。
+/// fs 类失败统一出口：审计 + 把错误原样交给传输层（越权记 `deny`，其余记 `fail`）。
 fn fs_fail<H: CapabilityHost>(
     host: &H,
     id: &str,
     perm: &str,
     target: &str,
     e: fsops::FsError,
-) -> Response {
+) -> CapError {
     let scope = audit_scope(host, id, target);
     let mut detail = e.message().to_string();
     if !scope.is_empty() {
@@ -151,8 +163,7 @@ fn fs_fail<H: CapabilityHost>(
         e.audit_result(),
         &detail,
     );
-    let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (status, e.message().to_string()).into_response()
+    e.into()
 }
 
 fn fs_ok<H: CapabilityHost>(host: &H, id: &str, perm: &str, target: &str) {
@@ -175,7 +186,7 @@ fn protected_deny<H: CapabilityHost>(
     id: &str,
     target: &str,
     path: &Path,
-) -> Option<Response> {
+) -> Option<CapError> {
     if !fsgrant::is_protected(host.data_dir(), path) {
         return None;
     }
@@ -188,11 +199,8 @@ fn protected_deny<H: CapabilityHost>(
         "受保护路径（内核数据根/插件目录），拒绝访问",
     );
     Some(
-        (
-            StatusCode::FORBIDDEN,
-            "受保护路径：内核数据根与插件目录不允许插件访问".to_string(),
-        )
-            .into_response(),
+        fsops::FsError::Forbidden("受保护路径：内核数据根与插件目录不允许插件访问".to_string())
+            .into(),
     )
 }
 
@@ -241,13 +249,15 @@ where
     }
 }
 
-pub async fn fs_read<H: CapabilityHost>(host: &H, req: Request<Body>) -> Response {
-    let id = plugin_of(&req);
+pub async fn fs_read<H: CapabilityHost>(
+    host: &H,
+    id: &str,
+    body: &Value,
+) -> Result<Value, CapError> {
     let perm = "fs:read";
-    if !has_perm(host, &id, perm) {
-        return deny(host, &id, perm);
+    if !has_perm(host, id, perm) {
+        return Err(deny(host, id, perm));
     }
-    let body = read_json(req).await;
     let raw = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let offset = body.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
     let max = body
@@ -256,45 +266,47 @@ pub async fn fs_read<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respons
         .unwrap_or(fsops::MAX_IO as u64) as usize;
     let as_b64 = body.get("encoding").and_then(|v| v.as_str()) == Some("base64");
 
-    let grants = grants_of(host, &id);
-    let (path, scope) = match fsops::resolve(host.data_dir(), &id, &grants, raw, false) {
-        Ok(v) => v,
-        Err(e) => return fs_fail(host, &id, perm, raw, e),
-    };
+    let grants = grants_of(host, id);
+    let (path, scope) = fsops::resolve(host.data_dir(), id, &grants, raw, false)
+        .map_err(|e| fs_fail(host, id, perm, raw, e))?;
     // 读同样会泄露内核机密（`skiff.db` 含口令哈希/会话/密钥），与写一并拦。
     if scope == fsops::Scope::Host {
-        if let Some(r) = protected_deny(host, &id, raw, &path) {
-            return r;
+        if let Some(e) = protected_deny(host, id, raw, &path) {
+            return Err(e);
         }
     }
     let io_path = path.clone();
-    let chunk = match offload_fs(move || fsops::read_chunk(&io_path, offset, max)).await {
-        Ok(c) => c,
-        Err(e) => return fs_fail(host, &id, perm, raw, e),
-    };
-    fs_ok(host, &id, perm, raw);
+    let chunk = offload_fs(move || fsops::read_chunk(&io_path, offset, max))
+        .await
+        .map_err(|e| fs_fail(host, id, perm, raw, e))?;
+    fs_ok(host, id, perm, raw);
     let mut out = json!({ "offset": chunk.offset, "size": chunk.size, "eof": chunk.eof });
     if as_b64 {
         out["b64"] = json!(base64::engine::general_purpose::STANDARD.encode(&chunk.bytes));
     } else {
         out["data"] = json!(String::from_utf8_lossy(&chunk.bytes));
     }
-    Json(out).into_response()
+    Ok(out)
 }
 
-pub async fn fs_write<H: CapabilityHost>(host: &H, req: Request<Body>) -> Response {
-    let id = plugin_of(&req);
+pub async fn fs_write<H: CapabilityHost>(
+    host: &H,
+    id: &str,
+    body: &Value,
+) -> Result<Value, CapError> {
     let perm = "fs:write";
-    if !has_perm(host, &id, perm) {
-        return deny(host, &id, perm);
+    if !has_perm(host, id, perm) {
+        return Err(deny(host, id, perm));
     }
-    let body = read_json(req).await;
     let raw = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let bytes = match body.get("b64").and_then(|v| v.as_str()) {
         Some(b) => match base64::engine::general_purpose::STANDARD.decode(b) {
             Ok(d) => d,
             Err(e) => {
-                return (StatusCode::BAD_REQUEST, format!("base64 解码失败: {e}")).into_response()
+                return Err(CapError::Rejected {
+                    status: 400,
+                    message: format!("base64 解码失败: {e}"),
+                })
             }
         },
         None => body
@@ -305,11 +317,10 @@ pub async fn fs_write<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respon
             .to_vec(),
     };
     if bytes.len() > fsops::MAX_IO {
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!("单次写入上限 {} 字节，请分页上传", fsops::MAX_IO),
-        )
-            .into_response();
+        return Err(CapError::Rejected {
+            status: 413,
+            message: format!("单次写入上限 {} 字节，请分页上传", fsops::MAX_IO),
+        });
     }
     let offset = body.get("offset").and_then(|v| v.as_u64());
     let append = body
@@ -317,20 +328,18 @@ pub async fn fs_write<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respon
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let grants = grants_of(host, &id);
-    let (path, scope) = match fsops::resolve(host.data_dir(), &id, &grants, raw, true) {
-        Ok(v) => v,
-        Err(e) => return fs_fail(host, &id, perm, raw, e),
-    };
+    let grants = grants_of(host, id);
+    let (path, scope) = fsops::resolve(host.data_dir(), id, &grants, raw, true)
+        .map_err(|e| fs_fail(host, id, perm, raw, e))?;
     if scope == fsops::Scope::Host {
-        if let Some(r) = protected_deny(host, &id, raw, &path) {
-            return r;
+        if let Some(e) = protected_deny(host, id, raw, &path) {
+            return Err(e);
         }
     }
     let io_path = path.clone();
-    let owner_id = id.clone();
+    let owner_id = id.to_string();
     let owned = scope == fsops::Scope::Data;
-    let (wrote, size) = match offload_fs(move || {
+    let (wrote, size) = offload_fs(move || {
         let r = fsops::write_chunk(&io_path, &bytes, offset, append)?;
         // 只在插件自己的 data/ 里把属主交还插件；宿主文件保持宿主原有属主（多为 root:root）。
         if owned {
@@ -339,31 +348,28 @@ pub async fn fs_write<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respon
         Ok(r)
     })
     .await
-    {
-        Ok(v) => v,
-        Err(e) => return fs_fail(host, &id, perm, raw, e),
-    };
-    fs_ok(host, &id, perm, raw);
-    Json(json!({ "ok": true, "wrote": wrote, "size": size })).into_response()
+    .map_err(|e| fs_fail(host, id, perm, raw, e))?;
+    fs_ok(host, id, perm, raw);
+    Ok(json!({ "ok": true, "wrote": wrote, "size": size }))
 }
 
-pub async fn fs_list<H: CapabilityHost>(host: &H, req: Request<Body>) -> Response {
-    let id = plugin_of(&req);
+pub async fn fs_list<H: CapabilityHost>(
+    host: &H,
+    id: &str,
+    body: &Value,
+) -> Result<Value, CapError> {
     let perm = "fs:list";
-    if !has_perm(host, &id, perm) {
-        return deny(host, &id, perm);
+    if !has_perm(host, id, perm) {
+        return Err(deny(host, id, perm));
     }
-    let body = read_json(req).await;
     let raw = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    let grants = grants_of(host, &id);
-    let (path, scope) = match fsops::resolve(host.data_dir(), &id, &grants, raw, false) {
-        Ok(v) => v,
-        Err(e) => return fs_fail(host, &id, perm, raw, e),
-    };
+    let grants = grants_of(host, id);
+    let (path, scope) = fsops::resolve(host.data_dir(), id, &grants, raw, false)
+        .map_err(|e| fs_fail(host, id, perm, raw, e))?;
     // 列受保护目录本身 → 403；列其父目录 → 过滤子项（不整页报错）。
     if scope == fsops::Scope::Host {
-        if let Some(r) = protected_deny(host, &id, raw, &path) {
-            return r;
+        if let Some(e) = protected_deny(host, id, raw, &path) {
+            return Err(e);
         }
     }
     let io_path = path.clone();
@@ -377,134 +383,122 @@ pub async fn fs_list<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respons
             v
         })
     })
-    .await;
-    match listed {
-        Ok(v) => {
-            fs_ok(host, &id, perm, raw);
-            Json(v).into_response()
-        }
-        Err(e) => fs_fail(host, &id, perm, raw, e),
-    }
+    .await
+    .map_err(|e| fs_fail(host, id, perm, raw, e))?;
+    fs_ok(host, id, perm, raw);
+    Ok(listed)
 }
 
 /// 建目录（宿主或 data）。只建一层：多级目录由插件从授权根逐层下发，
 /// 免得一次 `create_dir_all` 在宿主上悄悄铺开一棵树。
-pub async fn fs_mkdir<H: CapabilityHost>(host: &H, req: Request<Body>) -> Response {
-    let id = plugin_of(&req);
+pub async fn fs_mkdir<H: CapabilityHost>(
+    host: &H,
+    id: &str,
+    body: &Value,
+) -> Result<Value, CapError> {
     let perm = "fs:mkdir";
-    if !has_perm(host, &id, perm) {
-        return deny(host, &id, perm);
+    if !has_perm(host, id, perm) {
+        return Err(deny(host, id, perm));
     }
-    let body = read_json(req).await;
     let raw = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    let grants = grants_of(host, &id);
-    let (path, scope) = match fsops::resolve(host.data_dir(), &id, &grants, raw, true) {
-        Ok(v) => v,
-        Err(e) => return fs_fail(host, &id, perm, raw, e),
-    };
+    let grants = grants_of(host, id);
+    let (path, scope) = fsops::resolve(host.data_dir(), id, &grants, raw, true)
+        .map_err(|e| fs_fail(host, id, perm, raw, e))?;
     if scope == fsops::Scope::Host {
-        if let Some(r) = protected_deny(host, &id, raw, &path) {
-            return r;
+        if let Some(e) = protected_deny(host, id, raw, &path) {
+            return Err(e);
         }
     }
     let io_path = path.clone();
-    match offload_fs(move || fsops::make_dir(&io_path)).await {
-        Ok(()) => {
-            fs_ok(host, &id, perm, raw);
-            Json(json!({ "ok": true })).into_response()
-        }
-        Err(e) => fs_fail(host, &id, perm, raw, e),
-    }
+    offload_fs(move || fsops::make_dir(&io_path))
+        .await
+        .map_err(|e| fs_fail(host, id, perm, raw, e))?;
+    fs_ok(host, id, perm, raw);
+    Ok(json!({ "ok": true }))
 }
 
 /// 删除文件/目录。**授权根本身不许删**：授权一个目录 ≠ 授权毁掉这个目录。
-pub async fn fs_remove<H: CapabilityHost>(host: &H, req: Request<Body>) -> Response {
-    let id = plugin_of(&req);
+pub async fn fs_remove<H: CapabilityHost>(
+    host: &H,
+    id: &str,
+    body: &Value,
+) -> Result<Value, CapError> {
     let perm = "fs:remove";
-    if !has_perm(host, &id, perm) {
-        return deny(host, &id, perm);
+    if !has_perm(host, id, perm) {
+        return Err(deny(host, id, perm));
     }
-    let body = read_json(req).await;
     let raw = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    let grants = grants_of(host, &id);
-    let (path, scope) = match fsops::resolve(host.data_dir(), &id, &grants, raw, false) {
-        Ok(v) => v,
-        Err(e) => return fs_fail(host, &id, perm, raw, e),
-    };
+    let grants = grants_of(host, id);
+    let (path, scope) = fsops::resolve(host.data_dir(), id, &grants, raw, false)
+        .map_err(|e| fs_fail(host, id, perm, raw, e))?;
     if scope == fsops::Scope::Host {
-        if let Some(r) = protected_deny(host, &id, raw, &path) {
-            return r;
+        if let Some(e) = protected_deny(host, id, raw, &path) {
+            return Err(e);
         }
     }
-    if fsops::is_scope_root(host.data_dir(), &id, &grants, &path, scope) {
-        return fs_fail(
+    if fsops::is_scope_root(host.data_dir(), id, &grants, &path, scope) {
+        return Err(fs_fail(
             host,
-            &id,
+            id,
             perm,
             raw,
             fsops::FsError::Forbidden("不允许删除授权根目录本身".into()),
-        );
+        ));
     }
     let io_path = path.clone();
-    match offload_fs(move || fsops::remove(&io_path)).await {
-        Ok(was_dir) => {
-            fs_ok(host, &id, perm, raw);
-            Json(json!({ "ok": true, "dir": was_dir })).into_response()
-        }
-        Err(e) => fs_fail(host, &id, perm, raw, e),
-    }
+    let was_dir = offload_fs(move || fsops::remove(&io_path))
+        .await
+        .map_err(|e| fs_fail(host, id, perm, raw, e))?;
+    fs_ok(host, id, perm, raw);
+    Ok(json!({ "ok": true, "dir": was_dir }))
 }
 
 /// 改名/移动。源不得是授权根；目标已存在一律拒（覆盖式改名是误操作放大器）。
-pub async fn fs_rename<H: CapabilityHost>(host: &H, req: Request<Body>) -> Response {
-    let id = plugin_of(&req);
+pub async fn fs_rename<H: CapabilityHost>(
+    host: &H,
+    id: &str,
+    body: &Value,
+) -> Result<Value, CapError> {
     let perm = "fs:rename";
-    if !has_perm(host, &id, perm) {
-        return deny(host, &id, perm);
+    if !has_perm(host, id, perm) {
+        return Err(deny(host, id, perm));
     }
-    let body = read_json(req).await;
     let from_raw = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let to_raw = body.get("to").and_then(|v| v.as_str()).unwrap_or("");
-    let grants = grants_of(host, &id);
-    let (from, from_scope) = match fsops::resolve(host.data_dir(), &id, &grants, from_raw, false) {
-        Ok(v) => v,
-        Err(e) => return fs_fail(host, &id, perm, from_raw, e),
-    };
-    let (to, to_scope) = match fsops::resolve(host.data_dir(), &id, &grants, to_raw, true) {
-        Ok(v) => v,
-        Err(e) => return fs_fail(host, &id, perm, to_raw, e),
-    };
+    let grants = grants_of(host, id);
+    let (from, from_scope) = fsops::resolve(host.data_dir(), id, &grants, from_raw, false)
+        .map_err(|e| fs_fail(host, id, perm, from_raw, e))?;
+    let (to, to_scope) = fsops::resolve(host.data_dir(), id, &grants, to_raw, true)
+        .map_err(|e| fs_fail(host, id, perm, to_raw, e))?;
     if from_scope != to_scope {
-        return fs_fail(
+        return Err(fs_fail(
             host,
-            &id,
+            id,
             perm,
             from_raw,
             fsops::FsError::Forbidden("不允许在 data/ 与宿主路径之间搬运".into()),
-        );
+        ));
     }
     if from_scope == fsops::Scope::Host {
-        if let Some(r) = protected_deny(host, &id, from_raw, &from) {
-            return r;
+        if let Some(e) = protected_deny(host, id, from_raw, &from) {
+            return Err(e);
         }
-        if let Some(r) = protected_deny(host, &id, to_raw, &to) {
-            return r;
+        if let Some(e) = protected_deny(host, id, to_raw, &to) {
+            return Err(e);
         }
     }
-    if fsops::is_scope_root(host.data_dir(), &id, &grants, &from, from_scope) {
-        return fs_fail(
+    if fsops::is_scope_root(host.data_dir(), id, &grants, &from, from_scope) {
+        return Err(fs_fail(
             host,
-            &id,
+            id,
             perm,
             from_raw,
-            fsops::FsError::Forbidden("不允许改名授权根目录本身".into()),
-        );
+            fsops::FsError::Forbidden("不允许改名授权根本身".into()),
+        ));
     }
-    match offload_fs(move || fsops::rename(&from, &to)).await {
-        Ok(()) => {
-            fs_ok(host, &id, perm, from_raw);
-            Json(json!({ "ok": true, "to": to_raw })).into_response()
-        }
-        Err(e) => fs_fail(host, &id, perm, from_raw, e),
-    }
+    offload_fs(move || fsops::rename(&from, &to))
+        .await
+        .map_err(|e| fs_fail(host, id, perm, from_raw, e))?;
+    fs_ok(host, id, perm, from_raw);
+    Ok(json!({ "ok": true, "to": to_raw }))
 }

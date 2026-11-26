@@ -22,9 +22,6 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 libc = { workspace = true }
 tokio = { workspace = true }
-# 能力面在 kernel.sock 上以 HTTP/JSON 对插件说话，需要 HTTP 栈。
-axum = { workspace = true }
-http-body-util = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
