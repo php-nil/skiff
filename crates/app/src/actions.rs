@@ -11,6 +11,8 @@
 //!
 //! 这里**只有声明**：不做 I/O、不调用命令、不渲染。`command` 是领域命令的稳定
 //! 名称（`模块::函数`），供后续动作端点分发与审计映射使用，不参与编译期绑定。
+//! 文件组是例外：文件写路径没有命令层，名字直接指向 `AdminFs` 方法，由
+//! `admin_fs::COMMANDS` 的编译期钉子保证「登记名 = 真实方法」。
 //!
 //! **勿按「死代码」处理**：容器/镜像/网络/卷/Compose（16 条）与插件（5 条）
 //! 目前**运行期没有调用方**——容器动作走 `policy.check` + `Verb`，插件写路径走
@@ -180,27 +182,28 @@ action_table! {
     COMPOSE_UP = "compose.up": Compose, Some(Permission::DockerLifecycle), "commands::docker::compose_up", false;
     COMPOSE_DOWN = "compose.down": Compose, Some(Permission::DockerLifecycle), "commands::docker::compose_down", true;
 
-    // ---- 文件管理（Admin：全部经 `skiff-fs` 管理员客户端）----
-    FILE_BROWSE = "file.browse": File, Some(Permission::Admin), "commands::file::list", false;
-    FILE_READ = "file.read": File, Some(Permission::Admin), "commands::file::read", false;
-    FILE_WRITE = "file.write": File, Some(Permission::Admin), "commands::file::write", false;
-    FILE_MKDIR = "file.mkdir": File, Some(Permission::Admin), "commands::file::mkdir", false;
-    FILE_RENAME = "file.rename": File, Some(Permission::Admin), "commands::file::rename", false;
-    FILE_REMOVE = "file.remove": File, Some(Permission::Admin), "commands::file::remove", true;
-    FILE_COPY = "file.copy": File, Some(Permission::Admin), "commands::file::copy", false;
-    FILE_CHMOD = "file.chmod": File, Some(Permission::Admin), "commands::file::chmod", false;
-    FILE_CHOWN = "file.chown": File, Some(Permission::Admin), "commands::file::chown", false;
-    FILE_ARCHIVE = "file.archive": File, Some(Permission::Admin), "commands::file::archive", false;
-    FILE_EXTRACT = "file.extract": File, Some(Permission::Admin), "commands::file::extract", true;
-    FILE_UPLOAD = "file.upload": File, Some(Permission::Admin), "commands::file::upload", false;
-    FILE_TRASH_READ = "file.trash_read": File, Some(Permission::Admin), "commands::file::trash_list", false;
-    FILE_TRASH_RESTORE = "file.trash_restore": File, Some(Permission::Admin), "commands::file::trash_restore", false;
-    FILE_TRASH_PURGE = "file.trash_purge": File, Some(Permission::Admin), "commands::file::trash_purge", true;
-    FILE_TRASH_CLEAR = "file.trash_clear": File, Some(Permission::Admin), "commands::file::trash_clear", true;
-    FILE_QUOTA_READ = "file.quota_read": File, Some(Permission::Admin), "commands::file::quota_list", false;
-    FILE_QUOTA_SET = "file.quota_set": File, Some(Permission::Admin), "commands::file::quota_set", false;
-    FILE_QUOTA_CANCEL = "file.quota_cancel": File, Some(Permission::Admin), "commands::file::quota_cancel", false;
-    FILE_QUOTA_SCAN = "file.quota_scan": File, Some(Permission::Admin), "commands::file::quota_scan", false;
+    // ---- 文件管理（Admin：全部经 `skiff-fs` 管理员客户端；无独立命令层，
+    //      名字直接指向 `AdminFs` 方法，由 `admin_fs::COMMANDS` 编译期核对）----
+    FILE_BROWSE = "file.browse": File, Some(Permission::Admin), "admin_fs::list", false;
+    FILE_READ = "file.read": File, Some(Permission::Admin), "admin_fs::read", false;
+    FILE_WRITE = "file.write": File, Some(Permission::Admin), "admin_fs::write", false;
+    FILE_MKDIR = "file.mkdir": File, Some(Permission::Admin), "admin_fs::mkdir", false;
+    FILE_RENAME = "file.rename": File, Some(Permission::Admin), "admin_fs::rename", false;
+    FILE_REMOVE = "file.remove": File, Some(Permission::Admin), "admin_fs::remove", true;
+    FILE_COPY = "file.copy": File, Some(Permission::Admin), "admin_fs::copy", false;
+    FILE_CHMOD = "file.chmod": File, Some(Permission::Admin), "admin_fs::chmod", false;
+    FILE_CHOWN = "file.chown": File, Some(Permission::Admin), "admin_fs::chown", false;
+    FILE_ARCHIVE = "file.archive": File, Some(Permission::Admin), "admin_fs::archive", false;
+    FILE_EXTRACT = "file.extract": File, Some(Permission::Admin), "admin_fs::extract", true;
+    FILE_UPLOAD = "file.upload": File, Some(Permission::Admin), "admin_fs::upload_chunk", false;
+    FILE_TRASH_READ = "file.trash_read": File, Some(Permission::Admin), "admin_fs::trash_list", false;
+    FILE_TRASH_RESTORE = "file.trash_restore": File, Some(Permission::Admin), "admin_fs::trash_restore", false;
+    FILE_TRASH_PURGE = "file.trash_purge": File, Some(Permission::Admin), "admin_fs::trash_purge", true;
+    FILE_TRASH_CLEAR = "file.trash_clear": File, Some(Permission::Admin), "admin_fs::trash_clear", true;
+    FILE_QUOTA_READ = "file.quota_read": File, Some(Permission::Admin), "admin_fs::quota_list", false;
+    FILE_QUOTA_SET = "file.quota_set": File, Some(Permission::Admin), "admin_fs::quota_set", false;
+    FILE_QUOTA_CANCEL = "file.quota_cancel": File, Some(Permission::Admin), "admin_fs::quota_cancel", false;
+    FILE_QUOTA_SCAN = "file.quota_scan": File, Some(Permission::Admin), "admin_fs::quota_scan", false;
 
     // ---- 定时任务（Admin：启停、立即执行、删除）----
     TASK_TOGGLE = "task.toggle": Task, Some(Permission::Admin), "tasks::toggle", false;
@@ -416,6 +419,7 @@ mod tests {
     #[test]
     fn converted_groups_point_at_registered_commands() {
         // 已完成 P1 命令拆分的资源组：动作登记的命令名必须真实存在于对应命令模块。
+        // 文件组没有命令模块，名字指向 `AdminFs` 方法（编译期已由 `COMMANDS` 的钉子核对）。
         for (resource, prefix, names) in [
             (
                 Resource::Site,
@@ -452,11 +456,7 @@ mod tests {
                 "commands::docker::",
                 crate::commands::docker::NAMES,
             ),
-            (
-                Resource::File,
-                "commands::file::",
-                crate::commands::file::NAMES,
-            ),
+            (Resource::File, "admin_fs::", crate::admin_fs::COMMANDS),
         ] {
             for spec in for_resource(resource) {
                 // exec 走 WS 流式通道，没有命令层入口（见动作表注释）。

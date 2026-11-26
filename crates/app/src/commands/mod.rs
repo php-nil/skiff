@@ -8,7 +8,6 @@
 //! 调用方使用；这样 `/ui/v1`、`/api/v1` 与未来的其它动作端点拿到的是同一份业务结论。
 
 pub mod docker;
-pub mod file;
 pub mod incoming;
 pub mod job;
 pub mod plugin;

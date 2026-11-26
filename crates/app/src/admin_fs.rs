@@ -36,6 +36,49 @@ pub use skiff_fs::PathKind as FsPathKind;
 /// 页面可编辑文件上限：与单次读写上限一致（256 KiB）。
 pub const MAX_EDIT_BYTES: usize = MAX_REQUEST_BYTES;
 
+/// 文件类动作可达的 `AdminFs` 方法名清单。
+///
+/// 文件写路径**没有独立命令层**：`/ui/v1` 与 `/api/v1` 的处理器直接调 [`AdminFs`]，
+/// 动作表（[`crate::actions`]）里的 `command` 因此写 `admin_fs::<方法名>`。这张表是
+/// 动作声明与真实方法之间的唯一纽带，宏顺带做编译期钉子——登记名不对应真实方法
+/// （改名/删除）时直接编译失败，动作表一侧由 `actions.rs` 的漂移测试核对。
+macro_rules! admin_fs_commands {
+    ($($name:ident),+ $(,)?) => {
+        pub const COMMANDS: &[&str] = &[$(stringify!($name)),+];
+
+        // 编译期钉子：把登记名绑到真实方法上（取函数项不调用，不关心签名）。
+        const _: () = {
+            #[allow(dead_code)]
+            fn _registered_commands_exist() {
+                $( let _ = AdminFs::$name; )+
+            }
+        };
+    };
+}
+
+admin_fs_commands! {
+    list,
+    read,
+    write,
+    mkdir,
+    rename,
+    remove,
+    copy,
+    chmod,
+    chown,
+    archive,
+    extract,
+    upload_chunk,
+    trash_list,
+    trash_restore,
+    trash_purge,
+    trash_clear,
+    quota_list,
+    quota_set,
+    quota_cancel,
+    quota_scan,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Listing {
     /// 归一后的目录绝对路径。
@@ -1365,7 +1408,8 @@ mod tests {
         assert_eq!(read.text, "old");
         assert!(!read.truncated);
 
-        admin.write("admin", file.to_str().unwrap(), "new").unwrap();
+        let written = admin.write("admin", file.to_str().unwrap(), "new").unwrap();
+        assert_eq!(written.size, 3);
         assert_eq!(fs::read_to_string(&file).unwrap(), "new");
 
         let to = web.join("sites/b.conf");
@@ -1377,6 +1421,21 @@ mod tests {
 
         admin.remove("admin", to.to_str().unwrap()).unwrap();
         assert!(!to.exists());
+    }
+
+    #[test]
+    fn traversal_escape_maps_to_denied_403() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(&web).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let admin = new_admin(&web, &data);
+
+        // 越界路径在路径代数处就被拒，错误码与状态码是传输层契约的一部分。
+        let denied = admin.read("admin", "../etc/passwd").unwrap_err();
+        assert_eq!(denied.code(), "fs.denied");
+        assert_eq!(denied.http_status(), 403);
     }
 
     #[test]

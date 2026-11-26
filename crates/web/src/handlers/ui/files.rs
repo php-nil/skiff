@@ -6,7 +6,6 @@ use axum::routing::{get, post};
 use axum::Router;
 use futures_util::stream;
 use skiff_app::admin_fs::FsPathKind;
-use skiff_app::commands::file as file_cmd;
 
 #[allow(unused_imports)]
 use super::*;
@@ -32,7 +31,7 @@ pub async fn files(
     let owner = user.user.username.clone();
     let (roots, listing) = handlers::blocking_fs(move || {
         let roots = fs.roots();
-        let listing = file_cmd::list(&fs, file_cmd::ListDir { user: owner, path })?;
+        let listing = fs.list(&owner, &path)?;
         Ok((roots, listing))
     })
     .await
@@ -98,12 +97,10 @@ pub async fn files_mkdir(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let created = handlers::blocking_fs(move || {
-        file_cmd::mkdir(&fs, file_cmd::MakeDir { user: owner, path })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let created = handlers::blocking_fs(move || fs.mkdir(&owner, &path))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     // 站点文档根下新建的目录要归还站点身份，否则容器内 PHP 进程写不进去。
     state.restore_site_index_owner(&created);
     Ok(Json(
@@ -130,19 +127,10 @@ pub async fn files_rename(
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
     let owner_path = to.clone();
-    handlers::blocking_fs(move || {
-        file_cmd::rename(
-            &fs,
-            file_cmd::RenameEntry {
-                user: owner,
-                from,
-                to,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    handlers::blocking_fs(move || fs.rename(&owner, &from, &to))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     // 改名可能一次移动整棵子树，用递归口径归还站点身份。
     state.restore_site_index_owner_tree(&owner_path);
     Ok(Json(json!({ "data": { "message": "已重命名" } })))
@@ -163,12 +151,10 @@ pub async fn files_remove(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let removed = handlers::blocking_fs(move || {
-        file_cmd::remove(&fs, file_cmd::RemoveEntry { user: owner, path })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let removed = handlers::blocking_fs(move || fs.remove(&owner, &path))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({
         "data": {
             "path": removed.path,
@@ -192,12 +178,10 @@ pub async fn files_read(
         .ok_or_else(|| ApiError(AppError::BadRequest("缺少 path 参数或不是绝对路径".into())))?;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let file = handlers::blocking_fs(move || {
-        file_cmd::read(&fs, file_cmd::ReadFile { user: owner, path })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let file = handlers::blocking_fs(move || fs.read(&owner, &path))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
     let mut body = json!({
         "data": {
@@ -230,19 +214,10 @@ pub async fn files_write(
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
     let content = body.content;
-    let saved = handlers::blocking_fs(move || {
-        file_cmd::write(
-            &fs,
-            file_cmd::WriteFile {
-                user: owner,
-                path,
-                content,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let saved = handlers::blocking_fs(move || fs.write(&owner, &path, &content))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     state.restore_site_index_owner(&saved.path);
     Ok(Json(json!({
         "data": {
@@ -273,20 +248,10 @@ pub async fn files_copy(
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
     let overwrite = body.overwrite;
-    let copied = handlers::blocking_fs(move || {
-        file_cmd::copy(
-            &fs,
-            file_cmd::CopyEntry {
-                user: owner,
-                from,
-                to,
-                overwrite,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let copied = handlers::blocking_fs(move || fs.copy(&owner, &from, &to, overwrite))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     state.restore_site_index_owner_tree(&copied.to);
     Ok(Json(json!({
         "data": {
@@ -343,19 +308,10 @@ pub async fn files_chmod(
     let mode = parse_mode(body.mode)?;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let out = handlers::blocking_fs(move || {
-        file_cmd::chmod(
-            &fs,
-            file_cmd::ChmodEntry {
-                user: owner,
-                path,
-                mode,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let out = handlers::blocking_fs(move || fs.chmod(&owner, &path, mode))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({
         "data": {
             "path": out.path,
@@ -387,20 +343,10 @@ pub async fn files_chown(
         .ok_or_else(|| ApiError(AppError::BadRequest("gid 不能为空".into())))?;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let out = handlers::blocking_fs(move || {
-        file_cmd::chown(
-            &fs,
-            file_cmd::ChownEntry {
-                user: owner,
-                path,
-                uid,
-                gid,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let out = handlers::blocking_fs(move || fs.chown(&owner, &path, uid, gid))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({
         "data": {
             "path": out.path,
@@ -441,21 +387,11 @@ pub async fn files_archive(
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
     let overwrite = body.overwrite;
-    let out = handlers::blocking_fs(move || {
-        file_cmd::archive(
-            &fs,
-            file_cmd::ArchiveEntries {
-                user: owner,
-                sources,
-                dest,
-                format,
-                overwrite,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let out =
+        handlers::blocking_fs(move || fs.archive(&owner, &sources, &dest, &format, overwrite))
+            .await
+            .map_err(ApiError)?
+            .map_err(fs_api_error)?;
     state.restore_site_index_owner(&out.path);
     Ok(Json(json!({
         "data": {
@@ -488,20 +424,10 @@ pub async fn files_extract(
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
     let overwrite = body.overwrite;
-    let out = handlers::blocking_fs(move || {
-        file_cmd::extract(
-            &fs,
-            file_cmd::ExtractArchive {
-                user: owner,
-                archive,
-                dest,
-                overwrite,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let out = handlers::blocking_fs(move || fs.extract(&owner, &archive, &dest, overwrite))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     state.restore_site_index_owner_tree(&out.dest);
     Ok(Json(json!({
         "data": {
@@ -547,20 +473,10 @@ pub async fn files_upload(
     let owner = user.user.username.clone();
     let path = path.to_string();
     let owner_path = path.clone();
-    let out = handlers::blocking_fs(move || {
-        file_cmd::upload(
-            &fs,
-            file_cmd::UploadChunk {
-                user: owner,
-                path,
-                offset,
-                data: &body,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let out = handlers::blocking_fs(move || fs.upload_chunk(&owner, &path, offset, &body))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     state.restore_site_index_owner(&owner_path);
     Ok(Json(json!({ "data": out })))
 }
@@ -579,18 +495,10 @@ pub async fn files_download(
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
     let target = path.to_string();
-    let stat = handlers::blocking_fs(move || {
-        file_cmd::stat(
-            &fs,
-            file_cmd::StatPath {
-                user: owner,
-                path: target,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let stat = handlers::blocking_fs(move || fs.stat(&owner, &target))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     if stat.kind == FsPathKind::Dir {
         return download_dir(state, user.user.username.clone(), path).await;
     }
@@ -638,16 +546,8 @@ async fn download_dir(
         let user = user.clone();
         let source = path.to_string();
         tokio::task::spawn_blocking(move || {
-            file_cmd::archive(
-                st.admin_fs(),
-                file_cmd::ArchiveEntries {
-                    user,
-                    sources: vec![source],
-                    dest: dest_str,
-                    format: "zip".into(),
-                    overwrite: false,
-                },
-            )
+            st.admin_fs()
+                .archive(&user, &[source], &dest_str, "zip", false)
         })
         .await
         .map_err(|e| ApiError(AppError::Internal(format!("打包任务失败: {e}"))))?
@@ -745,12 +645,10 @@ pub async fn files_trash_list(
     guard::action(&user, act::FILE_TRASH_READ)?;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let items = handlers::blocking_fs(move || {
-        file_cmd::trash_list(&fs, file_cmd::TrashList { user: owner })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let items = handlers::blocking_fs(move || fs.trash_list(&owner))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
     let mut body = json!({
         "data": {
@@ -780,19 +678,10 @@ pub async fn files_trash_restore(
     let overwrite = body.overwrite;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let out = handlers::blocking_fs(move || {
-        file_cmd::trash_restore(
-            &fs,
-            file_cmd::TrashRestore {
-                user: owner,
-                id,
-                overwrite,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let out = handlers::blocking_fs(move || fs.trash_restore(&owner, &id, overwrite))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({ "data": out })))
 }
 
@@ -811,12 +700,10 @@ pub async fn files_trash_purge(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    handlers::blocking_fs(move || {
-        file_cmd::trash_purge(&fs, file_cmd::TrashPurge { user: owner, id })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    handlers::blocking_fs(move || fs.trash_purge(&owner, &id))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({ "data": { "message": "已彻底删除" } })))
 }
 
@@ -830,12 +717,10 @@ pub async fn files_trash_clear(
     guard::csrf(&state, &user, &parts)?;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let out = handlers::blocking_fs(move || {
-        file_cmd::trash_clear(&fs, file_cmd::TrashClear { user: owner })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let out = handlers::blocking_fs(move || fs.trash_clear(&owner))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({
         "data": {
             "removed": out.removed,
@@ -854,12 +739,10 @@ pub async fn files_quota_list(
     guard::action(&user, act::FILE_QUOTA_READ)?;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let quotas = handlers::blocking_fs(move || {
-        file_cmd::quota_list(&fs, file_cmd::QuotaList { user: owner })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let quotas = handlers::blocking_fs(move || fs.quota_list(&owner))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
     let mut body = json!({ "data": { "quotas": quotas } });
     if with_schema {
@@ -885,20 +768,10 @@ pub async fn files_quota_set(
     let max_files = body.max_files;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let quota = handlers::blocking_fs(move || {
-        file_cmd::quota_set(
-            &fs,
-            file_cmd::QuotaSet {
-                user: owner,
-                path,
-                max_bytes,
-                max_files,
-            },
-        )
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let quota = handlers::blocking_fs(move || fs.quota_set(&owner, &path, max_bytes, max_files))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({ "data": quota })))
 }
 
@@ -917,12 +790,10 @@ pub async fn files_quota_cancel(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let quota = handlers::blocking_fs(move || {
-        file_cmd::quota_cancel(&fs, file_cmd::QuotaCancel { user: owner, path })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let quota = handlers::blocking_fs(move || fs.quota_cancel(&owner, &path))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({ "data": quota })))
 }
 
@@ -941,12 +812,10 @@ pub async fn files_quota_scan(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let quota = handlers::blocking_fs(move || {
-        file_cmd::quota_scan(&fs, file_cmd::QuotaScan { user: owner, path })
-    })
-    .await
-    .map_err(ApiError)?
-    .map_err(fs_api_error)?;
+    let quota = handlers::blocking_fs(move || fs.quota_scan(&owner, &path))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
     Ok(Json(json!({ "data": quota })))
 }
 
