@@ -19,6 +19,7 @@ use rusqlite::{params, Connection};
 use tracing::{info, warn};
 
 use super::{Db, Result};
+use crate::StoreError;
 
 /// 进程内维护串行锁：同一时刻只允许一个维护操作。
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -104,9 +105,7 @@ impl Db {
             .canonicalize()
             .unwrap_or_else(|_| self.path.clone());
         if dest_cmp == src_cmp {
-            return Err(super::StoreError::Conflict(
-                "备份目标不能是活动数据库本身".into(),
-            ));
+            return Err(StoreError::Conflict("备份目标不能是活动数据库本身".into()));
         }
         if dest.exists() {
             std::fs::remove_file(dest)?;
@@ -121,9 +120,7 @@ impl Db {
         if check != "ok" {
             drop(conn);
             let _ = std::fs::remove_file(dest);
-            return Err(super::StoreError::Decode(format!(
-                "备份库完整性检查失败: {check}"
-            )));
+            return Err(StoreError::Decode(format!("备份库完整性检查失败: {check}")));
         }
         // 备份读取的窗口里 WAL 可能继续增长；主动做一次 PASSIVE checkpoint 把已提交页
         // 并回主库。PASSIVE 不阻塞读者/写者，busy=1 表示有活跃事务，不是错误，

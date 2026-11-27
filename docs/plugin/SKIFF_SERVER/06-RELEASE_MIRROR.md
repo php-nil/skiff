@@ -79,7 +79,7 @@ P3 只做「提示 + 下载 + 摘要校验」，**不执行升级**：不停服�
   二次下载复用不再请求 blob、远端摘要不符不留半包、本地暂存被篡改后丢弃重下、24h TTL
   只清过期暂存且不误删新包。
 - `crates/web/src/handlers/store.rs`：升级面板空态与有可用版本时的下载入口渲染。
-- `crates/web/tests/main_flow.rs`：viewer 403 并落 `upgrade.download` deny 审计、缺公钥 400
+- `crates/web/tests/main_flow/plugins.rs`：viewer 403 并落 `upgrade.download` deny 审计、缺公钥 400
   并落 `no_key` 审计、无升级数据回商店页并落 `not_found` 审计且无暂存文件。
 
 ### 13.6 未完成

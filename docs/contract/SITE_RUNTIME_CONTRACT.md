@@ -2,7 +2,7 @@
 
 > 状态：**设计契约 v1（2026-11-05）；P1 实现补充见 §11（2026-11-06）；Node.js 接入见 §4.3（2026-11-09）**。
 > 2026-11-09：Node.js 已在内核接入（运行环境目录、安装/启停/重建、站点绑定与反代）；Go 仍未实现，已从 `runtime_catalog::RUNTIME_KINDS` 与新建弹窗摘除。
-> 基线：`crates/store/src/db.rs`（schema v21）、`crates/app/src/sites.rs`、`crates/app/src/sites/network.rs`、`crates/app/src/runtime_catalog.rs`、`crates/web/src/handlers/sites.rs`、`crates/web/src/handlers/ui/runtimes.rs`、`docs/contract/MENU_CONTRACT.md`。
+> 基线：`crates/store/src/db/migrations/schema.rs`（schema v21）、`crates/app/src/sites.rs`、`crates/app/src/sites/network.rs`、`crates/app/src/runtime_catalog.rs`、`crates/web/src/handlers/sites.rs`、`crates/web/src/handlers/ui/runtimes.rs`、`docs/contract/MENU_CONTRACT.md`。
 > 2026-11-15：运行环境改为**专用 bridge + 内核静态容器地址**，宿主不再出现运行环境端口；站点 vhost 只反代到容器地址；对外发布是显式开关（`site_runtimes.publish_port`，默认关闭）。
 > 可点预览：[`docs/archive/ui/site-runtime-preview.html`](../archive/ui/site-runtime-preview.html)。
 > **本文件是索引**：正文按 §编号拆在 [`SITE_RUNTIME_CONTRACT/`](SITE_RUNTIME_CONTRACT/)，编号沿用拆分前原文。

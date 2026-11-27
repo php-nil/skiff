@@ -53,6 +53,6 @@ curl -s -b "$J" -c "$J" -H 'Content-Type: application/json' \
 | K. FTP 与宿主机文件服务 | 10 | 3 项本机可验（FTP-02、FTP-06 配置校验、迁移路径收集单测），7 项必须上机（FTP-06 另有持久化断言需上机） | `cargo test -p skiff-plugin ftp --locked`；测试机 pure-ftpd + PHP 容器 |
 | L. 后台端口 / 入口前缀 / TLS | 6 | 2 项本机可验（PANEL-02/03 校验单测，PANEL-06 有 `skiff` 单测兜底），4 项必须上机 | `cargo test -p skiff-app -p skiff`；测试机改端口/前缀/TLS 三形态 |
 | M. 防火墙 / fail2ban / 进程与网络 | 20 | 4 项本机单测（FW-03、FW-18、FW-19、MON-N01 解析），其余必须上机 | `cargo test -p skiff-plugin firewall`；`plugins/` 第二 workspace 单测；测试机 nft/iptables/fail2ban + `/proc` |
-| N. 任务中心作业 | 3 | 3 项本机可验（`main_flow` 集成测试），需上机复验执行器真实行为 | `cargo test -p skiff-web --test main_flow job_retry`；测试机运行环境安装/扩展任务 |
+| N. 任务中心作业 | 3 | 3 项本机有入口级覆盖（`main_flow` 集成测试：鉴权、目标不存在、无执行器 kind 400），执行器真实行为需上机复验 | `cargo test -p skiff-web --test main_flow ui_task_and_job_writes`；测试机运行环境安装/扩展任务 |
 | O. 商店目录（Skiff-server） | 3 | 3 项本机可验（自签 CA 端到端 + 配置拒绝 + serve 契约），建议上机复验内网自签镜像与 serve | `cargo test -p skiff-app catalog::fetch::tls_tests`、`cargo test -p skiff catalog`、`cargo test -p skiff-server`；测试机内网镜像 |
 | Q. 自建镜像安装对接 | 9 | MIRROR-01/02/09 本机可验（publish/check、serve 契约、runtimes 命令），其余 6 项必须上机（开发机当服务端、测试机当客户端） | `cargo test -p skiff-server`；开发机 `skiff-server serve` + 测试机 `install.sh` 与面板刷新 |

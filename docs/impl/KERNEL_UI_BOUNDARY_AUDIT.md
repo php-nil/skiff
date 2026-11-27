@@ -15,7 +15,7 @@
 1. **（S2）RPC 错误靠字符串猜内核状态码**：`PluginError` 仅 `Rejected` 映射 400、其余 500，与 RPC 路径字符串解析出的 503 语义不对称。→ 批次 1.3。
 2. **（S2）DTO 冻结没有编译期/测试期约束**：字段冻结靠用例与文档约定。→ 批次 1.1。
 3. **（S3）schema 运行期校验失败返回 500**：应为 400/409 + 稳定错误码。→ 批次 2.1。
-4. **（S3，2026-11-19）视图层残留判定**：`store.rs::load_view` 内联「已装版本高于目录可装版本则拒绝降级」（后端同判两处）→ 待移 `skiff_app::catalog` 读模型。「文案归属」作为独立问题挂 [KERNEL_ARCH_AUDIT.md](KERNEL_ARCH_AUDIT.md) §4 C10。
+4. **（S3，2026-11-19）视图层残留判定**：`store.rs::load_view` 内联「已装版本高于目录可装版本则拒绝降级」（后端同判两处）→ 待移 `skiff_app::catalog` 读模型。「文案归属」作为独立问题挂 [KERNEL_ARCH_AUDIT.md](KERNEL_ARCH_AUDIT.md) §2 N26。
 
 ## 3. 待决策批次（需要先定契约）
 

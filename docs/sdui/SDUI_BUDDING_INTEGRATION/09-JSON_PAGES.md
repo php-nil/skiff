@@ -137,7 +137,7 @@ crates/web/static/budding/
 ## 9.5 校验
 
 - 结构校验：拿 budding 的 `catalog.json` 比对节点 `type`、`props` 键与动作参数，未知项即报错（本地脚本，不入 CI）。
-- 用例：`crates/web/tests/main_flow.rs` 的 `budding_boot_json_pages_are_wired_and_parse` 钉住「路由 → 资产 → 根节点 `page` / `source` / 表格 `id` / 动作链顺序」；`budding_boot_status_table_honors_caller_empty_text` 与 `budding_boot_p1_confirms_and_kill_entry_present` 一类文案 / 入口断言，按页面归属读对应产出端（资产页读 JSON，服务端页读 `.rs`）。
+- 用例：`crates/web/tests/main_flow/budding.rs` 的 `budding_boot_json_pages_are_wired_and_parse` 钉住「路由 → 资产 → 根节点 `page` / `source` / 表格 `id` / 动作链顺序」；`budding_boot_status_table_honors_caller_empty_text` 与 `budding_boot_p1_confirms_and_kill_entry_present` 一类文案 / 入口断言，按页面归属读对应产出端（资产页读 JSON，服务端页读 `.rs`）。
 - 浏览器验收：测试机逐页点击，写操作必须走「确认 → 请求 → 表格刷新」，控制台零报错。
 
 ## 9.6 迁移状态

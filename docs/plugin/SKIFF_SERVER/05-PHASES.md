@@ -107,7 +107,7 @@ sha256(公钥)`），启动或载入缓存时与当前配置不一致即丢弃�
 审计落库、换钥后旧缓存
 作废并忽略 ETag 强制重拉、换钥且离线时不展示旧条目且 `plugin_package` 返回 `None`。
 `crates/web/src/handlers/store.rs` 单测覆盖商店页最少渲染
-（状态提示、四列数据、空态、无安装入口）；`crates/web/tests/main_flow.rs` 覆盖
+（状态提示、四列数据、空态、无安装入口）；`crates/web/tests/main_flow/plugins.rs` 覆盖
 「镜像静默丢包（accept 后不回包）时商店页仍 200、提示降级、冷却内不再建连」。`crates/app/src/catalog/fetch.rs` 端到端覆盖自定义
 CA：自签 CA 签发的服务端证书在未导入 CA 时被拒、导入后建连成功、CA 文件缺失/损坏返回可读错误。
 `crates/core/src/config.rs` 单测覆盖默认关闭、默认镜像为内网 HTTP、**显式 `mirrors` 不被默认值覆盖**、
@@ -190,7 +190,7 @@ P2 只补「插件」这一类：已验证目录条目可在商店页直接进�
   `prepare` 前清掉 25h 遗留且不误删刚下载的包。`crates/core/src/bootstrap.rs`：启动时清理 25h
   遗留、保留未过期暂存。
 - `crates/web/src/handlers/store.rs`：有公钥时渲染安装入口、无公钥/告警条目不渲染。
-- `crates/web/tests/main_flow.rs`：viewer 403 且落 `store.install` deny 审计、未配置公钥 400 并落
+- `crates/web/tests/main_flow/plugins.rs`：viewer 403 且落 `store.install` deny 审计、未配置公钥 400 并落
   `no_key` 审计、目录不可用回商店页并落 `not_found` 审计且无暂存文件。
 
 ### 12.6 未完成
