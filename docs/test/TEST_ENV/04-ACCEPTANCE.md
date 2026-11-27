@@ -4,7 +4,18 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-26 06:20：还原后干净首装 + 三次就地升级）
+## 8. 最近一次验收结论（截至 2026-11-27 13:10：还原后干净首装 + 一次就地升级）
+
+**2026-11-27 干净首装 + 就地升级（当前包 `3fbf8e2` / 12,552,580 B / `baac26fb…`）：三组回归 106·32·20 全绿，浏览器 44 路由 0 FAIL**
+
+- **前置与安装（通过）**：测试机还原为干净系统（无 `/etc/skiff`、无 `/www/skiff`、18080 空闲、Docker 29.7.2 在位、时钟已同步）。preflight **7 PASS / 1 SKIP**（PF3 需 `--now`）→ `sh install.sh --listen 0.0.0.0:18080 --tls off --no-start` exit **0** → 追加 `allow_insecure_http`、`allow_reduced_sandbox`、`[catalog]` → `systemctl start skiff`。`skiff.service` active、`/healthz` 200、前缀 **`gu9uhtu3`**、`skiff doctor` 全 ok、`official/` 7 包 + `public-key.txt`。
+- **升级（通过）**：`cda4553` → `3fbf8e2` 一次 `sh install.sh --no-start`（不传 `--listen/--tls`），exit 0、`/etc/skiff/config.toml` **逐字节相同**（`sha256=cc50e3b2…`）、前缀不变、7 插件与 2 容器全保留、`/healthz` 200。
+- **能力面（通过）**：7 个官方插件（cron / firewall / ftp / guard / monitor / sources / testkit）全部「已验签」，各自独立 UID 运行、`firewall.status` / `sources.status` / `guard.status` / `cron.jobs.list` RPC 均返回结果；`php-8.5`（`php:8.5-fpm-alpine`，`8.5.13`）running；OpenResty 已装；三站点 `matrix.local`（PHP）/ `matrix-static.local`（静态）/ `matrix-proxy.local`（反代，上游 18081，`X-Upstream: 18081` 透传）均 200。
+- **回归（通过）**：`round.sh` **106**、`round_ext.sh` **32**、`round_ext2.sh` **20**，全 0 FAIL；`accept.sh` preflight+A+D0 **34 PASS / 0 FAIL / 3 SKIP**，B 组（`--group b --password`）**15 PASS / 0 FAIL / 1 SKIP**（SKIP 为未开限流 / 装后阶段端口断言 / 首装口令文件已消耗）。
+- **浏览器（通过）**：44 条路由（菜单枚举 + 站点详情子视图 + 插件功能页）**44 PASS / 0 FAIL**，0 CompileError / 0 pageerror；`/sites/runtimes/none` 作为负向用例断言「运行环境不存在：none」落地页。
+- **本批修掉的缺陷**：站点生命周期误用「重启容器」——增删别名、建站、站点启停、默认站切换、删站都调 `restart_nginx()`，实测加别名后首个请求 `Failed to connect`、`StartedAt` 每次变化，**其它站点**也在窗口内不可服务。改为 `activate_nginx()`（reload 优先、回退重启）；建站补 `nginx -t`；别名写入-校验-生效收进同一把锁。复验：上述五类动作全程 `StartedAt` 不变、其它站点首个请求 200。
+- **已知行为（非缺陷）**：reload 生效为异步收敛（0.2–0.5 s），期间旧 worker 按旧配置应答（新别名 404、停站仍 200），用例按「2 秒内收敛」判；保存 PHP 运行参数 = 重启 PHP 容器（同环境站点约 3.2 秒 503）；`proxy_target` 必须带 `http://`；CLI 装插件后 manifest 任务要到下次启动才种入。
+- **未做**：aarch64 仍未装机实测（只有 qemu 冒烟）；MIRROR-08/09 篡改与异钥反例、防火墙 fail2ban M 组本轮未重跑（上一轮已闭环）；nginx **主配置**保存仍走重启（本轮有意不动，见 `docs/changes/2026-11-27.md` 四）。
 
 **2026-11-26 干净首装 + 三次就地升级（当前包 `a915b6e` / 12,542,260 B / `c038e313…`）：三组回归 106·30·20 全绿，浏览器 44 路由 0 FAIL**
 
@@ -28,23 +39,6 @@
 - **篡改与伪造（通过）**：改 `index.json` 一字节（保持长度）→「校验失败：索引摘要与 manifest 不符：声明 2921ccf4…，实得 48f24d21…」；换异钥产物 →「验签失败: 清单 key_id 与固定公钥不匹配（清单 c0d75726…，公钥 707cede3…）」。两次都 `can_install=false` 且保留上次成功快照。
 - **本批修掉的缺陷**：① 清单 `eol` 是日期，面板按「非空即 EOL」解析，导致 13 个 PHP 版本全标「已 EOL」（含刚发的 `8.6.0`）；② `skiff-server <子命令> --help` 报「参数 --help 缺少取值」。
 - **未做**：`accept.sh` 全量、浏览器巡检、`sync` 到独立镜像站、清单签名（二期）。
-
-**2026-11-25 19:18 干净重装：安装链路通过，商店目录对接通过，运行环境清单面板侧未覆盖（旧包无端点）**
-
-- **前置**：测试机现场（11-23 首装 + 两轮升级）整体备份到 `/root/iter/backup-20261125/`（`config.toml.bak`、`skiff-data.tgz` 4.1 MB、`sites-old/`、`php-old/`、`runtime-old/`），再 `printf 'YES\n' | sh uninstall.sh --purge`。卸载后 `/etc/skiff`、`/www/skiff`、`/usr/local/bin/skiff*`、unit 全无，`/www` 仅剩 `log`、`nginx`。
-- **服务端（开发机）**：`publish` 签名产物（`seq=1`、`key_id=707cede3…ac2`、`index.json` 8,303 B、23 条运行环境、三类清单）→ `check --require-signature --builtin-index crates/app/assets/runtime-index` 报「校验通过 + 内置副本一致：1 份」→ `serve --dist … --listen 0.0.0.0:8080 --http --access-log .workbuddy/server-access.log`。本机自检：三件套 + 三类清单 200、`/api/x` 404、`If-None-Match` 304；测试机 `curl` 均 200（60 ms）。
-- **安装（通过）**：`sha256sum -c` 通过（`c905859d…9451b2`）→ `sh install.sh --listen 0.0.0.0:18080 --tls off --no-start` exit **0** → 追加 `allow_insecure_http` 与 `[catalog]` → `systemctl restart skiff`。`skiff.service` enabled+active、`/healthz` 200、前缀 **`8au3xewy`**、`skiff doctor` 六项 ok、`official/` 8 个包 + `public-key.txt` 在位、自动建出 `php-8.5` 运行环境（Docker 29.7.2）。
-- **登录**：`GET /ui/v1/auth/login` 取 `csrf_token` → `POST /ui/v1/auth/login` JSON **200**（`redirect_to=/8au3xewy`）；旧表单路径 `POST /{p}/login` 已返回 405，登录命令要按 JSON 端点写。
-- **目录对接（通过）**：`GET /ui/v1/store?with_schema=true` →
-  - `message` = 「已从 http://10.66.52.7:8080 更新到 seq 1」，`fetched_at=2026-11-25T11:19:38Z`，`key_configured=true`、`allow_unsigned=false`；
-  - `sections` 三类齐全：插件 1、应用模板 1、运行环境 **23**（PHP 13 / Node 9 / Rust 1，`8.5.13/12/11`、`24.22.3/2/1`、`26.13.1/13.0/12.1` 等每分支 3 条）；
-  - 镜像侧访问日志同一时刻出现 `manifest.json` / `manifest.json.sig` / `index.json` 三条 GET。
-- **条件请求与降级（通过）**：再次 `refresh=1` → 「目录未更新（304），展示 … 的本地缓存」，条目与 `seq` 不变（`fetched_at` 会前移到本次校验时间；**只有断源失败时才冻结**，2026-11-25 晚复测修正）；停掉开发机 `serve` 后 → 「镜像源不可达，正在使用本地缓存；… Connection refused (os error 111)」，条目仍在；恢复 `serve` 后 → 回到 304，条目未丢。
-- **未覆盖 / 限制**：
-  - **运行环境清单面板侧**：该包无 `GET /ui/v1/runtimes/versions`（请求被 `/ui/v1/runtimes/{id}` 吃掉，返回「运行环境不存在：versions」），三类清单的「面板取到并展示」要在含 2026-11-25 改动的**新包**上重跑 MIRROR-06；服务端侧三类清单 200 已验。
-  - `accept.sh` 全量未跑（本轮只做 `doctor` + 手工断言），A6 权限位全表、B 组改密链路待下一轮随新包补。
-  - MIRROR-08（篡改/伪造被拒）、MIRROR-09（`runtimes` 命令回归）本轮未执行。
-
 ## 历史轮次台账（2026-11-16 精简）
 
 > 下表只留「日期 + 版本 + 轮次标题」，每轮完整的逐项断言与实测数字已随本轮整理删除；需要复盘时看当轮 `docs/changes/YYYY-MM-DD.md`、对应提交与 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标。

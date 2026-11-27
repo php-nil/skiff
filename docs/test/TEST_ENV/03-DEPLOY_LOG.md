@@ -13,6 +13,8 @@
 
 | 日期 | 场景 | 版本 / 坐标 | 结论 |
 | --- | --- | --- | --- |
+| 2026-11-27 12:57 | **就地升级：站点生命周期误用重启容器修复**（`cda4553` → `3fbf8e2`，不清库、不换前缀） | amd64 12,552,580 B `baac26fb3ee8933c303eb02b763d012145c2a622808f46779ee2e2981eeba1ef`（CI `45941201464` 绿 / Release `45942009500`）；前缀仍 `gu9uhtu3`；`config.toml` `sha256=cc50e3b2…` 与升级前相同 | ✅ exit 0、插件/容器保留；`round.sh` 106 / `round_ext.sh` 32 / `round_ext2.sh` 20 全 0 FAIL；`accept.sh` 34/0/3 + B 组 15/0/1；浏览器 44 路由 44 PASS；别名与启停改走 reload（`StartedAt` 不变、其它站不再被窗口打断） |
+| 2026-11-27 12:28 | **还原后干净首装**（形态三：明文 18080；插件沙箱降级、php-8.5 手工建） | Release `45939138922`（head `cda4553`，CI `45938609570` 绿）amd64 12,551,605 B `6b6074ea…`，前缀 **`gu9uhtu3`** | ✅ preflight 7 PASS / 1 SKIP；`install.sh --listen 0.0.0.0:18080 --tls off --no-start` exit 0；7 官方插件全装（需 `allow_reduced_sandbox`）、`php-8.5` running（`8.5.13`）、OpenResty 装好、三站点 200 |
 | 2026-11-26 06:02 | **就地升级三：文案与错误页修复**（`7810675` → `a915b6e`，不清库、不换前缀） | amd64 12,542,260 B `c038e313…0279b`（CI `45687189385` 绿 / Release `45688148056`）；前缀仍 `5e3yz2yr` | ✅ exit 0、`config.toml` 逐字节相同、插件/容器保留；`accept.sh` 47 PASS / 0 FAIL / 5 SKIP；`round.sh` 106 / `round_ext.sh` 30 / `round_ext2.sh` 20 全 0 FAIL；浏览器 44 路由 **44 PASS**；`/sites/runtimes/none` 显示新落地页、PHP 配置保存消息改为「重启 PHP 容器」 |
 | 2026-11-26 03:28 | **就地升级二：回收站 CompileError 修复**（`070ff1d` → `7810675`） | amd64 12,541,372 B `d7fb85d8…ac0c7`（CI `45683167379` 绿 / Release `45683912296`）；前缀仍 `5e3yz2yr` | ✅ exit 0、配置零改动；`/files/trash` 0 CompileError；恢复 / 覆盖恢复（onError 弹确认）/ 彻底删除三条路径实测通过；`accept.sh` 47 / 0 / 5 |
 | 2026-11-26 03:00 | **就地升级一：`gzip_types` 空值修复**（`92949ea` → `070ff1d`） | amd64 12,539,101 B `87a828e5…`（Release `45678981070`）；前缀仍 `5e3yz2yr` | ✅ exit 0、配置零改动、7 插件与 2 容器保留；保存性能参数返回「已通过 nginx -t」，主配置只剩 `gzip on;`；`accept.sh` 49 / 0 / 3 |
