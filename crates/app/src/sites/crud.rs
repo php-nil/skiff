@@ -1277,6 +1277,23 @@ impl AppState {
         activate_with(&DockerNginx { state: self }).await
     }
 
+    /// 让 nginx 按当前配置生效（reload 优先，reload 不生效才回退重启）。
+    ///
+    /// 调用方**不持锁**：内部取 [`super::nginx_write_lock`]，因此校验与生效之间不会
+    /// 被其它写入插队。失败返回可读错误，回滚后的恢复由调用方用
+    /// [`Self::restart_nginx`]（强制重启）收尾。
+    ///
+    /// 建站 / 增删别名 / 站点启停都走这里：直接重启容器会让**其它站点**出现
+    /// 秒级连接拒绝窗口（实测 `curl` 首个请求即 `Failed to connect`）。
+    /// 具体走 reload 还是回退重启由 [`activate_with`] 决定并打日志，调用方不必区分。
+    pub async fn activate_nginx(&self) -> Result<(), SiteError> {
+        let _guard = super::nginx_write_lock().lock().await;
+        self.activate_nginx_locked()
+            .await
+            .map(|_| ())
+            .map_err(SiteError::Unavailable)
+    }
+
     pub async fn restart_nginx(&self) -> Result<(), SiteError> {
         let _guard = super::nginx_write_lock().lock().await;
         self.restart_nginx_locked().await
@@ -2121,8 +2138,17 @@ impl AppState {
             rollback(&conf);
             return Err(SiteError::Internal(format!("写入 vhost 失败：{e}")));
         }
-        if let Err(e) = self.restart_nginx().await {
+        // 新站上线同样「校验 → reload 优先」：直接重启容器会让既有站点在重启窗口内
+        // 连接被拒（实测首个 curl 即 `Failed to connect`），建一个站不该影响其它站。
+        if let Err(e) = self.validate_nginx().await {
             rollback(&conf);
+            return Err(e);
+        }
+        if let Err(e) = self.activate_nginx().await {
+            rollback(&conf);
+            if let Err(re) = self.restart_nginx().await {
+                tracing::error!(error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
+            }
             return Err(e);
         }
         Ok(site)
@@ -2148,17 +2174,22 @@ impl AppState {
                 tracing::error!(site = %site.domain, error = %e, "回滚站点配置失败");
             }
         };
+        // 写文件 → 校验 → reload 在同一把锁内：并发增删别名不会互相读到半套配置。
+        let _guard = super::nginx_write_lock().lock().await;
         if let Err(e) = self.write_site_vhost(&s, &site.domain) {
             rollback(self);
             return Err(e);
         }
-        if let Err(e) = self.validate_nginx().await {
+        if let Err(e) = self.validate_nginx_locked().await {
             rollback(self);
             return Err(e);
         }
-        if let Err(e) = self.restart_nginx().await {
+        if let Err(e) = self.activate_nginx_locked().await {
             rollback(self);
-            return Err(e);
+            if let Err(re) = self.restart_nginx_locked().await {
+                tracing::error!(error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
+            }
+            return Err(SiteError::Unavailable(e));
         }
         Ok(())
     }
@@ -2281,7 +2312,7 @@ impl AppState {
                     "拒绝启动：站点配置未通过全局 nginx -t（{e}）"
                 )));
             }
-            if let Err(e) = self.restart_nginx().await {
+            if let Err(e) = self.activate_nginx().await {
                 if activated {
                     if let Err(re) = self.admin_fs().rename_kernel(&conf, &disabled) {
                         tracing::error!(error = %re, "回滚站点配置重命名失败");
@@ -2314,7 +2345,7 @@ impl AppState {
                 .map_err(|e| SiteError::Internal(format!("停用配置失败：{e}")))?;
             // 与启动分支对称：reload 失败必须把 vhost 恢复回去，否则数据库仍记
             // running、磁盘上却已停用，之后任何一次 nginx 重启站点都会消失。
-            if let Err(e) = self.restart_nginx().await {
+            if let Err(e) = self.activate_nginx().await {
                 if let Err(re) = self.admin_fs().rename_kernel(&disabled, &conf) {
                     tracing::error!(error = %re, "回滚站点停用失败");
                 } else if let Err(re) = self.restart_nginx().await {
@@ -2404,7 +2435,7 @@ impl AppState {
         // 读到半截配置；内容没变则不产生多余审计、也不刷 mtime。
         fs.write_if_changed_kernel(&s.conf_dir.join(DEFAULT_CONF), content.as_bytes(), 0o644)
             .map_err(|e| SiteError::Internal(format!("写入默认站点配置失败：{e}")))?;
-        self.restart_nginx().await
+        self.activate_nginx().await
     }
 
     /// 删除 `00-skiff-default.conf` 并 reload nginx。
@@ -2415,7 +2446,7 @@ impl AppState {
                 .remove_kernel(&conf)
                 .map_err(|e| SiteError::Internal(format!("删除默认站点配置失败：{e}")))?;
         }
-        self.restart_nginx().await
+        self.activate_nginx().await
     }
 
     /// 删除确认页的具体量：目录体积/文件数、关联定时任务数、运行环境绑定。
@@ -2496,7 +2527,7 @@ impl AppState {
                 SiteError::Internal(format!("删除站点目录 {} 失败：{e}", root.display()))
             })?;
         }
-        if let Err(e) = self.restart_nginx().await {
+        if let Err(e) = self.activate_nginx().await {
             tracing::warn!(error = %e, "删除站点后重载 nginx 失败");
         }
         self.db()
