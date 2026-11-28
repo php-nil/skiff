@@ -41,6 +41,7 @@ mod compose_page;
 mod containers;
 mod containers_page;
 mod dto;
+pub(crate) use dto::*;
 mod files;
 pub(crate) mod files_page;
 mod guard;
@@ -52,12 +53,12 @@ mod overview_page;
 mod plugins;
 mod plugins_page;
 mod resources;
-mod routes;
 mod runtimes;
 mod runtimes_page;
 mod schema_kit;
 mod settings;
 mod settings_page;
+mod shell;
 mod site_page;
 mod sites;
 mod sites_extra_page;
@@ -67,8 +68,6 @@ mod tasks;
 mod tasks_page;
 mod web;
 mod web_page;
-
-pub use dto::*;
 
 /// 接口版本：与路径段 `v1` 一致，前端只做兼容判断（SDUI 集成 §3.7）。
 pub const API_VERSION: &str = "v1";
@@ -440,7 +439,7 @@ fn plugin_menu_views(state: &AppState, key: &str) -> (String, String, Vec<MenuVi
 pub fn router(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
     axum::Router::new()
         .merge(auth::router())
-        .merge(routes::router())
+        .merge(shell::router())
         .merge(menu::router())
         .merge(overview::router())
         .merge(sites::router())

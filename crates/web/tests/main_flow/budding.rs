@@ -423,8 +423,8 @@ fn plugin_view_falls_back_to_legacy_when_schema_missing() {
 /// 任务页筛选：关键字必须随页面骨架请求带进服务端，再由表格数据源复用。
 #[test]
 fn budding_tasks_page_keeps_keyword_filter() {
-    // 「关键字 → 骨架请求」的拼装已收进 `routes.rs::page_source`。
-    let source = include_str!("../../src/handlers/ui/routes.rs");
+    // 「关键字 → 骨架请求」的拼装已收进 `shell.rs::page_source`。
+    let source = include_str!("../../src/handlers/ui/shell.rs");
     assert!(
         source.contains("api(\"/tasks?limit=1&with_schema=true\")"),
         "任务页骨架必须由服务端产出"
@@ -614,8 +614,8 @@ fn budding_boot_status_table_honors_caller_empty_text() {
 #[test]
 fn budding_boot_json_pages_are_wired_and_parse() {
     let js = include_str!("../../static/budding/budding-boot.js");
-    // 路由表已由服务端下发：资产 URL 登记处从壳脚本换到 `handlers/ui/routes.rs`。
-    let routes_src = include_str!("../../src/handlers/ui/routes.rs");
+    // 路由表已由服务端下发：资产 URL 登记处从壳脚本换到 `handlers/ui/shell.rs`。
+    let routes_src = include_str!("../../src/handlers/ui/shell.rs");
     for name in [
         "docker-images.json",
         "docker-networks.json",
@@ -736,8 +736,8 @@ fn budding_boot_buttons_navigate_explicitly() {
         !js.contains("url: prefix + '/docker/containers?filter=error'"),
         "只换 query 的跳转不能再用 navigate（只会 pushState，不会重载内容）"
     );
-    // 计数与列表共用同一 filter 口径的拼装已收进 `routes.rs::page_source`。
-    let routes_src = include_str!("../../src/handlers/ui/routes.rs");
+    // 计数与列表共用同一 filter 口径的拼装已收进 `shell.rs::page_source`。
+    let routes_src = include_str!("../../src/handlers/ui/shell.rs");
     assert!(
         routes_src.contains("if s.get(\"filter\") == \"error\""),
         "容器计数必须与列表用同一 filter 口径，切换后计数才同步变化"
@@ -1192,7 +1192,7 @@ fn budding_boot_job_logs_page_comes_from_server() {
         assert!(!js.contains(banned), "作业日志构建器已迁出：{banned}");
     }
     // 产出端：路由表登记隐藏路由，`page_source` 指到日志端点。
-    let routes = include_str!("../../src/handlers/ui/routes.rs");
+    let routes = include_str!("../../src/handlers/ui/shell.rs");
     // 路径与标签在登记表里各占一行（rustfmt 会拆行），分别断言，别锁死排版。
     for needle in ["\"/tasks/jobs/:id/logs\"", "\"作业日志\""] {
         assert!(
@@ -1299,7 +1299,7 @@ fn budding_boot_file_forms_send_typed_values_and_show_errors() {
 fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
     let js = include_str!("../../static/budding/budding-boot.js");
     // 路由映射由服务端 `/ui/v1/routes` 下发，产出端是 routes.rs 的内置页登记表。
-    let routes = include_str!("../../src/handlers/ui/routes.rs");
+    let routes = include_str!("../../src/handlers/ui/shell.rs");
     for (key, path) in [
         ("core/plugins/discover", "/plugins/discover"),
         ("core/plugins/updates", "/plugins/updates"),
@@ -1328,7 +1328,7 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
     let js = include_str!("../../static/budding/budding-boot.js");
     let spa = include_str!("../../src/handlers/spa.rs");
     // 界面设置：路由登记 + 页面取数地址都在 routes.rs，脚本不再持有映射。
-    let routes = include_str!("../../src/handlers/ui/routes.rs");
+    let routes = include_str!("../../src/handlers/ui/shell.rs");
     assert!(
         routes.contains("(\"core/settings/ui\", \"/settings/ui\", PageKind::Page)"),
         "界面设置必须映射到规范路径"
@@ -1488,7 +1488,7 @@ fn budding_boot_create_dialogs_keep_deep_links() {
     let js = include_str!("../../static/budding/budding-boot.js");
     // 深链页路由与独立表单都保留：路由与「页面结构去哪取」都在 `routes.rs`
     // （`DETAIL_ROUTES` 的 `/sites/new` + `page_source` 映射到 `/ui/v1/pages/sites-new`）。
-    let routes_src = include_str!("../../src/handlers/ui/routes.rs");
+    let routes_src = include_str!("../../src/handlers/ui/shell.rs");
     for needle in [
         "(\"/sites/new\", \"新建站点\", PageKind::Page, \"/sites/list\")",
         "api(\"/pages/sites-new\")",
@@ -1669,8 +1669,8 @@ fn budding_boot_only_writes_registered_schema_root_keys() {
 fn budding_boot_drops_pre_r3_workarounds() {
     let js = include_str!("../../static/budding/budding-boot.js");
     // T16：17 个业务语义图标全部有映射，不再只映射 clock/file/dot。
-    // 图标映射随路由表迁到服务端 `routes.rs::MENU_ICONS`，断言跟到产出端。
-    let routes_src = include_str!("../../src/handlers/ui/routes.rs");
+    // 图标映射随路由表迁到服务端 `shell.rs::MENU_ICONS`，断言跟到产出端。
+    let routes_src = include_str!("../../src/handlers/ui/shell.rs");
     for (name, glyph) in [
         ("overview", "mdi-view-dashboard"),
         ("globe", "mdi-web"),
@@ -1776,7 +1776,7 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
     );
     // 四个菜单图标使用 1.8.1 子集的原生字形，不再近似兜底或留空。
     // 图标映射随路由表迁到服务端（`routes.rs`），断言跟着转过去。
-    let routes_src = include_str!("../../src/handlers/ui/routes.rs");
+    let routes_src = include_str!("../../src/handlers/ui/shell.rs");
     assert!(
         routes_src.contains(r#"("folder", "mdi-folder-outline")"#),
         "文件管理应使用原生字形"
