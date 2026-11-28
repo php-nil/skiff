@@ -5,7 +5,7 @@
 use super::schema_kit::{self as kit, API_BASE};
 use serde_json::{json, Value};
 
-fn text<'a>(v: &'a Value, key: &str) -> &'a str {
+fn field<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
@@ -18,8 +18,8 @@ pub fn site_new_schema(runtimes: &[Value], type_query: &str) -> Value {
         .iter()
         .map(|r| {
             // 运行中或不带状态标签时省略后缀，只有异常态才提示。
-            let label = text(r, "state_label");
-            let suffix = if text(r, "state_code") == "running" || label.is_empty() {
+            let label = field(r, "state_label");
+            let suffix = if field(r, "state_code") == "running" || label.is_empty() {
                 String::new()
             } else {
                 format!("（{label}）")
@@ -27,12 +27,12 @@ pub fn site_new_schema(runtimes: &[Value], type_query: &str) -> Value {
             json!({
                 "title": format!(
                     "{} {} · {}{}",
-                    text(r, "kind_label"),
-                    text(r, "version"),
-                    text(r, "name"),
+                    field(r, "kind_label"),
+                    field(r, "version"),
+                    field(r, "name"),
                     suffix
                 ),
-                "value": text(r, "id")
+                "value": field(r, "id")
             })
         })
         .collect();
@@ -87,7 +87,7 @@ pub fn site_logs_schema(
         )
     };
     let mut body = vec![kit::flex(
-        8,
+        json!({ "gap": 8 }),
         vec![
             kit::link("返回站点详情", format!("${{prefix}}/sites/{site_id}")),
             switch("访问日志", "access"),

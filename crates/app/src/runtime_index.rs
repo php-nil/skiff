@@ -1,6 +1,6 @@
 //! 运行环境版本清单：具体版本号（`8.5.13` / `24.4.0` / `1.99.1` …）由**镜像服务**提供。
 //!
-//! 目录（[`crate::runtime_catalog::RUNTIME_KINDS`]）只维护「支持哪些大版本」。补丁号
+//! 目录（[`crate::sites::runtime_catalog::RUNTIME_KINDS`]）只维护「支持哪些大版本」。补丁号
 //! 是镜像服务每次发版产生的新版本，写死在代码里必然滞后一版——这正是「PHP 8.5 装出来
 //! 还是 8.5.12」的一半原因（另一半是拉取时跳过浮动 tag，见 `sites::spec`）。
 //!
@@ -49,7 +49,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use skiff_store::{KIND_NODE, KIND_PHP, KIND_RUST};
 
-use crate::runtime_catalog;
+use crate::sites::runtime_catalog;
 use crate::AppState;
 
 /// 成功清单的缓存时长。镜像服务发版不频繁，10 分钟足够新。

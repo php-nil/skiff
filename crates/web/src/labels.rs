@@ -6,7 +6,7 @@
 
 use skiff_app::catalog::CatalogState;
 use skiff_app::jobs::JobStatus;
-use skiff_app::runtime_catalog::ExtSource;
+use skiff_app::sites::runtime_catalog::ExtSource;
 use skiff_app::sites::RuntimeJobState;
 use skiff_model::AuditCategory;
 

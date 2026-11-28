@@ -1,15 +1,8 @@
 //! 插件中心与插件信息页的 Schema。
 
-use super::schema_kit::{self as kit, API_BASE};
+use super::schema_kit::{self as kit, flag, text, API_BASE};
+use crate::util::encode_uri_component;
 use serde_json::{json, Value};
-
-fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
-    v.pointer(pointer).and_then(Value::as_str).unwrap_or("")
-}
-
-fn flag(v: &Value, pointer: &str) -> bool {
-    v.pointer(pointer).and_then(Value::as_bool).unwrap_or(false)
-}
 
 fn list_text(v: &Value, pointer: &str) -> Vec<String> {
     v.pointer(pointer)
@@ -35,7 +28,7 @@ pub fn plugins_schema(data: &Value, tab: &str) -> Value {
     let installed = format!("已安装 ({})", plugins.len());
     let mut body = vec![
         kit::flex(
-            12,
+            json!({ "gap": 12 }),
             vec![
                 kit::link(&installed, "${prefix}/plugins/installed"),
                 kit::link("发现", "${prefix}/plugins/discover"),
@@ -118,11 +111,17 @@ fn plugin_card(p: &Value, can_admin: bool, include_delete: bool) -> Value {
         kit::detail_lines(text(p, "/name"), lines),
         kit::link(
             "信息与管理页",
-            format!("${{prefix}}/plugins/{}", enc(text(p, "/id"))),
+            format!(
+                "${{prefix}}/plugins/{}",
+                encode_uri_component(text(p, "/id"))
+            ),
         ),
     ];
     if can_admin {
-        body.push(kit::flex(8, plugin_actions(p, include_delete, false)));
+        body.push(kit::flex(
+            json!({"gap": 8}),
+            plugin_actions(p, include_delete, false),
+        ));
     }
     json!({ "type": "card", "content": { "body": body } })
 }
@@ -131,7 +130,7 @@ fn plugin_card(p: &Value, can_admin: bool, include_delete: bool) -> Value {
 /// （列表页重取本页，详情页回到插件中心）。
 fn plugin_actions(p: &Value, include_delete: bool, detail: bool) -> Vec<Value> {
     let id = text(p, "/id");
-    let enc_id = enc(id);
+    let enc_id = encode_uri_component(id);
     let mut actions = vec![kit::action_button(
         if flag(p, "/enabled") {
             "停用插件"
@@ -139,16 +138,12 @@ fn plugin_actions(p: &Value, include_delete: bool, detail: bool) -> Vec<Value> {
             "启用插件"
         },
         vec![
-            json!({
-                "type": "request",
-                "props": {
-                    "api": {
-                        "method": "POST",
-                        "url": format!("{API_BASE}/plugins/{enc_id}/toggle")
-                    },
-                    "messages": { "success": "插件状态已更新", "error": "插件启停失败" }
-                }
-            }),
+            kit::post_request(
+                format!("{API_BASE}/plugins/{enc_id}/toggle"),
+                None,
+                "插件状态已更新",
+                "插件启停失败",
+            ),
             json!({ "type": "skiffReload" }),
         ],
         "tonal",
@@ -168,17 +163,12 @@ fn plugin_actions(p: &Value, include_delete: bool, detail: bool) -> Vec<Value> {
                     "type": "confirm",
                     "props": { "title": "卸载插件", "content": content, "color": "error" }
                 }),
-                json!({
-                    "type": "request",
-                    "props": {
-                        "api": {
-                            "method": "POST",
-                            "url": format!("{API_BASE}/plugins/{enc_id}/delete"),
-                            "data": { "delete_data": delete_data }
-                        },
-                        "messages": { "success": "插件已卸载", "error": "卸载失败" }
-                    }
-                }),
+                kit::post_request(
+                    format!("{API_BASE}/plugins/{enc_id}/delete"),
+                    Some(json!({ "delete_data": delete_data })),
+                    "插件已卸载",
+                    "卸载失败",
+                ),
             ];
             chain.push(if detail {
                 json!({ "type": "navigate", "props": { "url": "${prefix}/plugins/installed" } })
@@ -328,26 +318,4 @@ fn or_none(value: &str) -> String {
     } else {
         value.to_string()
     }
-}
-
-fn enc(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | b'\''
-            | b'('
-            | b')' => out.push(*byte as char),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
 }

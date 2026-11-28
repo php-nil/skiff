@@ -3,16 +3,8 @@
 //! 安装确认页不在服务端：它依赖上一步 `POST /store/install` 返回的一次性 token，
 //! 只存在于浏览器内存（见 09-JSON_PAGES.md 的例外表）。
 
-use super::schema_kit::{self as kit, TableOpts, API_BASE};
+use super::schema_kit::{self as kit, flag, text, TableOpts, API_BASE};
 use serde_json::{json, Value};
-
-fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
-    v.pointer(pointer).and_then(Value::as_str).unwrap_or("")
-}
-
-fn flag(v: &Value, pointer: &str) -> bool {
-    v.pointer(pointer).and_then(Value::as_bool).unwrap_or(false)
-}
 
 pub fn store_schema(data: &Value) -> Value {
     let mut body = Vec::new();

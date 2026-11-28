@@ -7,13 +7,12 @@
 //! 本模块不碰现有插件安装/信任链路：它只产出展示用快照，不写业务表；唯一写库的是
 //! `catalog.refresh` 失败审计（写失败只记日志，不改变拒绝语义）。
 
+pub mod cache;
 pub mod fetch;
 pub mod model;
-pub mod store;
 pub mod verify;
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -660,14 +659,11 @@ impl CatalogService {
         }
 
         let url = format!("{}/{url_path}", base.trim_end_matches('/'));
-        let part = dest.with_extension("part");
-        let result = self.store_blob(&url, sha, size, &part, dest);
+        let result = self.store_blob(&url, sha, size, dest);
         if result.is_err() {
             // 失败包必须清掉：暂存目录里的残留会被下次「复用」当已下载。
-            for p in [&part, dest] {
-                if p.exists() {
-                    let _ = self.admin_fs.remove_kernel(p);
-                }
+            if dest.exists() {
+                let _ = self.admin_fs.remove_kernel(dest);
             }
         }
         result
@@ -678,7 +674,6 @@ impl CatalogService {
         url: &str,
         sha: &str,
         size: u64,
-        part: &Path,
         dest: &Path,
     ) -> Result<(), DownloadError> {
         let reply = self
@@ -708,15 +703,13 @@ impl CatalogService {
                 .ensure_dir_kernel(parent)
                 .map_err(DownloadError::Io)?;
         }
-        // 正文落盘与发布替换是这条链路里唯一两处不经内核文件通道的写：
-        // ① 通道单次写上限 256 KiB（`MAX_REQUEST_BYTES`），包正文可达数十 MB，
-        //    通道没有流式接口，只能整块交给 `std::fs`；
-        // ② 发布必须是一次性替换（POSIX `rename`），而通道的改名对已存在目标是
-        //    先删后移，用在「发布已校验产物」上会多出一个目标不存在的窗口。
-        // 两处都在已验签/已核对摘要之后，失败即整包丢弃，不留下半成品。
-        fs::write(part, &reply.body).map_err(|e| DownloadError::Io(e.to_string()))?;
-        set_private(part)?;
-        fs::rename(part, dest).map_err(|e| DownloadError::Io(e.to_string()))
+        // 包正文直接写 dest：write_kernel_mode 是 Replace + 原子替换，
+        // 一次完成「发布」，等于 POSIX rename 的发布语义；权限 0o600 与原 set_private 一致。
+        // AdminFs 初始化已把 max_request_bytes 调到 MAX_FILE_BYTES，
+        // 内核自身 write_kernel 支持一次性写数十 MB 的包正文。
+        self.admin_fs
+            .write_kernel_mode(dest, &reply.body, 0o600)
+            .map_err(DownloadError::Io)
     }
 
     fn refresh(&self, force: bool) -> (CatalogSnapshot, Option<Index>, String) {
@@ -775,8 +768,8 @@ impl CatalogService {
     ///
     /// 换钥后旧快照不能再用：既不展示旧条目，也不允许凭旧条目安装；同时让它
     /// 等价于「没有缓存」，条件请求头自然为空 → 忽略 ETag 强制重拉新清单。
-    fn cached_for_current_key(&self, channel: &str) -> Option<store::CachedCatalog> {
-        let cached = store::load(&self.root, channel)?;
+    fn cached_for_current_key(&self, channel: &str) -> Option<cache::CachedCatalog> {
+        let cached = cache::load(&self.root, channel)?;
         let current = self.current_key_id();
         if cached.meta.key_id == current {
             return Some(cached);
@@ -911,7 +904,7 @@ impl CatalogService {
     fn sync_one(
         &self,
         base: &str,
-        cached: Option<&store::CachedCatalog>,
+        cached: Option<&cache::CachedCatalog>,
         deadline: Instant,
     ) -> Result<(CatalogSnapshot, Option<Index>, String), Failure> {
         let channel = &self.settings.channel;
@@ -1029,11 +1022,11 @@ impl CatalogService {
             .into());
         }
         index
-            .validate(Some(&store::blob_dir(&self.root)))
+            .validate(Some(&cache::blob_dir(&self.root)))
             .map_err(|e| Rejected::digest(format!("索引条目校验失败: {e}")))?;
 
         let fetched_at = now_rfc3339();
-        let meta = store::CacheMeta {
+        let meta = cache::CacheMeta {
             channel: channel.clone(),
             seq: manifest.seq,
             fetched_at: fetched_at.clone(),
@@ -1045,7 +1038,7 @@ impl CatalogService {
             etag_index,
             last_modified_index,
         };
-        if let Err(e) = store::save(
+        if let Err(e) = cache::save(
             &self.admin_fs,
             &self.root,
             channel,
@@ -1133,7 +1126,7 @@ impl CatalogService {
 
     fn cached_snapshot(
         &self,
-        cached: &store::CachedCatalog,
+        cached: &cache::CachedCatalog,
         state: CatalogState,
         message: impl Into<String>,
     ) -> (CatalogSnapshot, Option<Index>, String) {
@@ -1230,19 +1223,6 @@ fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     } else {
         std::cmp::Ordering::Equal
     }
-}
-
-/// 暂存包只给安装进程读：unix 下落 0600（与上传路径一致）。
-fn set_private(path: &Path) -> Result<(), DownloadError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|e| DownloadError::Io(e.to_string()))?;
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
 }
 
 /// 四类条目 → 页面行。只做展示映射，不再引入新的语义。

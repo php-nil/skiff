@@ -198,7 +198,7 @@ impl Index {
             )?;
         }
         for entry in &self.runtimes {
-            if crate::runtime_catalog::kind_def(&entry.kind).is_none() {
+            if crate::sites::runtime_catalog::kind_def(&entry.kind).is_none() {
                 return Err(format!("运行环境 kind 非法: {}", entry.kind));
             }
             validate_plain_version(&entry.version, "运行环境版本")?;

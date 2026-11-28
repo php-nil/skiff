@@ -235,7 +235,7 @@ pub async fn site_detail(
         name: v.runtime.name.clone(),
         kind: StatusDto {
             code: v.runtime.kind.clone(),
-            label: skiff_app::runtime_catalog::kind_label(&v.runtime.kind).to_string(),
+            label: skiff_app::sites::runtime_catalog::kind_label(&v.runtime.kind).to_string(),
         },
         version: v.runtime.version.clone(),
         state: StatusDto {

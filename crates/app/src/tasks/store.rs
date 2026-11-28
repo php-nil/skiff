@@ -253,7 +253,7 @@ fn run_of(row: &TaskRunRow) -> Option<RunRecord> {
 }
 
 fn audit_of(e: skiff_store::AuditEntry) -> Option<AuditEvent> {
-    let action = e.action.parse_action()?;
+    let action = parse_action(&e.action)?;
     let actor = if e.actor == "system" {
         AuditActor::System
     } else if let Some(id) = e.actor.strip_prefix("plugin:") {
@@ -282,30 +282,27 @@ fn audit_of(e: skiff_store::AuditEntry) -> Option<AuditEvent> {
 }
 
 /// 审计动作字符串 → 枚举。`skiff-sched` 未暴露 `FromStr`，这里只覆盖写库时的集合。
-trait ParseAction {
-    fn parse_action(&self) -> Option<skiff_sched::AuditAction>;
-}
-
-impl ParseAction for String {
-    fn parse_action(&self) -> Option<skiff_sched::AuditAction> {
-        use skiff_sched::AuditAction as A;
-        Some(match self.as_str() {
-            "task.create" => A::TaskCreate,
-            "task.update" => A::TaskUpdate,
-            "task.delete" => A::TaskDelete,
-            "task.trigger" => A::TaskTrigger,
-            "task.run" => A::TaskRun,
-            "task.blocked" => A::TaskBlocked,
-            "buffer.high_watermark" => A::BufferHighWatermark,
-            "buffer.overflow" => A::BufferOverflow,
-            "buffer.recovered" => A::BufferRecovered,
-            "buffer.point_too_large" => A::BufferPointTooLarge,
-            "buffer.lost_on_restart" => A::BufferLostOnRestart,
-            "clock_skew" => A::ClockSkew,
-            "scheduler.deny" => A::SchedulerDeny,
-            _ => return None,
-        })
-    }
+///
+/// 单个调用点（`audit_of`），所以是自由函数而不是 `String` 上的扩展 trait——
+/// 那样只为方法语法多一层间接，且 `impl … for String` 无法被外部复用。
+fn parse_action(action: &str) -> Option<skiff_sched::AuditAction> {
+    use skiff_sched::AuditAction as A;
+    Some(match action {
+        "task.create" => A::TaskCreate,
+        "task.update" => A::TaskUpdate,
+        "task.delete" => A::TaskDelete,
+        "task.trigger" => A::TaskTrigger,
+        "task.run" => A::TaskRun,
+        "task.blocked" => A::TaskBlocked,
+        "buffer.high_watermark" => A::BufferHighWatermark,
+        "buffer.overflow" => A::BufferOverflow,
+        "buffer.recovered" => A::BufferRecovered,
+        "buffer.point_too_large" => A::BufferPointTooLarge,
+        "buffer.lost_on_restart" => A::BufferLostOnRestart,
+        "clock_skew" => A::ClockSkew,
+        "scheduler.deny" => A::SchedulerDeny,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

@@ -526,7 +526,7 @@ pub const PHP_EXTENSION_INSTALLER_SHA256: &str =
 pub const PHP_EXTENSION_INSTALLER_CONTAINER: &str = "/www/skiff/tools/install-php-extensions";
 /// 随二进制分发的脚本内容（与 `deploy/vendor/` 同一份资产）。
 pub const PHP_EXTENSION_INSTALLER: &str =
-    include_str!("../../../deploy/vendor/install-php-extensions");
+    include_str!("../../../../deploy/vendor/install-php-extensions");
 
 /// 生成安装脚本前缀：优先本地副本并校验版本；缺失/版本不符时打印明确错误并回退
 /// 固定版本下载。正式 release 资产的 `IPE_VERSION` 是具体版本号，不会进入

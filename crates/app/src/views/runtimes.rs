@@ -3,7 +3,7 @@
 
 use skiff_store::{Site, KIND_NODE, KIND_PHP, KIND_RUST};
 
-use crate::runtime_catalog::kind_label;
+use crate::sites::runtime_catalog::kind_label;
 use crate::sites::{PhpConfigFile, RuntimeJob, RuntimeVersionState, RuntimeView, SiteError};
 use crate::AppState;
 
@@ -177,7 +177,7 @@ pub async fn detail(state: &AppState, id: &str) -> Result<RuntimeDetailRead, Sit
     };
     // 进程型环境（Node.js / Rust）：端口可改、应用健康可探测、同配置可克隆。
     let port_editable = matches!(view.runtime.kind.as_str(), KIND_NODE | KIND_RUST);
-    let port_range = crate::runtime_catalog::port_range(&view.runtime.kind)
+    let port_range = crate::sites::runtime_catalog::port_range(&view.runtime.kind)
         .map(|r| format!("{}–{}", r.start(), r.end()))
         .unwrap_or_default();
     Ok(RuntimeDetailRead {

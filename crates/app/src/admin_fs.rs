@@ -22,7 +22,7 @@ use skiff_fs::{
     ArchiveFormat, ArchiveRequest, AuditEvent, AuditSink, ClearTrashOutcome, ExtractRequest, Fs,
     FsConfig, FsError, ListRequest, OpContext, Principal, QuotaLimit, QuotaSnapshot, QuotaTracker,
     QuotaUsage, ReadRequest, RestoreOutcome, TrashConfig, TrashEntry, TrashKind, TrashStore,
-    WriteMode, WriteRequest, MAX_REQUEST_BYTES,
+    WriteMode, WriteRequest, MAX_FILE_BYTES, MAX_REQUEST_BYTES,
 };
 use skiff_store::{Db, QuotaRow, TrashRow};
 
@@ -552,6 +552,9 @@ impl AdminFs {
         let site_root = web_root.join("sites");
         let fs_cfg = FsConfig {
             site_root: site_root.to_string_lossy().to_string(),
+            // 进程内直调 Fs（不走 HTTP/UDS 分帧），单次写上限放开到单文件自然上限
+            // 4 GiB；`write_kernel` 原本受默认 256 KiB 限制，包正文（数十 MB）无法直接写。
+            max_request_bytes: MAX_FILE_BYTES as usize,
             trash: TrashConfig {
                 root: data_dir.join("trash"),
                 retention_secs: i64::from(trash_retention_days.max(1)) * 86_400,

@@ -1,15 +1,7 @@
 //! 设置页族：安全 / 菜单 / 界面 / Docker 四页。
 
-use super::schema_kit::{self as kit, TableOpts, API_BASE};
+use super::schema_kit::{self as kit, flag, text, TableOpts, API_BASE};
 use serde_json::{json, Value};
-
-fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
-    v.pointer(pointer).and_then(Value::as_str).unwrap_or("")
-}
-
-fn flag(v: &Value, pointer: &str) -> bool {
-    v.pointer(pointer).and_then(Value::as_bool).unwrap_or(false)
-}
 
 /// 只有一句说明的卡片（不带标题）。
 fn notice(text: impl Into<String>) -> Value {
@@ -22,7 +14,7 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
         "type": "card",
         "props": { "title": "当前账号" },
         "content": { "body": [
-            kit::flex(12, vec![
+            kit::flex(json!({"gap": 12}), vec![
                 json!({ "type": "text",
                        "props": { "text": format!("{username}（{role}）"), "weight": "medium" } }),
                 json!({ "type": "button",
@@ -159,7 +151,7 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
             "生成密钥后，用验证器 App 录入密钥或 otpauth URI，再输入动态码完成启用。",
         ));
         body.push(kit::flex(
-            8,
+            json!({ "gap": 8 }),
             vec![kit::action_button(
                 "生成 TOTP 密钥",
                 vec![json!({ "type": "skiffTotpSetup" })],
@@ -275,7 +267,7 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
             body.push(table);
         }
         body.push(kit::flex(
-            8,
+            json!({ "gap": 8 }),
             vec![kit::dialog_form_button(kit::DialogForm {
                 text: "导入信任公钥",
                 variant: "tonal",
@@ -377,7 +369,7 @@ pub fn menu_schema(data: &Value) -> Value {
     }
 
     body.push(kit::flex(
-        8,
+        json!({ "gap": 8 }),
         vec![menu_button("恢复默认", json!({ "action": "reset" }), false)],
     ));
     body.push(notice("恢复默认会清除本账号的顺序、隐藏与固定偏好。"));
@@ -588,7 +580,7 @@ fn preset_card(
         "props": { "title": name, "variant": "outlined" },
         "content": { "body": [
             kit::small_text(desc),
-            kit::flex(6, vec![
+            kit::flex(json!({"gap": 6}), vec![
                 chip(primary),
                 chip(page),
                 chip(if has_menu { menu } else { "#ffffff" }),

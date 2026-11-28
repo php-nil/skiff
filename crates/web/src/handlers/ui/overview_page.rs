@@ -1,31 +1,7 @@
 //! 概览页 Schema：只读计数卡 + 系统状态（主机监控插件 RPC 结果）。
 
-use super::schema_kit as kit;
+use super::schema_kit::{self as kit, flag, metric_card, num, text};
 use serde_json::{json, Value};
-
-fn num(v: &Value, pointer: &str) -> i64 {
-    v.pointer(pointer).and_then(Value::as_i64).unwrap_or(0)
-}
-
-fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
-    v.pointer(pointer).and_then(Value::as_str).unwrap_or("")
-}
-
-fn flag(v: &Value, pointer: &str) -> bool {
-    v.pointer(pointer).and_then(Value::as_bool).unwrap_or(false)
-}
-
-fn metric_card(title: &str, value: i64, suffix: &str, caption: &str, color: &str) -> Value {
-    let mut stat = json!({ "value": value, "label": caption, "suffix": suffix });
-    if !color.is_empty() {
-        stat["color"] = json!(color);
-    }
-    json!({
-        "type": "card",
-        "props": { "title": title, "variant": "outlined" },
-        "content": { "body": [ { "type": "statistic", "props": stat } ] }
-    })
-}
 
 /// `data`：`/ui/v1/overview` 的 `data`；`health`：RPC 采样或 `{error}`。
 pub fn overview_schema(data: &Value, health: &Value) -> Value {
@@ -70,28 +46,28 @@ pub fn overview_schema(data: &Value, health: &Value) -> Value {
                 num(data, "/containers/running"),
                 " 个",
                 &format!("运行中 · 共 {} 个", num(data, "/containers/total")),
-                ""
+                None,
             ),
             metric_card(
                 "网站",
                 num(data, "/sites/total"),
                 " 个",
                 &site_caption,
-                if site_abnormal > 0 { "warning" } else { "success" }
+                if site_abnormal > 0 { Some("warning") } else { Some("success") }
             ),
             metric_card(
                 "插件",
                 num(data, "/plugins/total"),
                 " 个",
                 &plugin_caption,
-                ""
+                None,
             ),
             metric_card(
                 "运行环境",
                 num(data, "/runtimes/total"),
                 " 个",
                 &runtime_caption,
-                if runtime_abnormal > 0 { "warning" } else { "" }
+                if runtime_abnormal > 0 { Some("warning") } else { None }
             )
         ] }
     }));

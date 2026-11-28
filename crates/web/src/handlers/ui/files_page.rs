@@ -3,48 +3,12 @@
 //! 目录行模板是纯静态结构（`static/budding/pages/_file-row.json`），这里只注入
 //! 数据与当前路径；行内的弹窗按钮沿用宿主同名动作，弹窗注册由壳脚本统一补录。
 
-use super::schema_kit::{self as kit, TableOpts, API_BASE};
+use super::schema_kit::{self as kit, flag, rows, text, TableOpts, API_BASE};
+use crate::util::{encode_uri_component, human_size};
 use serde_json::{json, Value};
 
 /// 行模板随二进制编译进来：它不随请求变化，没必要每页重新拼装。
 const FILE_ROW: &str = include_str!("../../../static/budding/pages/_file-row.json");
-
-fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
-    v.pointer(pointer).and_then(Value::as_str).unwrap_or("")
-}
-
-fn flag(v: &Value, pointer: &str) -> bool {
-    v.pointer(pointer).and_then(Value::as_bool).unwrap_or(false)
-}
-
-fn rows<'a>(v: &'a Value, pointer: &str) -> &'a [Value] {
-    v.pointer(pointer)
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-}
-
-/// 人类可读体积：1024 进制，超过 10 只保留整数位。
-pub fn human_size(bytes: i64) -> String {
-    let mut n = bytes.max(0) as f64;
-    if n < 1024.0 {
-        return format!("{} B", bytes.max(0));
-    }
-    let units = ["KB", "MB", "GB", "TB"];
-    let mut idx = 0usize;
-    loop {
-        n /= 1024.0;
-        if n < 1024.0 || idx + 1 >= units.len() {
-            break;
-        }
-        idx += 1;
-    }
-    if n >= 10.0 {
-        format!("{} {}", n.round() as i64, units[idx])
-    } else {
-        format!("{} {}", (n * 10.0).round() / 10.0, units[idx])
-    }
-}
 
 /// `YYYY-MM-DD HH:MM`（本地时区）；解析失败时原样返回。
 fn minute_label(value: &str) -> String {
@@ -86,7 +50,7 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
 
     let mut crumbs = vec![kit::link(
         "根目录",
-        format!("${{prefix}}/files?path={}", enc("/")),
+        format!("${{prefix}}/files?path={}", encode_uri_component("/")),
     )];
     let mut acc = String::new();
     for seg in path.split('/').filter(|s| !s.is_empty()) {
@@ -95,7 +59,7 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
         crumbs.push(kit::text_line("/"));
         crumbs.push(kit::link(
             seg,
-            format!("${{prefix}}/files?path={}", enc(&acc)),
+            format!("${{prefix}}/files?path={}", encode_uri_component(&acc)),
         ));
     }
     let roots = rows(data, "/roots");
@@ -103,23 +67,29 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
         kit::text_line("可直接在面包屑路径内浏览。")
     } else {
         kit::flex(
-            12,
+            json!({ "gap": 12 }),
             roots
                 .iter()
                 .map(|r| {
                     kit::link(
                         text(r, "/label"),
-                        format!("${{prefix}}/files?path={}", enc(text(r, "/path"))),
+                        format!(
+                            "${{prefix}}/files?path={}",
+                            encode_uri_component(text(r, "/path"))
+                        ),
                     )
                 })
                 .collect(),
         )
     };
-    body.push(kit::card("位置", vec![kit::flex(4, crumbs), roots_node]));
+    body.push(kit::card(
+        "位置",
+        vec![kit::flex(json!({"gap": 4}), crumbs), roots_node],
+    ));
 
     if can_admin {
         body.push(kit::flex(
-            12,
+            json!({ "gap": 12 }),
             vec![
                 kit::link("回收站", "${prefix}/files/trash"),
                 kit::link("配额管理", "${prefix}/files/quotas"),
@@ -226,7 +196,7 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
                             "uploadField": "file",
                             "uploadApi": {
                                 "method": "POST",
-                                "url": format!("{API_BASE}/files/upload?dir={}", enc(path))
+                                "url": format!("{API_BASE}/files/upload?dir={}", encode_uri_component(path))
                             },
                             "uploadProgressTarget": "uploadProgress"
                         }
@@ -300,11 +270,11 @@ pub fn file_view_schema(data: &Value) -> Value {
     };
 
     let mut body = vec![kit::flex(
-        12,
+        json!({ "gap": 12 }),
         vec![
             kit::link(
                 "返回目录",
-                format!("${{prefix}}/files?path={}", enc(&parent)),
+                format!("${{prefix}}/files?path={}", encode_uri_component(&parent)),
             ),
             kit::action_button(
                 "下载",
@@ -393,7 +363,7 @@ pub fn trash_schema(data: &Value) -> Value {
             ),
         ),
         kit::flex(
-            8,
+            json!({ "gap": 8 }),
             vec![
                 kit::action_button("刷新", vec![json!({ "type": "skiffReload" })], "secondary"),
                 kit::action_button(
@@ -615,17 +585,12 @@ pub fn quotas_schema(data: &Value) -> Value {
 /// 回收站写请求：端点挂在 `/ui/v1` 下（`${api}/files/trash/*`），
 /// CSRF 由平台请求适配器统一补。
 fn trash_request(op: &str, data: Value, success: &str, error: &str) -> Value {
-    let mut props = json!({
-        "api": {
-            "method": "POST",
-            "url": format!("${{api}}/files/trash/{op}"),
-            "data": data
-        }
-    });
-    if !success.is_empty() {
-        props["messages"] = json!({ "success": success, "error": error });
-    }
-    json!({ "type": "request", "props": props })
+    kit::post_request(
+        format!("${{api}}/files/trash/{op}"),
+        Some(data),
+        success,
+        error,
+    )
 }
 
 /// 代码块语言：只覆盖常见扩展，其余按纯文本（高亮由前端 Pack 完成）。
@@ -649,28 +614,6 @@ fn language_of(name: &str) -> &'static str {
         "go" => "go",
         _ => "plaintext",
     }
-}
-
-fn enc(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | b'\''
-            | b'('
-            | b')' => out.push(*byte as char),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

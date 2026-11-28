@@ -203,12 +203,11 @@ fn count_in(root: &Path, rel_path: &str) -> usize {
 
 /// 允许直写的文件与处数白名单（路径相对 `crates/app/src`，用 `/` 分隔）。
 ///
-/// 2026-11-21 收口后只剩一处例外：`catalog/mod.rs` 的**流式下载**。
-/// 包正文整块落盘（通道单次写上限 256 KiB、无流式接口）与发布替换
-/// （必须是一次性 `rename`，通道改名对已存在目标是先删后移）留在 `std::fs`，
-/// 其余配套动作（建目录、失败清理）已迁 `AdminFs`。两处写都在验签/核对摘要之后，
-/// 失败即整包丢弃。**新增写入不得往这里加**；通道支持流式写时再迁走并删掉此项。
-const FS_WRITE_ALLOWED: &[(&str, usize)] = &[("catalog/mod.rs", 2)];
+/// 2026-11-27 清空：内核文件通道已放开 `max_request_bytes` 到 `MAX_FILE_BYTES`，
+/// `store_blob` 改用 `write_kernel_mode(Replace)` 一次原子替换（权限 0o600），
+/// 不再走 `.part` 临时文件 + `fs::write` + `fs::rename`。`catalog/mod.rs` 的两处
+/// 例外已全部迁入通道。
+const FS_WRITE_ALLOWED: &[(&str, usize)] = &[];
 
 /// 递归收集 `.rs` 文件。
 fn rust_files(dir: &Path) -> Vec<(PathBuf, String)> {

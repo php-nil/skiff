@@ -19,7 +19,6 @@ pub mod jobs;
 pub mod menu;
 pub mod nginx;
 pub mod panel_settings;
-pub mod runtime_catalog;
 pub mod runtime_index;
 pub mod sites;
 pub mod tasks;

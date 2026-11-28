@@ -47,8 +47,8 @@ pub async fn create(
     // 软件源必须在安装作业之前落盘：prelude 在容器内读 `cache/apk/.skiff-mirror`，
     // 晚了就整轮都用旧源下载（首次安装 90 MB 工具链，差的不是一点）。
     if let Some(raw) = cmd.apk_mirror.as_deref() {
-        let base =
-            crate::runtime_catalog::normalize_apk_mirror(raw).map_err(SiteError::BadRequest)?;
+        let base = crate::sites::runtime_catalog::normalize_apk_mirror(raw)
+            .map_err(SiteError::BadRequest)?;
         state
             .save_apk_mirror(&base, &cmd.actor.username)
             .map_err(SiteError::Internal)?;

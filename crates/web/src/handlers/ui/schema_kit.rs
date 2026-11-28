@@ -63,9 +63,9 @@ pub fn link(text: &str, href: impl Into<String>) -> Value {
     json!({ "type": "link", "props": { "text": text, "href": href.into() } })
 }
 
-/// 横向排布的一组节点。
-pub fn flex(gap: i64, body: Vec<Value>) -> Value {
-    json!({ "type": "flex", "props": { "gap": gap }, "content": { "body": body } })
+/// 横向排布的一组节点；`props` 直接传完整 JSON 对象（gap / align / direction 任选）。
+pub fn flex(props: Value, body: Vec<Value>) -> Value {
+    json!({ "type": "flex", "props": props, "content": { "body": body } })
 }
 
 /// 触发宿主动作 / 内联动作链的按钮。
@@ -368,6 +368,80 @@ pub fn reload_page() -> Value {
     json!({ "type": "skiffReload" })
 }
 
+// ---- JSON Pointer 取数 ------------------------------------------------------
+//
+// 各页从 `/ui/v1` 的 `data` 里取字段，此前每页各写一份 `text`/`flag`/`num`/`rows`
+// （2026-11-28 前 8 个 page 模块共 13 份逐字相同的副本）。缺失与类型不符一律给
+// 「空值」而不是报错：页面拼装对「字段没有」与「字段为空」的处理相同。
+
+/// JSON Pointer 取字符串；缺失或类型不符给空串。
+pub fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
+    v.pointer(pointer).and_then(Value::as_str).unwrap_or("")
+}
+
+/// JSON Pointer 取布尔；缺失或类型不符给 `false`。
+pub fn flag(v: &Value, pointer: &str) -> bool {
+    v.pointer(pointer).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// JSON Pointer 取整数；缺失或类型不符给 `0`。
+pub fn num(v: &Value, pointer: &str) -> i64 {
+    v.pointer(pointer).and_then(Value::as_i64).unwrap_or(0)
+}
+
+/// JSON Pointer 取数组；缺失或类型不符给空切片（可直接 `for` / `.len()`）。
+pub fn rows<'a>(v: &'a Value, pointer: &str) -> &'a [Value] {
+    v.pointer(pointer)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+/// 写请求动作：`POST {url}`，可带 body，可带成功/失败提示。
+///
+/// 全仓 6 处曾各拼一份同样的信封（容器操作、回收站、任务、插件启停/卸载、
+/// 作业取消/重试）：`{type:"request", props:{api:{method,url,data?}, messages?}}`。
+/// 收成一处后，改信封只改这里。`success` 留空表示不弹提示（`messages` 整个省略）。
+/// `url` 由调用方拼好——各页的前缀不同（`${api}` 模板 / `API_BASE` 常量）。
+pub fn post_request(
+    url: impl Into<String>,
+    data: Option<Value>,
+    success: &str,
+    error: &str,
+) -> Value {
+    let mut api = json!({ "method": "POST", "url": url.into() });
+    if let Some(data) = data {
+        api["data"] = data;
+    }
+    let mut props = json!({ "api": api });
+    if !success.is_empty() {
+        props["messages"] = json!({ "success": success, "error": error });
+    }
+    json!({ "type": "request", "props": props })
+}
+
+/// 指标卡（页头一行几块的数字/短文本）：卡片 + `statistic`。
+///
+/// `value` 走 `Into<Value>`：数字仍按 JSON 数字下发（组件会自己格式化），文本按字符串，
+/// 两种页面都在用。`suffix` 留空即不显示后缀；`color` 为 `None` 时不写该字段。
+pub fn metric_card(
+    title: &str,
+    value: impl Into<Value>,
+    suffix: &str,
+    caption: &str,
+    color: Option<&str>,
+) -> Value {
+    let mut stat = json!({ "value": value.into(), "label": caption, "suffix": suffix });
+    if let Some(color) = color {
+        stat["color"] = json!(color);
+    }
+    json!({
+        "type": "card",
+        "props": { "title": title, "variant": "outlined" },
+        "content": { "body": [{ "type": "statistic", "props": stat }] }
+    })
+}
+
 /// 空串回落为破折号「—」：表格/详情里缺省字段的统一显示口径。
 pub fn or_dash(value: &str) -> &str {
     if value.is_empty() {
@@ -436,6 +510,41 @@ mod tests {
             with_actions["content"]["actions"][0]["props"]["text"],
             "新建"
         );
+    }
+
+    /// 取数函数对「缺失」「类型不符」「空数组」一律给空值，页面拼装无需逐处判空。
+    #[test]
+    fn pointer_accessors_degrade_to_empty() {
+        let v = json!({ "s": "x", "b": true, "n": 3, "a": [1, 2] });
+        assert_eq!(text(&v, "/s"), "x");
+        assert_eq!(text(&v, "/missing"), "");
+        assert_eq!(text(&v, "/n"), "", "类型不符按空串处理");
+        assert!(flag(&v, "/b"));
+        assert!(!flag(&v, "/s"));
+        assert_eq!(num(&v, "/n"), 3);
+        assert_eq!(num(&v, "/missing"), 0);
+        assert_eq!(rows(&v, "/a").len(), 2);
+        assert!(rows(&v, "/missing").is_empty());
+    }
+
+    /// 写请求信封：无 body 时不写 `data`，提示留空时不写 `messages`（组件默认不弹）。
+    #[test]
+    fn post_request_omits_absent_parts() {
+        let bare = post_request("/ui/v1/x/1/stop", None, "", "");
+        assert_eq!(bare["type"], "request");
+        assert_eq!(bare["props"]["api"]["method"], "POST");
+        assert!(bare["props"]["api"].get("data").is_none());
+        assert!(bare["props"].get("messages").is_none());
+
+        let full = post_request(
+            "/ui/v1/x/1/save",
+            Some(json!({ "a": 1 })),
+            "已保存",
+            "保存失败",
+        );
+        assert_eq!(full["props"]["api"]["data"]["a"], 1);
+        assert_eq!(full["props"]["messages"]["success"], "已保存");
+        assert_eq!(full["props"]["messages"]["error"], "保存失败");
     }
 
     /// 空串回落「—」，非空原样借用返回（不复制）。

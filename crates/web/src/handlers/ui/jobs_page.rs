@@ -249,16 +249,12 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
                                     "content": "确认请求取消该作业？已在执行中的步骤可能仍需等待收尾。"
                                 }
                             },
-                            {
-                                "type": "request",
-                                "props": {
-                                    "api": {
-                                        "method": "POST",
-                                        "url": format!("{}/jobs/{}/cancel", schema_kit::API_BASE, crate::util::encode_uri_component(&id))
-                                    },
-                                    "messages": { "success": "已请求取消", "error": "取消作业失败" }
-                                }
-                            },
+                            schema_kit::post_request(
+                                format!("{}/jobs/{}/cancel", schema_kit::API_BASE, crate::util::encode_uri_component(&id)),
+                                None,
+                                "已请求取消",
+                                "取消作业失败",
+                            ),
                             { "type": "skiffReload" }
                         ]
                     }
@@ -266,23 +262,26 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
             }));
         }
         if can_retry {
+            // 重试要把响应里的新作业写进 `job` 作用域（`assign`），是这套信封里唯一的
+            // 额外字段，因此先建节点再补，不把特例塞进公共构件。
+            let mut retry = schema_kit::post_request(
+                format!(
+                    "{}/jobs/{}/retry",
+                    schema_kit::API_BASE,
+                    crate::util::encode_uri_component(&id)
+                ),
+                None,
+                "已创建重试作业",
+                "重试失败",
+            );
+            retry["props"]["assign"] = json!("job");
             actions.push(json!({
                 "type": "button",
                 "props": { "text": "重试作业", "color": "primary" },
                 "onEvent": {
                     "click": {
                         "actions": [
-                            {
-                                "type": "request",
-                                "props": {
-                                    "api": {
-                                        "method": "POST",
-                                        "url": format!("{}/jobs/{}/retry", schema_kit::API_BASE, crate::util::encode_uri_component(&id))
-                                    },
-                                    "assign": "job",
-                                    "messages": { "success": "已创建重试作业", "error": "重试失败" }
-                                }
-                            },
+                            retry,
                             {
                                 "type": "navigate",
                                 "props": { "url": "${prefix}/tasks/jobs/${job.data.id}" }
@@ -322,7 +321,7 @@ pub fn job_logs_schema(
     truncated: bool,
 ) -> Value {
     let mut body = vec![schema_kit::flex(
-        8,
+        json!({ "gap": 8 }),
         vec![
             schema_kit::link(
                 "返回作业详情",

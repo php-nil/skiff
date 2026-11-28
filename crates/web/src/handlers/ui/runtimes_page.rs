@@ -1,15 +1,8 @@
 //! 运行环境页族：列表（含新建弹窗）与详情（五个子视图）。
 
-use super::schema_kit::{self as kit, TableOpts, API_BASE};
+use super::schema_kit::{self as kit, num, text, TableOpts, API_BASE};
+use crate::util::encode_uri_component;
 use serde_json::{json, Value};
-
-fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
-    v.pointer(pointer).and_then(Value::as_str).unwrap_or("")
-}
-
-fn num(v: &Value, pointer: &str) -> i64 {
-    v.pointer(pointer).and_then(Value::as_i64).unwrap_or(0)
-}
 
 /// 运行环境列表：游标表格 + 新建弹窗（类型/版本/实例名/软件源）。
 pub fn runtimes_schema(catalog: &Value, total: i64) -> Value {
@@ -361,7 +354,7 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
                 ),
                 format!("站点数：{site_count}")
             ]),
-            kit::flex(8, vec![
+            kit::flex(json!({"gap": 8}), vec![
                 runtime_op("启动", "start", runtime_id, ""),
                 runtime_op("停止", "stop", runtime_id,
                     if site_count > 0 { "该环境被站点使用，停止会影响全部绑定站点。确认停止？" } else { "" }),
@@ -373,7 +366,7 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
                 runtime_op("删除", "delete", runtime_id,
                     "删除运行环境不可恢复，绑定站点会受影响。确认删除？")
             ]),
-            kit::flex(8, vec![kit::action_button(
+            kit::flex(json!({"gap": 8}), vec![kit::action_button(
                 "实测版本",
                 vec![json!({ "type": "skiffRuntimeProbe", "props": { "id": runtime_id } })],
                 "tonal"
@@ -725,11 +718,14 @@ pub fn runtime_logs_schema(runtime_id: &str, data: &Value) -> Value {
     let raw = text(data, "/text");
     let lines: Vec<&str> = raw.split('\n').filter(|line| !line.is_empty()).collect();
     let mut body = vec![kit::flex(
-        8,
+        json!({ "gap": 8 }),
         vec![
             kit::link(
                 "返回运行环境详情",
-                format!("${{prefix}}/sites/runtimes/{}", enc(runtime_id)),
+                format!(
+                    "${{prefix}}/sites/runtimes/{}",
+                    encode_uri_component(runtime_id)
+                ),
             ),
             kit::action_button("刷新", vec![json!({ "type": "skiffReload" })], "text"),
         ],
@@ -758,28 +754,6 @@ fn runtime_op(text: &str, op: &str, runtime_id: &str, confirm: &str) -> Value {
                "props": { "id": runtime_id, "op": op, "confirm_text": confirm } })],
         if op == "delete" { "text" } else { "tonal" },
     )
-}
-
-fn enc(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | b'\''
-            | b'('
-            | b')' => out.push(*byte as char),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

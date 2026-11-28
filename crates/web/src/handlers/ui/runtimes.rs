@@ -25,7 +25,7 @@ pub async fn runtimes(
             needle.is_empty()
                 || v.runtime.id.to_lowercase().contains(&needle)
                 || v.runtime.name.to_lowercase().contains(&needle)
-                || skiff_app::runtime_catalog::kind_label(&v.runtime.kind)
+                || skiff_app::sites::runtime_catalog::kind_label(&v.runtime.kind)
                     .to_lowercase()
                     .contains(&needle)
         })
@@ -288,11 +288,11 @@ pub async fn runtime_detail(
         },
         "extensions": extensions,
         "categories": [
-            skiff_app::runtime_catalog::CATEGORY_DB,
-            skiff_app::runtime_catalog::CATEGORY_IMAGE,
-            skiff_app::runtime_catalog::CATEGORY_CRYPTO,
-            skiff_app::runtime_catalog::CATEGORY_CACHE,
-            skiff_app::runtime_catalog::CATEGORY_OTHER,
+            skiff_app::sites::runtime_catalog::CATEGORY_DB,
+            skiff_app::sites::runtime_catalog::CATEGORY_IMAGE,
+            skiff_app::sites::runtime_catalog::CATEGORY_CRYPTO,
+            skiff_app::sites::runtime_catalog::CATEGORY_CACHE,
+            skiff_app::sites::runtime_catalog::CATEGORY_OTHER,
         ],
         "files": files,
         "editor": editor,
@@ -324,18 +324,18 @@ pub async fn runtime_catalog(
 
 /// 运行环境目录的 JSON 形状：列表页的新建弹窗与 `/runtimes/catalog` 共用一份。
 pub(super) fn catalog_json(state: &AppState) -> serde_json::Value {
-    let kinds: Vec<serde_json::Value> = skiff_app::runtime_catalog::RUNTIME_KINDS
+    let kinds: Vec<serde_json::Value> = skiff_app::sites::runtime_catalog::RUNTIME_KINDS
         .iter()
         .map(|k| {
             json!({
                 "key": k.kind,
                 "label": k.label,
                 "versions": k.versions,
-                "implemented": skiff_app::runtime_catalog::is_implemented(k.kind),
+                "implemented": skiff_app::sites::runtime_catalog::is_implemented(k.kind),
             })
         })
         .collect();
-    let mirrors: Vec<serde_json::Value> = skiff_app::runtime_catalog::APK_MIRRORS
+    let mirrors: Vec<serde_json::Value> = skiff_app::sites::runtime_catalog::APK_MIRRORS
         .iter()
         .filter(|m| !m.base.is_empty())
         .map(|m| {
@@ -384,7 +384,7 @@ pub(super) fn catalog_json(state: &AppState) -> serde_json::Value {
         "apk_mirror_current": {
             "fixed": fixed,
             "base": base,
-            "label": skiff_app::runtime_catalog::apk_mirror_label(&base),
+            "label": skiff_app::sites::runtime_catalog::apk_mirror_label(&base),
         },
     })
 }
@@ -435,7 +435,7 @@ pub async fn runtime_create(
     guard::write(&state, &user, &parts, act::RUNTIME_CREATE)?;
     let extensions = body
         .extensions
-        .unwrap_or_else(skiff_app::runtime_catalog::default_extensions);
+        .unwrap_or_else(skiff_app::sites::runtime_catalog::default_extensions);
     let created = runtime_cmd::create(
         &state,
         runtime_cmd::CreateRuntime {
@@ -454,14 +454,14 @@ pub async fn runtime_create(
     let message = if created.started {
         format!(
             "已提交 {} {} 安装任务（实例 {}）",
-            skiff_app::runtime_catalog::kind_label(&created.runtime.kind),
+            skiff_app::sites::runtime_catalog::kind_label(&created.runtime.kind),
             created.runtime.version,
             created.runtime.name
         )
     } else {
         format!(
             "已登记 {} {}（实例 {}）；该类型暂不安装容器",
-            skiff_app::runtime_catalog::kind_label(&created.runtime.kind),
+            skiff_app::sites::runtime_catalog::kind_label(&created.runtime.kind),
             created.runtime.version,
             created.runtime.name
         )

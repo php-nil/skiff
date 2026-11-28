@@ -20,20 +20,12 @@ fn row_button(text: &str, actions: Vec<Value>) -> Value {
 
 /// 任务写请求：`POST /tasks/{id}/{op}`，提示与刷新都由动作链声明。
 fn task_request(id: &str, op: &str, data: Option<Value>, success: &str, error: &str) -> Value {
-    let mut api = json!({
-        "method": "POST",
-        "url": format!("{}/tasks/{id}/{op}", super::schema_kit::API_BASE)
-    });
-    if let Some(data) = data {
-        api["data"] = data;
-    }
-    json!({
-        "type": "request",
-        "props": {
-            "api": api,
-            "messages": { "success": success, "error": error }
-        }
-    })
+    super::schema_kit::post_request(
+        format!("{}/tasks/{id}/{op}", super::schema_kit::API_BASE),
+        data,
+        success,
+        error,
+    )
 }
 
 fn table_reload() -> Value {

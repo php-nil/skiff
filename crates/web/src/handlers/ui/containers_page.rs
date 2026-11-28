@@ -5,6 +5,7 @@
 
 use super::dto::ContainerDetailData;
 use super::schema_kit::{self as kit, API_BASE};
+use crate::util::encode_uri_component;
 use serde_json::{json, Value};
 
 /// 容器列表：全部 / 仅异常 两个页内筛选 + 游标表格 + 新建入口。
@@ -62,7 +63,7 @@ pub fn containers_schema(
         }
     );
     body.push(kit::flex(
-        8,
+        json!({ "gap": 8 }),
         vec![
             filter_button("全部", filter != "error", json!({})),
             filter_button("仅异常", filter == "error", json!({ "filter": "error" })),
@@ -245,12 +246,18 @@ pub fn container_detail_schema(data: &ContainerDetailData) -> Value {
     // 日志只需 DockerRead，与详情读取同权限；终端才需要 DockerExec。
     let mut actions = vec![kit::link(
         "查看日志",
-        format!("${{prefix}}/docker/containers/{}/logs", enc(&c.id)),
+        format!(
+            "${{prefix}}/docker/containers/{}/logs",
+            encode_uri_component(&c.id)
+        ),
     )];
     if data.can_exec {
         actions.push(kit::link(
             "打开终端",
-            format!("${{prefix}}/docker/containers/{}/terminal", enc(&c.id)),
+            format!(
+                "${{prefix}}/docker/containers/{}/terminal",
+                encode_uri_component(&c.id)
+            ),
         ));
     }
     if data.can_operate {
@@ -397,7 +404,7 @@ fn limits_form(container_id: &str, data: &ContainerDetailData) -> Value {
 }
 
 fn container_op(text: &str, action: &str, c: &super::dto::ContainerItem) -> Value {
-    let id = enc(&c.id);
+    let id = encode_uri_component(&c.id);
     let mut actions = Vec::new();
     if action == "kill" {
         actions.push(json!({
@@ -434,16 +441,12 @@ fn container_op(text: &str, action: &str, c: &super::dto::ContainerItem) -> Valu
 
 /// 容器写请求：接口统一是 `POST /containers/{id}/{action}`，确认与提示由动作链声明。
 fn container_request(id: &str, action: &str, success: &str, error: &str) -> Value {
-    let mut props = json!({
-        "api": {
-            "method": "POST",
-            "url": format!("{API_BASE}/containers/{id}/{action}")
-        }
-    });
-    if !success.is_empty() {
-        props["messages"] = json!({ "success": success, "error": error });
-    }
-    json!({ "type": "request", "props": props })
+    kit::post_request(
+        format!("{API_BASE}/containers/{id}/{action}"),
+        None,
+        success,
+        error,
+    )
 }
 
 /// 列表行删除后刷新本表格；组件 `id` 由本页表格声明，不依赖自动刷新。
@@ -464,11 +467,14 @@ pub fn container_logs_schema(
 ) -> Value {
     let lines: Vec<&str> = text.split('\n').filter(|line| !line.is_empty()).collect();
     let mut body = vec![kit::flex(
-        8,
+        json!({ "gap": 8 }),
         vec![
             kit::link(
                 "返回容器详情",
-                format!("${{prefix}}/docker/containers/{}", enc(container_id)),
+                format!(
+                    "${{prefix}}/docker/containers/{}",
+                    encode_uri_component(container_id)
+                ),
             ),
             kit::action_button("刷新", vec![json!({ "type": "skiffReload" })], "text"),
         ],
@@ -495,28 +501,6 @@ pub fn container_logs_schema(
 }
 
 /// 路径段编码：与 JS 的 `encodeURIComponent` 同语义（`/` 也编码）。
-fn enc(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | b'\''
-            | b'('
-            | b')' => out.push(*byte as char),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

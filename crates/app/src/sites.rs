@@ -35,7 +35,6 @@ use skiff_docker::{ContainerSpec, DockerParams, Mount, Verb};
 use skiff_store::{NewSite as StoreNewSite, Runtime};
 
 use crate::jobs as app_jobs;
-use crate::runtime_catalog;
 use crate::AppState;
 
 mod backup;
@@ -47,6 +46,7 @@ mod layout;
 mod logs;
 mod network;
 mod runtime;
+pub mod runtime_catalog;
 mod spec;
 mod vhost;
 pub use backup::*;

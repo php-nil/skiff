@@ -13,15 +13,12 @@
 
 use serde_json::{json, Value};
 
-use super::schema_kit::{self as kit};
+use super::schema_kit::{self as kit, flex, metric_card, or_dash, text_line, write_card, API_BASE};
 use super::*;
 use crate::util::encode_uri_component;
 
 /// L3 子视图白名单；未知值回落到概览。
 const TABS: [&str; 5] = ["overview", "domains", "config", "ssl", "backup"];
-
-/// `/ui/v1` 路由前缀：与壳页 `data-api-base` 一致（JSON 命名空间不带入口前缀）。
-const API_BASE: &str = "/ui/v1";
 
 pub fn site_page_schema(data: &SiteDetailData, tab: &str, prefix: &str) -> Value {
     let view = if TABS.contains(&tab) { tab } else { "overview" };
@@ -370,8 +367,8 @@ fn domains_section(data: &SiteDetailData) -> Vec<Value> {
         }
     }
     if data.can_manage {
-        body.push(kit::flex(
-            8,
+        body.push(flex(
+            json!({ "gap": 8 }),
             vec![kit::dialog_form_button(kit::DialogForm {
                 text: "新增附加域名",
                 variant: "flat",
@@ -414,10 +411,10 @@ fn ssl_section(data: &SiteDetailData) -> Vec<Value> {
         } else {
             "未检测到证书文件"
         }),
-        text_line(format!("证书路径：{}", dash(&ssl.cert_path))),
-        text_line(format!("主体：{}", dash(&ssl.subject))),
-        text_line(format!("签发者：{}", dash(&ssl.issuer))),
-        text_line(format!("到期：{}", dash(&ssl.expires))),
+        text_line(format!("证书路径：{}", or_dash(&ssl.cert_path))),
+        text_line(format!("主体：{}", or_dash(&ssl.subject))),
+        text_line(format!("签发者：{}", or_dash(&ssl.issuer))),
+        text_line(format!("到期：{}", or_dash(&ssl.expires))),
     ];
     if data.can_manage {
         let upload_action = site_write_action(
@@ -560,7 +557,7 @@ fn backup_section(data: &SiteDetailData) -> Vec<Value> {
                 backup.last_text.as_str()
             }
         )));
-        body.push(text_line(format!("下次：{}", dash(&backup.next_text))));
+        body.push(text_line(format!("下次：{}", or_dash(&backup.next_text))));
         if data.can_manage {
             body.push(site_btn(
                 if backup.enabled {
@@ -886,54 +883,6 @@ pub(super) fn site_create_fields(runtime_items: Vec<Value>) -> Vec<Value> {
             "props": { "name": "aliases", "label": "附加域名（每行一个）", "rows": 3 }
         }),
     ]
-}
-
-fn dash(value: &str) -> &str {
-    if value.is_empty() {
-        "—"
-    } else {
-        value
-    }
-}
-
-fn text_line(text: impl Into<String>) -> Value {
-    json!({ "type": "text", "props": { "text": text.into() } })
-}
-
-fn flex(props: Value, body: Vec<Value>) -> Value {
-    json!({ "type": "flex", "props": props, "content": { "body": body } })
-}
-
-/// 指标卡：大号数值 + 一行补充说明；`color` 只影响统计值的语义色。
-fn metric_card(
-    title: &str,
-    value: impl Into<String>,
-    suffix: &str,
-    caption: &str,
-    color: Option<&str>,
-) -> Value {
-    let mut stat = json!({ "value": value.into(), "label": caption, "suffix": suffix });
-    if let Some(color) = color {
-        stat["color"] = json!(color);
-    }
-    json!({
-        "type": "card",
-        "props": { "title": title, "variant": "outlined" },
-        "content": { "body": [{ "type": "statistic", "props": stat }] }
-    })
-}
-
-fn write_card(title: &str, notice: &str, form: Value) -> Value {
-    let mut content = Vec::new();
-    if !notice.is_empty() {
-        content.push(text_line(notice));
-    }
-    content.push(form);
-    json!({
-        "type": "card",
-        "props": { "title": title },
-        "content": { "body": content }
-    })
 }
 
 fn site_write_action(props: Value) -> Value {

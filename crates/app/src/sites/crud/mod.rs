@@ -14,6 +14,9 @@ use crate::admin_fs::AdminFs;
 use crate::time_fmt::unix_now;
 use crate::AppState;
 
+pub mod tls;
+pub mod vhost;
+
 /// nginx 激活结果：平滑 reload（已自证 worker 换代）或回退到容器重启。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NginxActivation {
@@ -410,9 +413,6 @@ fn publish_cert_file(fs: &AdminFs, tmp: &Path, dst: &Path, mode: u32) -> Result<
 }
 
 impl AppState {
-    /// 运行环境页「镜像参数」保存：nginx / PHP 基础镜像标签。
-    ///
-    /// 键名只在 `KEY_NGINX_IMAGE` / `KEY_PHP_IMAGE` 定义，handler 不再写字面量。
     pub fn save_runtime_images(
         &self,
         nginx: Option<&str>,
@@ -431,32 +431,23 @@ impl AppState {
         Ok(())
     }
 
-    /// 当前生效的 apk 软件源：`(是否用户固定, 源根地址)`；地址为空表示自动探测。
-    ///
-    /// 事实来源是宿主 `cache/apk/.skiff-mirror`（该目录挂进每个 Alpine 容器的
-    /// `/var/cache/apk`），不另存一份到库里：容器内 prelude、`com.skiff.sources`
-    /// 插件与页面读写的是同一个文件，避免出现「库与文件不一致」的第二处真相。
     pub fn apk_mirror_current(&self) -> (bool, String) {
         let path = self
             .site_settings()
             .system_pkg_cache_dir()
             .join(".skiff-mirror");
         let text = std::fs::read_to_string(path).unwrap_or_default();
-        crate::runtime_catalog::parse_apk_mirror_file(&text)
+        crate::sites::runtime_catalog::parse_apk_mirror_file(&text)
     }
 
-    /// 设置 apk 软件源（安装 PHP 环境时可选）。
-    ///
-    /// 空串/`auto` → 删除固定态文件，回到 prelude 的实测择快；具体地址 → 写
-    /// `# skiff-fixed` 固定态，prelude 认标记后不再自动改写。返回归一后的地址。
     pub fn save_apk_mirror(&self, raw: &str, actor: &str) -> Result<String, String> {
-        let base = crate::runtime_catalog::normalize_apk_mirror(raw)?;
+        let base = crate::sites::runtime_catalog::normalize_apk_mirror(raw)?;
         let dir = self.site_settings().system_pkg_cache_dir();
         // 目录与标记文件都是系统缓存资产（prelude/插件共用），走内核文件通道留痕：
         // 建目录/删标记是辅助动作，正文写入仍按用户主体进审计。
         self.admin_fs().ensure_dir_kernel(&dir)?;
         let path = dir.join(".skiff-mirror");
-        match crate::runtime_catalog::apk_mirror_fixed_body(&base) {
+        match crate::sites::runtime_catalog::apk_mirror_fixed_body(&base) {
             Some(body) => {
                 self.admin_fs()
                     .write(actor, &path.display().to_string(), &body)
@@ -473,7 +464,6 @@ impl AppState {
         Ok(base)
     }
 
-    /// Docker 设置页的镜像前缀（写入前去掉尾部 `/`，与读取侧口径一致）。
     pub fn save_image_prefix(&self, raw: &str) -> Result<String, String> {
         let value = raw.trim().trim_end_matches('/').to_string();
         self.db()
@@ -482,14 +472,12 @@ impl AppState {
         Ok(value)
     }
 
-    /// Docker 设置页的加速源（落 daemon.json 由 `apply_registry_mirror` 负责，这里只记设置）。
     pub fn save_registry_mirror(&self, raw: &str) -> Result<(), String> {
         self.db()
             .set_setting(KEY_MIRROR, raw)
             .map_err(|e| e.to_string())
     }
 
-    /// 把「网站 → 设置」里的镜像源落到宿主 `/etc/docker/daemon.json`。
     pub async fn apply_registry_mirror(
         &self,
         raw: &str,
@@ -543,9 +531,6 @@ impl AppState {
         }
     }
 
-    /// 核验实际拉取的 PHP 镜像满足前提：`Config.User` 为空、带 `docker-php-entrypoint`。
-    ///
-    /// 不满足时明确拒绝，不静默换号或改用别的启动路径。
     pub(crate) async fn verify_php_image_identity(&self, image: &str) -> Result<(), String> {
         let info = self
             .docker()
@@ -570,9 +555,6 @@ impl AppState {
         Ok(())
     }
 
-    /// 面板写入站点文档根后归还统一身份（仅 `sites/<domain>/index` 子树）。
-    ///
-    /// 只处理写入目标本身：单文件保存/上传/新建目录走这里，避免每次写都遍历整棵树。
     pub fn restore_site_index_owner(&self, path: &str) {
         let p = Path::new(path);
         if is_site_index_path(p) {
@@ -580,9 +562,6 @@ impl AppState {
         }
     }
 
-    /// 同 [`Self::restore_site_index_owner`]，但递归处理整棵子树。
-    ///
-    /// 用于复制、解压与重命名这类可能一次生成/移动大量文件的动作。
     pub fn restore_site_index_owner_tree(&self, path: &str) {
         let p = Path::new(path);
         if is_site_index_path(p) {
@@ -636,10 +615,6 @@ impl AppState {
         }
     }
 
-    /// 后台安装/重建 Web 服务（OpenResty）。
-    ///
-    /// 提交一条 `web.install` 作业后立即返回；步骤推进写入 `jobs.steps_json`，
-    /// 页面轮询 `/ui/v1/web/install`。同一目标已有活跃作业时由唯一索引拒绝。
     pub fn start_web_env_install(
         self: &Arc<Self>,
         actor: &str,
@@ -687,9 +662,6 @@ impl AppState {
         }
     }
 
-    /// 推进单步：同步写 `steps_json`、作业阶段与过程日志。
-    ///
-    /// 进度只在真实步骤落库；`pending` 不伪造时间，`ok/failed` 才补结束时间。
     fn mark_step(
         &self,
         job_id: &str,
@@ -733,7 +705,6 @@ impl AppState {
         }
     }
 
-    /// 标记失败并返回带步骤上下文的错误串（作业 `error_detail` 与页面共用）。
     fn fail_step(
         &self,
         job_id: &str,
@@ -749,7 +720,6 @@ impl AppState {
         format!("第 {} 步「{}」失败：{}", idx + 1, name, msg)
     }
 
-    /// 只安装/重建 OpenResty（Web 服务）。PHP、Node、Go、Rust 各自独立安装，互不连带。
     async fn run_web_env_install(&self, job_id: &str) -> Result<(), String> {
         let s = self.site_settings();
         let registry = registry_of(&s.nginx_image);
@@ -933,8 +903,6 @@ impl AppState {
         Ok(())
     }
 
-    /// 移除同名旧容器。对象必须由引擎返回的真实行重建——`Actor::System` 的
-    /// allowlist 只认内核标签，空 labels 会被判成非托管对象而拒绝。
     pub(crate) async fn remove_existing_container(&self, c: &ContainerRow) -> Result<(), String> {
         let obj = skiff_docker::ObjectRef {
             id: c.id.clone(),
@@ -951,10 +919,6 @@ impl AppState {
         .map_err(|e| format!("移除旧容器失败：{e}"))
     }
 
-    /// 等 PHP-FPM 生成 socket 后，由内核强制 `root:nobody` + 0660。
-    ///
-    /// 容器内 `listen.group` 已经指向 nobody，但镜像/版本差异可能让 FPM 落盘时
-    /// 带上别的组；这里以宿主准绳再收一次，绝不允许 world 可写。
     pub(crate) async fn secure_php_socket(
         &self,
         s: &SiteSettings,
@@ -986,890 +950,6 @@ impl AppState {
             }
         }
         Ok(())
-    }
-
-    fn write_default_vhost(&self, s: &SiteSettings) -> std::io::Result<()> {
-        let fs = self.admin_fs();
-        fs.ensure_dir_kernel(&s.conf_dir)
-            .map_err(std::io::Error::other)?;
-        // 兜底文件与站点 include 入口始终存在；默认站点的投影以库里 `is_default` 为准。
-        fs.write_kernel(&s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST.as_bytes())
-            .map_err(std::io::Error::other)?;
-        fs.write_kernel(
-            &s.conf_dir.join(SITES_INCLUDE_CONF),
-            s.sites_include_conf().as_bytes(),
-        )
-        .map_err(std::io::Error::other)?;
-        self.sync_default_conf(s)
-    }
-
-    fn bound_runtime(&self, site: &Site) -> Result<Runtime, SiteError> {
-        let rid = site
-            .runtime_id
-            .as_deref()
-            .ok_or_else(|| SiteError::BadRequest("运行环境站点未绑定运行环境".into()))?;
-        self.db()
-            .runtime_by_id(rid)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))
-    }
-
-    /// 读取站点绑定 PHP 运行环境的 socket：返回（宿主路径，容器内路径）。
-    /// 拒绝未登记的 socket，避免 vhost 指向不存在的端点。
-    fn php_socket_paths(
-        &self,
-        s: &SiteSettings,
-        site: &Site,
-    ) -> Result<(String, String), SiteError> {
-        let rid = site
-            .runtime_id
-            .as_deref()
-            .ok_or_else(|| SiteError::BadRequest("PHP 站点未绑定运行环境".into()))?;
-        let rt = self
-            .db()
-            .runtime_by_id(rid)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
-        if rt.kind != skiff_store::KIND_PHP {
-            return Err(SiteError::Unavailable(format!(
-                "{} 运行环境不提供 PHP-FPM socket",
-                rt.kind
-            )));
-        }
-        let host = rt
-            .socket_path
-            .clone()
-            .unwrap_or_else(|| s.runtime_socket(&rt.kind, &rt.name).display().to_string());
-        let container = s.container_path(Path::new(&host));
-        Ok((host, container))
-    }
-
-    /// 按站点类型生成 vhost 内容（静态 / PHP / 反向代理）。
-    pub(crate) fn render_vhost_for(
-        &self,
-        s: &SiteSettings,
-        site: &Site,
-        aliases: &[String],
-        tls: Option<&VhostTls>,
-    ) -> Result<String, SiteError> {
-        let site_dir = PathBuf::from(&site.root_dir);
-        let root = s.container_path(&site_index_dir(&site_dir));
-        let access = s.container_log(&site_dir, LogKind::Access);
-        let error = s.container_log(&site_dir, LogKind::Error);
-        let runtime = if site.site_type == TYPE_RUNTIME {
-            Some(self.bound_runtime(site)?)
-        } else {
-            None
-        };
-        let socket = if runtime
-            .as_ref()
-            .is_some_and(|r| r.kind == skiff_store::KIND_PHP)
-        {
-            Some(self.php_socket_paths(s, site)?.1)
-        } else {
-            None
-        };
-        // 巡检已判定失联的运行环境：不生成指向容器地址的可用配置，直接维护态。
-        let maintenance = runtime
-            .as_ref()
-            .and_then(|rt| self.runtime_guard(&rt.id))
-            .filter(|g| !g.available)
-            .map(|g| g.reason);
-        // 进程型站点的容器地址先算好：vhost 只持有它的引用，不能指向临时值；
-        // 维护态下不计算，避免「已失联」时因地址缺失而渲染失败。
-        let process_address = if maintenance.is_none() {
-            match runtime.as_ref() {
-                Some(rt)
-                    if matches!(
-                        rt.kind.as_str(),
-                        skiff_store::KIND_RUST | skiff_store::KIND_NODE
-                    ) =>
-                {
-                    Some(self.runtime_site_address(s, rt)?)
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let kind = if let Some(reason) = maintenance.as_deref() {
-            VhostKind::Maintenance { reason }
-        } else {
-            match site.site_type.as_str() {
-                TYPE_STATIC => VhostKind::Static { root: &root },
-                TYPE_PROXY => VhostKind::Proxy {
-                    target: site.proxy_target.as_deref().unwrap_or(""),
-                    websocket: site.proxy_websocket,
-                },
-                _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
-                    Some(kind @ (skiff_store::KIND_RUST | skiff_store::KIND_NODE)) => {
-                        let rt = runtime.as_ref().expect("runtime 已判定存在");
-                        let address = process_address.as_deref().ok_or_else(|| {
-                            SiteError::Unavailable(format!(
-                                "{} 运行环境尚未分配容器地址，请重建运行环境后再启用站点",
-                                runtime_catalog::kind_label(kind)
-                            ))
-                        })?;
-                        VhostKind::Process {
-                            root: &root,
-                            address,
-                            port: rt.port.ok_or_else(|| {
-                                SiteError::Unavailable(format!(
-                                    "{} 运行环境缺少端口，请重新安装",
-                                    runtime_catalog::kind_label(kind)
-                                ))
-                            })?,
-                        }
-                    }
-                    Some(skiff_store::KIND_GO) => {
-                        return Err(SiteError::Unavailable(
-                            "Go 运行环境尚未接入，当前不能生成 vhost".into(),
-                        ))
-                    }
-                    _ => VhostKind::Php {
-                        root: &root,
-                        socket: socket.as_deref().unwrap_or(""),
-                    },
-                },
-            }
-        };
-        Ok(render_site_vhost(
-            &site.domain,
-            aliases,
-            kind,
-            &access,
-            &error,
-            VhostPolicy::new(&site.rewrite, site.limit_rate_kbps),
-            tls,
-        ))
-    }
-
-    /// 默认站点 vhost：与普通站点同一套类型分支，只把 listen 换成 `default_server`。
-    fn render_default_vhost_for(
-        &self,
-        s: &SiteSettings,
-        site: &Site,
-        tls: Option<&VhostTls>,
-    ) -> Result<String, SiteError> {
-        let site_dir = PathBuf::from(&site.root_dir);
-        let root = s.container_path(&site_index_dir(&site_dir));
-        let access = s.container_log(&site_dir, LogKind::Access);
-        let error = s.container_log(&site_dir, LogKind::Error);
-        let runtime = if site.site_type == TYPE_RUNTIME {
-            Some(self.bound_runtime(site)?)
-        } else {
-            None
-        };
-        let socket = if runtime
-            .as_ref()
-            .is_some_and(|r| r.kind == skiff_store::KIND_PHP)
-        {
-            Some(self.php_socket_paths(s, site)?.1)
-        } else {
-            None
-        };
-        // 巡检已判定失联的运行环境：不生成指向容器地址的可用配置，直接维护态。
-        let maintenance = runtime
-            .as_ref()
-            .and_then(|rt| self.runtime_guard(&rt.id))
-            .filter(|g| !g.available)
-            .map(|g| g.reason);
-        // 进程型站点的容器地址先算好：vhost 只持有它的引用，不能指向临时值；
-        // 维护态下不计算，避免「已失联」时因地址缺失而渲染失败。
-        let process_address = if maintenance.is_none() {
-            match runtime.as_ref() {
-                Some(rt)
-                    if matches!(
-                        rt.kind.as_str(),
-                        skiff_store::KIND_RUST | skiff_store::KIND_NODE
-                    ) =>
-                {
-                    Some(self.runtime_site_address(s, rt)?)
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let kind = if let Some(reason) = maintenance.as_deref() {
-            VhostKind::Maintenance { reason }
-        } else {
-            match site.site_type.as_str() {
-                TYPE_STATIC => VhostKind::Static { root: &root },
-                TYPE_PROXY => VhostKind::Proxy {
-                    target: site.proxy_target.as_deref().unwrap_or(""),
-                    websocket: site.proxy_websocket,
-                },
-                _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
-                    Some(kind @ (skiff_store::KIND_RUST | skiff_store::KIND_NODE)) => {
-                        let rt = runtime.as_ref().expect("runtime 已判定存在");
-                        let address = process_address.as_deref().ok_or_else(|| {
-                            SiteError::Unavailable(format!(
-                                "{} 运行环境尚未分配容器地址，请重建运行环境后再启用站点",
-                                runtime_catalog::kind_label(kind)
-                            ))
-                        })?;
-                        VhostKind::Process {
-                            root: &root,
-                            address,
-                            port: rt.port.ok_or_else(|| {
-                                SiteError::Unavailable(format!(
-                                    "{} 运行环境缺少端口，请重新安装",
-                                    runtime_catalog::kind_label(kind)
-                                ))
-                            })?,
-                        }
-                    }
-                    Some(skiff_store::KIND_GO) => {
-                        return Err(SiteError::Unavailable(
-                            "Go 运行环境尚未接入，当前不能生成 vhost".into(),
-                        ))
-                    }
-                    _ => VhostKind::Php {
-                        root: &root,
-                        socket: socket.as_deref().unwrap_or(""),
-                    },
-                },
-            }
-        };
-        Ok(render_default_vhost(
-            &site.domain,
-            kind,
-            &access,
-            &error,
-            VhostPolicy::new(&site.rewrite, site.limit_rate_kbps),
-            tls,
-        ))
-    }
-
-    /// 把 `00-skiff-default.conf` 与库里的默认站点对齐：有则生成，无则删除。
-    fn sync_default_conf(&self, s: &SiteSettings) -> std::io::Result<()> {
-        let conf = s.conf_dir.join(DEFAULT_CONF);
-        match self.db().default_site() {
-            Ok(Some(site)) => {
-                let tls = self.site_tls(s, &site);
-                let content = self
-                    .render_default_vhost_for(s, &site, tls.as_ref())
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
-                if std::fs::read(&conf).ok().as_deref() != Some(content.as_bytes()) {
-                    self.admin_fs()
-                        .write_kernel(&conf, content.as_bytes())
-                        .map_err(std::io::Error::other)?;
-                }
-                Ok(())
-            }
-            Ok(None) => {
-                if conf.exists() {
-                    self.admin_fs()
-                        .remove_kernel(&conf)
-                        .map_err(std::io::Error::other)?;
-                }
-                Ok(())
-            }
-            Err(e) => Err(std::io::Error::other(e.to_string())),
-        }
-    }
-
-    /// 让 nginx 按当前配置生效（reload 优先，必要时回退重启）。
-    ///
-    /// 持锁执行：并发的保存/证书操作不会在同一个重启窗口里互相踩踏。
-    pub(crate) async fn activate_nginx_locked(&self) -> Result<NginxActivation, String> {
-        activate_with(&DockerNginx { state: self }).await
-    }
-
-    /// 让 nginx 按当前配置生效（reload 优先，reload 不生效才回退重启）。
-    ///
-    /// 调用方**不持锁**：内部取 [`super::nginx_write_lock`]，因此校验与生效之间不会
-    /// 被其它写入插队。失败返回可读错误，回滚后的恢复由调用方用
-    /// [`Self::restart_nginx`]（强制重启）收尾。
-    ///
-    /// 建站 / 增删别名 / 站点启停都走这里：直接重启容器会让**其它站点**出现
-    /// 秒级连接拒绝窗口（实测 `curl` 首个请求即 `Failed to connect`）。
-    /// 具体走 reload 还是回退重启由 [`activate_with`] 决定并打日志，调用方不必区分。
-    pub async fn activate_nginx(&self) -> Result<(), SiteError> {
-        let _guard = super::nginx_write_lock().lock().await;
-        self.activate_nginx_locked()
-            .await
-            .map(|_| ())
-            .map_err(SiteError::Unavailable)
-    }
-
-    pub async fn restart_nginx(&self) -> Result<(), SiteError> {
-        let _guard = super::nginx_write_lock().lock().await;
-        self.restart_nginx_locked().await
-    }
-
-    /// 重启容器。**调用方必须已持有 [`super::nginx_write_lock`]**。
-    async fn restart_nginx_locked(&self) -> Result<(), SiteError> {
-        let rows = self
-            .docker()
-            .list_containers()
-            .await
-            .map_err(|e| SiteError::Unavailable(format!("读取容器列表失败：{e}")))?;
-        let c = rows
-            .iter()
-            .find(|c| c.name == NGINX_CONTAINER)
-            .ok_or_else(|| SiteError::Unavailable("nginx 运行环境未安装".into()))?;
-        let obj = skiff_docker::ObjectRef {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            labels: c.labels.clone(),
-        };
-        self.kernel_execute(Verb::Restart, Some(&obj), DockerParams::None)
-            .await
-            .map(|_| ())
-            .map_err(|e| SiteError::Unavailable(format!("重载 nginx 失败：{e}")))
-    }
-
-    /// 站点启用 HTTPS 且证书文件齐全时，返回容器内证书路径。
-    fn site_tls(&self, s: &SiteSettings, site: &Site) -> Option<VhostTls> {
-        if !site.https {
-            return None;
-        }
-        let site_dir = PathBuf::from(&site.root_dir);
-        let cert = s.cert_file(&site_dir);
-        let key = s.key_file(&site_dir);
-        if !cert.is_file() || !key.is_file() {
-            return None;
-        }
-        Some(VhostTls {
-            cert: s.container_path(&cert),
-            key: s.container_path(&key),
-            force_https: site.force_https,
-        })
-    }
-
-    /// 容器内 `nginx -t`；失败返回可读错误（调用方负责回滚）。
-    pub async fn validate_nginx(&self) -> Result<(), SiteError> {
-        let _guard = super::nginx_write_lock().lock().await;
-        self.validate_nginx_locked().await
-    }
-
-    /// 同上。**调用方必须已持有 [`super::nginx_write_lock`]**，否则可能在证书
-    /// 两次 rename 之间读到不配对的文件。
-    ///
-    /// `nginx -t` 带 [`crate::nginx::NGINX_TEST_TIMEOUT`] 上限：本函数在建站/证书
-    /// 等请求路径上被调用，校验卡住时必须先返回错误让调用方回滚文件。
-    pub(crate) async fn validate_nginx_locked(&self) -> Result<(), SiteError> {
-        let rows = self
-            .docker()
-            .list_containers()
-            .await
-            .map_err(|e| SiteError::Unavailable(format!("读取容器列表失败：{e}")))?;
-        if !nginx_container_running(&rows) {
-            return Err(SiteError::Unavailable(
-                "nginx 运行环境未启动，无法校验配置".into(),
-            ));
-        }
-        let (code, out, timed_out) = self
-            .docker()
-            .exec_capture_timeout(
-                NGINX_CONTAINER,
-                vec!["nginx".into(), "-t".into()],
-                crate::nginx::NGINX_TEST_TIMEOUT,
-            )
-            .await
-            .map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))?;
-        if timed_out {
-            return Err(SiteError::Unavailable(format!(
-                "nginx -t 超过 {} 秒未返回，配置未生效（容器内校验进程可能仍在运行）",
-                crate::nginx::NGINX_TEST_TIMEOUT.as_secs()
-            )));
-        }
-        if code == 0 {
-            Ok(())
-        } else {
-            Err(SiteError::Conflict(format!(
-                "nginx -t 未通过：{}",
-                out.trim()
-            )))
-        }
-    }
-
-    /// 站点证书信息（供 SSL 标签展示）。
-    ///
-    /// 异步：证书解析经统一执行通道（`skiff_host`）跑 `openssl`，不再同步 fork。
-    pub async fn site_tls_info(&self, domain: &str) -> Result<SiteTlsInfo, SiteError> {
-        let s = self.site_settings();
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let site_dir = PathBuf::from(&site.root_dir);
-        let cert = s.cert_file(&site_dir);
-        let key = s.key_file(&site_dir);
-        let mut info = SiteTlsInfo {
-            enabled: site.https,
-            force_https: site.force_https,
-            cert_path: cert.display().to_string(),
-            key_path: key.display().to_string(),
-            cert_exists: s.cert_ready(&site_dir),
-            subject: None,
-            issuer: None,
-            expires: None,
-        };
-        if info.cert_exists {
-            let text = cached_cert_text(&cert, &key).await;
-            info.subject = text.subject;
-            info.issuer = text.issuer;
-            info.expires = text.expires;
-        } else {
-            // 站点删除或证书被删：清掉旧条目，避免同名目录下次复用时读到陈旧解析。
-            tls_info_cache()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&cert);
-        }
-        Ok(info)
-    }
-
-    /// 面板内生成自签证书（CN + SAN 都写域名与别名），再启用 HTTPS。
-    pub async fn generate_self_signed(&self, domain: &str) -> Result<(), SiteError> {
-        let s = self.site_settings();
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let site_dir = PathBuf::from(&site.root_dir);
-        let aliases = self.site_aliases(domain);
-        let dir = site_ssl_dir(&site_dir);
-        self.admin_fs()
-            .ensure_dir_kernel(&dir)
-            .map_err(|e| SiteError::Internal(format!("创建证书目录失败：{e}")))?;
-        let cert = s.cert_file(&site_dir);
-        let key = s.key_file(&site_dir);
-        // 先生成到进程内唯一临时名，再在锁内成对替换：openssl 生成期间不占锁，
-        // 也不会让 nginx 读到「新证书 + 旧私钥」的中间态。
-        let tmp_cert = crate::atomic::sibling_temp(&cert);
-        let tmp_key = crate::atomic::sibling_temp(&key);
-        let mut san = format!("DNS:{}", site.domain);
-        for a in &aliases {
-            san.push_str(&format!(",DNS:{a}"));
-        }
-        // 走统一执行通道（`skiff_host`）：超时、读流、错误文案只有一份。
-        // 直接起子进程即可——openssl 不要 root，也不必为它 fork 一个 systemd 单元。
-        let args: Vec<String> = vec![
-            "req".into(),
-            "-x509".into(),
-            "-newkey".into(),
-            "rsa:2048".into(),
-            "-sha256".into(),
-            "-days".into(),
-            "825".into(),
-            "-nodes".into(),
-            "-keyout".into(),
-            tmp_key.display().to_string(),
-            "-out".into(),
-            tmp_cert.display().to_string(),
-            "-subj".into(),
-            format!("/CN={}", site.domain),
-            "-addext".into(),
-            format!("subjectAltName={san}"),
-        ];
-        let out = crate::host::run_host_msg(
-            skiff_host::HostSpec::direct("openssl", &args)
-                .prefix("skiff-cert")
-                .description("skiff 自签证书生成")
-                .timeout(30),
-        )
-        .await
-        .map_err(|e| SiteError::Internal(format!("生成自签证书失败：{e}")))?;
-        if !out.success {
-            remove_quietly(self.admin_fs(), &tmp_cert);
-            remove_quietly(self.admin_fs(), &tmp_key);
-            return Err(SiteError::Internal(format!(
-                "生成自签证书失败：{}",
-                out.stderr.trim()
-            )));
-        }
-        let _guard = super::nginx_write_lock().lock().await;
-        if let Err(failure) = replace_cert_pair(self.admin_fs(), &tmp_cert, &tmp_key, &cert, &key) {
-            if failure.was_cleared() {
-                self.repair_no_cert_state(domain).await;
-            }
-            return Err(failure.into_site_error());
-        }
-        self.apply_tls_locked(domain, true, false).await
-    }
-
-    /// 上传证书与私钥（PEM 文本）；校验证书/私钥有效且配对后启用 HTTPS。
-    pub async fn upload_cert(
-        &self,
-        domain: &str,
-        cert_pem: &str,
-        key_pem: &str,
-    ) -> Result<(), SiteError> {
-        let s = self.site_settings();
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        if !cert_pem.contains("BEGIN CERTIFICATE") || !key_pem.contains("PRIVATE KEY") {
-            return Err(SiteError::BadRequest(
-                "证书需为 PEM（BEGIN CERTIFICATE），私钥需包含 PRIVATE KEY".into(),
-            ));
-        }
-        let site_dir = PathBuf::from(&site.root_dir);
-        let dir = site_ssl_dir(&site_dir);
-        self.admin_fs()
-            .ensure_dir_kernel(&dir)
-            .map_err(|e| SiteError::Internal(format!("创建证书目录失败：{e}")))?;
-        let cert = s.cert_file(&site_dir);
-        let key = s.key_file(&site_dir);
-        // 唯一临时名：同名并发上传各写各的，不会互相截断或抢先 rename。
-        let tmp_cert = crate::atomic::sibling_temp(&cert);
-        let tmp_key = crate::atomic::sibling_temp(&key);
-        // 写盘与 `openssl` 校验（连续 fork 4 次）不能占 async worker：与
-        // `generate_self_signed` 一致投递到阻塞池；失败时在同一闭包内清理临时文件。
-        let (cert_text, key_text) = (cert_pem.to_string(), key_pem.to_string());
-        let (write_cert, write_key) = (tmp_cert.clone(), tmp_key.clone());
-        // 写盘留在阻塞池（纯 IO）；`openssl` 校验走统一执行通道，不再在阻塞池里 fork。
-        // 证书与私钥是内核受保护前缀里的 TLS 材料，写入经内核文件通道并各自留审计；
-        // 权限位随写入给定（私钥 0600），不再另调 chmod。
-        let kfs = self.admin_fs_arc();
-        tokio::task::spawn_blocking(move || {
-            kfs.write_kernel_mode(&write_cert, cert_text.as_bytes(), 0o644)
-                .map_err(|e| SiteError::Internal(format!("写入证书失败：{e}")))?;
-            kfs.write_kernel_mode(&write_key, key_text.as_bytes(), 0o600)
-                .map_err(|e| SiteError::Internal(format!("写入私钥失败：{e}")))?;
-            Ok::<(), SiteError>(())
-        })
-        .await
-        .map_err(|e| SiteError::Internal(format!("证书写入任务失败：{e}")))??;
-        if let Err(e) = verify_cert_pair(&tmp_cert, &tmp_key).await {
-            remove_quietly(self.admin_fs(), &tmp_cert);
-            remove_quietly(self.admin_fs(), &tmp_key);
-            return Err(SiteError::BadRequest(e));
-        }
-        // 成对替换与 reload 必须在一把锁内完成：中间态对 nginx 不可见。
-        let _guard = super::nginx_write_lock().lock().await;
-        if let Err(failure) = replace_cert_pair(self.admin_fs(), &tmp_cert, &tmp_key, &cert, &key) {
-            if failure.was_cleared() {
-                self.repair_no_cert_state(domain).await;
-            }
-            return Err(failure.into_site_error());
-        }
-        self.apply_tls_locked(domain, true, false).await
-    }
-
-    /// 关闭 HTTPS（保留证书文件）。
-    pub async fn disable_tls(&self, domain: &str) -> Result<(), SiteError> {
-        self.apply_tls(domain, false, false).await
-    }
-
-    /// 删除证书文件并关闭 HTTPS。
-    pub async fn delete_cert(&self, domain: &str) -> Result<(), SiteError> {
-        // 先关 HTTPS 再删文件，两步都在锁内：不会与上传/生成交错。
-        let _guard = super::nginx_write_lock().lock().await;
-        self.apply_tls_locked(domain, false, false).await?;
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let s = self.site_settings();
-        let dir = site_ssl_dir(Path::new(&site.root_dir));
-        // 只删证书文件，保留 ssl/ 目录（它是站点固定布局的一部分）。
-        for p in [
-            s.cert_file(Path::new(&site.root_dir)),
-            s.key_file(Path::new(&site.root_dir)),
-        ] {
-            if p.exists() {
-                self.admin_fs()
-                    .remove_kernel(&p)
-                    .map_err(|e| SiteError::Internal(format!("删除证书文件失败：{e}")))?;
-            }
-        }
-        // 清理上传留下的中间件（唯一名以 `.cert.pem.` / `.key.pem.` 开头），避免半套。
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                let is_upload_tmp = (name.starts_with(".cert.pem.")
-                    || name.starts_with(".key.pem."))
-                    && name.ends_with(".tmp");
-                if !is_upload_tmp {
-                    continue;
-                }
-                if let Err(e) = self.admin_fs().remove_kernel(&entry.path()) {
-                    tracing::debug!(path = %entry.path().display(), error = %e, "清理残留的临时证书失败");
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 切换「强制 HTTPS」；未启用 HTTPS 时拒绝。
-    pub async fn set_force_https(&self, domain: &str, force: bool) -> Result<(), SiteError> {
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        if force && !site.https {
-            return Err(SiteError::BadRequest(
-                "请先启用 HTTPS（上传或生成证书）".into(),
-            ));
-        }
-        self.apply_tls(domain, site.https, force).await
-    }
-
-    /// 保存站点级 nginx 策略（伪静态预设 + 出口限速）并重生成 vhost。
-    ///
-    /// 库是状态源、vhost 是投影：先落库，再写文件并校验；任一步失败都回滚库与
-    /// 文件，避免留下「库已改、线上配置未变」的不一致。
-    pub async fn set_site_policy(
-        &self,
-        domain: &str,
-        rewrite: &str,
-        limit_rate_kbps: u32,
-    ) -> Result<(), SiteError> {
-        let rewrite = validate_rewrite(rewrite)?;
-        if limit_rate_kbps > MAX_LIMIT_RATE_KBPS {
-            return Err(SiteError::BadRequest(format!(
-                "限速不能超过 {MAX_LIMIT_RATE_KBPS} KB/s"
-            )));
-        }
-        let _guard = super::nginx_write_lock().lock().await;
-        let s = self.site_settings();
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let (old_rewrite, old_limit) = (site.rewrite.clone(), site.limit_rate_kbps);
-        if old_rewrite == rewrite && old_limit == limit_rate_kbps {
-            return Ok(());
-        }
-        let site_dir = PathBuf::from(&site.root_dir);
-        let site_conf = if site.status == "running" {
-            s.vhost_file(&site_dir, domain)
-        } else {
-            s.vhost_disabled(&site_dir, domain)
-        };
-        let default_conf = s.conf_dir.join(DEFAULT_CONF);
-        let snapshot: Vec<(PathBuf, Option<Vec<u8>>)> = [&site_conf, &default_conf]
-            .into_iter()
-            .map(|p| (p.clone(), std::fs::read(p).ok()))
-            .collect();
-        let rollback_db = || {
-            if let Err(e) = self.db().set_site_policy(domain, &old_rewrite, old_limit) {
-                tracing::error!(domain, error = %e, "回滚站点策略失败：数据库与磁盘可能不一致");
-            }
-        };
-        self.db()
-            .set_site_policy(domain, rewrite, limit_rate_kbps)
-            .map_err(|e| SiteError::Internal(format!("写入站点策略失败：{e}")))?;
-        if let Err(e) = self.write_site_vhost(&s, domain) {
-            restore_conf_snapshot(self.admin_fs(), &snapshot);
-            rollback_db();
-            return Err(e);
-        }
-        if let Err(e) = self.sync_default_conf(&s) {
-            restore_conf_snapshot(self.admin_fs(), &snapshot);
-            rollback_db();
-            return Err(SiteError::Internal(format!("写入默认站点配置失败：{e}")));
-        }
-        if let Err(e) = self.validate_nginx_locked().await {
-            restore_conf_snapshot(self.admin_fs(), &snapshot);
-            rollback_db();
-            return Err(e);
-        }
-        if let Err(e) = self.activate_nginx_locked().await {
-            restore_conf_snapshot(self.admin_fs(), &snapshot);
-            rollback_db();
-            if let Err(re) = self.restart_nginx_locked().await {
-                tracing::error!(error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
-            }
-            return Err(SiteError::Unavailable(e));
-        }
-        Ok(())
-    }
-
-    /// 改写站点 vhost + 默认站 vhost，校验 `nginx -t` 后让 nginx 生效；任一步失败回滚文件与库状态。
-    async fn apply_tls(
-        &self,
-        domain: &str,
-        https: bool,
-        force_https: bool,
-    ) -> Result<(), SiteError> {
-        let _guard = super::nginx_write_lock().lock().await;
-        self.apply_tls_locked(domain, https, force_https).await
-    }
-
-    /// 同上。**调用方必须已持有 [`super::nginx_write_lock`]**（证书成对写入后还要
-    /// 在同一个临界区内完成 reload）。
-    async fn apply_tls_locked(
-        &self,
-        domain: &str,
-        https: bool,
-        force_https: bool,
-    ) -> Result<(), SiteError> {
-        let s = self.site_settings();
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let (old_https, old_force) = (site.https, site.force_https);
-        let site_dir = PathBuf::from(&site.root_dir);
-        if https && (!s.cert_file(&site_dir).is_file() || !s.key_file(&site_dir).is_file()) {
-            return Err(SiteError::BadRequest(
-                "缺少证书文件，请先上传或生成自签证书".into(),
-            ));
-        }
-        let site_conf = if site.status == "running" {
-            s.vhost_file(&site_dir, domain)
-        } else {
-            s.vhost_disabled(&site_dir, domain)
-        };
-        let default_conf = s.conf_dir.join(DEFAULT_CONF);
-        let snapshot: Vec<(PathBuf, Option<Vec<u8>>)> = [&site_conf, &default_conf]
-            .into_iter()
-            .map(|p| (p.clone(), std::fs::read(p).ok()))
-            .collect();
-
-        self.db()
-            .set_site_tls(domain, https, force_https)
-            .map_err(|e| SiteError::Internal(format!("写入 HTTPS 状态失败：{e}")))?;
-        if let Err(e) = self.write_site_vhost(&s, domain) {
-            restore_conf_snapshot(self.admin_fs(), &snapshot);
-            if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
-                tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
-            }
-            return Err(e);
-        }
-        if let Err(e) = self.sync_default_conf(&s) {
-            restore_conf_snapshot(self.admin_fs(), &snapshot);
-            if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
-                tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
-            }
-            return Err(SiteError::Internal(format!("写入默认站点配置失败：{e}")));
-        }
-        if let Err(e) = self.validate_nginx_locked().await {
-            // 校验失败时运行中的 nginx 还没加载新配置，恢复文件即可；
-            // 这里**不能再重启**——若失败源于别的坏 conf，重启会让现网 nginx 起不来。
-            restore_conf_snapshot(self.admin_fs(), &snapshot);
-            if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
-                tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
-            }
-            return Err(e);
-        }
-        if let Err(e) = self.activate_nginx_locked().await {
-            restore_conf_snapshot(self.admin_fs(), &snapshot);
-            if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
-                tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
-            }
-            if let Err(re) = self.restart_nginx_locked().await {
-                tracing::error!(error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
-            }
-            return Err(SiteError::Unavailable(e));
-        }
-        Ok(())
-    }
-
-    /// 证书替换失败且原本没有成对文件时的收尾：把库里的 HTTPS 标记与 vhost 里的
-    /// `ssl_certificate` 引用一起改回「无证书」。否则会留下「vhost 声明证书、
-    /// 文件却不存在」的悬空状态，下一次 `nginx -t` 直接失败。
-    ///
-    /// **调用方必须已持有 [`super::nginx_write_lock`]**。这里只做尽力而为的修复：
-    /// 每一步失败都记日志，但原始错误优先返回给调用方。
-    pub(crate) async fn repair_no_cert_state(&self, domain: &str) {
-        if let Err(e) = self.db().set_site_tls(domain, false, false) {
-            tracing::error!(domain, error = %e, "证书写入失败后回滚 HTTPS 状态失败");
-        }
-        let s = self.site_settings();
-        if let Err(e) = self.write_site_vhost(&s, domain) {
-            tracing::error!(domain, error = %e, "证书写入失败后重写站点配置失败");
-        }
-        if let Err(e) = self.sync_default_conf(&s) {
-            tracing::error!(domain, error = %e, "证书写入失败后重写默认站点配置失败");
-        }
-        if let Err(e) = self.validate_nginx_locked().await {
-            tracing::warn!(error = %e, "证书写入失败后 nginx -t 未通过（配置已不含证书引用）");
-            return;
-        }
-        if let Err(e) = self.activate_nginx_locked().await {
-            tracing::warn!(error = %e, "证书写入失败后 nginx 重载失败");
-        }
-    }
-
-    /// 按库里的最新状态重写单个站点 vhost（运行中写 .conf，停止写 .conf.disabled）。
-    pub(crate) fn write_site_vhost(&self, s: &SiteSettings, domain: &str) -> Result<(), SiteError> {
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let site_dir = PathBuf::from(&site.root_dir);
-        let fs = self.admin_fs();
-        fs.ensure_dir_kernel(&site_conf_dir(&site_dir))
-            .map_err(|e| SiteError::Internal(format!("创建站点配置目录失败：{e}")))?;
-        let aliases = self.site_aliases(&site.domain);
-        let tls = self.site_tls(s, &site);
-        let vhost = self.render_vhost_for(s, &site, &aliases, tls.as_ref())?;
-        let conf = s.vhost_file(&site_dir, &site.domain);
-        let disabled = s.vhost_disabled(&site_dir, &site.domain);
-        if site.status == "running" {
-            fs.write_kernel(&conf, vhost.as_bytes())
-                .map_err(|e| SiteError::Internal(format!("写入站点配置失败：{e}")))?;
-            if let Err(e) = fs.remove_kernel(&disabled) {
-                tracing::debug!(path = %disabled.display(), error = %e, "清理已禁用的站点配置失败");
-            }
-        } else {
-            fs.write_kernel(&disabled, vhost.as_bytes())
-                .map_err(|e| SiteError::Internal(format!("写入站点配置失败：{e}")))?;
-            if let Err(e) = fs.remove_kernel(&conf) {
-                tracing::debug!(path = %conf.display(), error = %e, "清理生效中的站点配置失败");
-            }
-        }
-        Ok(())
-    }
-
-    /// 按当前 `web_root` 布局重建所有已登记站点的 vhost（安装/迁移后调用）。
-    /// 已停止的站点写成 `.conf.disabled`，与启停逻辑保持一致。
-    fn rewrite_site_vhosts(&self, s: &SiteSettings) -> std::io::Result<usize> {
-        let sites = self
-            .db()
-            .list_sites()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let fs = self.admin_fs();
-        fs.ensure_dir_kernel(&s.conf_dir)
-            .map_err(std::io::Error::other)?;
-        fs.write_kernel(
-            &s.conf_dir.join(SITES_INCLUDE_CONF),
-            s.sites_include_conf().as_bytes(),
-        )
-        .map_err(std::io::Error::other)?;
-        for site in &sites {
-            let site_dir = PathBuf::from(&site.root_dir);
-            fs.ensure_dir_kernel(&site_conf_dir(&site_dir))
-                .map_err(std::io::Error::other)?;
-            let aliases = self.site_aliases(&site.domain);
-            let tls = self.site_tls(s, site);
-            let vhost = self
-                .render_vhost_for(s, site, &aliases, tls.as_ref())
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            let conf = s.vhost_file(&site_dir, &site.domain);
-            let disabled = s.vhost_disabled(&site_dir, &site.domain);
-            if site.status == "running" {
-                fs.write_kernel(&conf, vhost.as_bytes())
-                    .map_err(std::io::Error::other)?;
-                if let Err(e) = fs.remove_kernel(&disabled) {
-                    tracing::debug!(path = %disabled.display(), error = %e, "清理已禁用的站点配置失败");
-                }
-            } else {
-                fs.write_kernel(&disabled, vhost.as_bytes())
-                    .map_err(std::io::Error::other)?;
-                if let Err(e) = fs.remove_kernel(&conf) {
-                    tracing::debug!(path = %conf.display(), error = %e, "清理生效中的站点配置失败");
-                }
-            }
-        }
-        Ok(sites.len())
     }
 
     pub async fn create_site(&self, req: NewSite) -> Result<Site, SiteError> {
@@ -2158,43 +1238,6 @@ impl AppState {
         self.db().site_aliases(domain).unwrap_or_default()
     }
 
-    /// 站点详情页增删别名后统一走这里：重建 vhost → `nginx -t` → reload。
-    /// 任一步失败都把库里的别名回滚到 `previous`，避免库与配置半套。
-    async fn apply_site_aliases(&self, site: &Site, previous: &[String]) -> Result<(), SiteError> {
-        let s = self.site_settings();
-        let rollback = |this: &Self| {
-            let db = this.db();
-            if let Err(e) = db.clear_site_aliases(&site.domain) {
-                tracing::error!(site = %site.domain, error = %e, "回滚站点别名失败（清理）");
-            }
-            if let Err(e) = db.add_site_aliases(&site.domain, previous) {
-                tracing::error!(site = %site.domain, error = %e, "回滚站点别名失败（恢复）");
-            }
-            if let Err(e) = this.write_site_vhost(&s, &site.domain) {
-                tracing::error!(site = %site.domain, error = %e, "回滚站点配置失败");
-            }
-        };
-        // 写文件 → 校验 → reload 在同一把锁内：并发增删别名不会互相读到半套配置。
-        let _guard = super::nginx_write_lock().lock().await;
-        if let Err(e) = self.write_site_vhost(&s, &site.domain) {
-            rollback(self);
-            return Err(e);
-        }
-        if let Err(e) = self.validate_nginx_locked().await {
-            rollback(self);
-            return Err(e);
-        }
-        if let Err(e) = self.activate_nginx_locked().await {
-            rollback(self);
-            if let Err(re) = self.restart_nginx_locked().await {
-                tracing::error!(error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
-            }
-            return Err(SiteError::Unavailable(e));
-        }
-        Ok(())
-    }
-
-    /// 添加别名：语法 → 与主域名/已有别名/其它站点冲突，再落库并重建 vhost。
     pub async fn add_site_alias(&self, domain: &str, raw: &str) -> Result<String, SiteError> {
         let site = self
             .db()
@@ -2231,7 +1274,6 @@ impl AppState {
         Ok(alias)
     }
 
-    /// 删除别名：主域名不可删；别名必须属于该站点。
     pub async fn remove_site_alias(&self, domain: &str, raw: &str) -> Result<String, SiteError> {
         let site = self
             .db()
@@ -2360,9 +1402,6 @@ impl AppState {
         Ok(())
     }
 
-    /// 设为/取消默认站点。库是状态源，conf 是投影：**先落库、再写文件并 reload**；
-    /// 文件或 reload 失败时把库与 conf 一起恢复到切换前，避免留下
-    /// 「conf 已切、库没变」或反向的不一致。
     pub async fn set_default_site(&self, domain: &str, enabled: bool) -> Result<(), SiteError> {
         let s = self.site_settings();
         let site = self
@@ -2410,7 +1449,6 @@ impl AppState {
         Ok(())
     }
 
-    /// 写 `00-skiff-default.conf` 并 reload nginx。
     async fn write_default_conf(&self, s: &SiteSettings, site: &Site) -> Result<(), SiteError> {
         let fs = self.admin_fs();
         fs.ensure_dir_kernel(&s.conf_dir)
@@ -2438,7 +1476,6 @@ impl AppState {
         self.activate_nginx().await
     }
 
-    /// 删除 `00-skiff-default.conf` 并 reload nginx。
     async fn remove_default_conf(&self, s: &SiteSettings) -> Result<(), SiteError> {
         let conf = s.conf_dir.join(DEFAULT_CONF);
         if conf.exists() {
@@ -2449,7 +1486,6 @@ impl AppState {
         self.activate_nginx().await
     }
 
-    /// 删除确认页的具体量：目录体积/文件数、关联定时任务数、运行环境绑定。
     pub fn site_delete_stats(&self, domain: &str) -> Result<SiteDeleteStats, SiteError> {
         let site = self
             .db()
@@ -2546,10 +1582,6 @@ impl AppState {
         Ok(())
     }
 
-    /// 读取站点日志：宿主文件、时间倒序、可选关键字过滤（均只作用于文件尾部窗口）。
-    ///
-    /// 读取本身不再触发轮转：轮转由 30s 巡检统一做（改名后让 nginx 重开日志），
-    /// 避免「看一下日志就复制整个文件」的写放大。
     pub fn site_logs(
         &self,
         domain: &str,
@@ -2577,156 +1609,6 @@ impl AppState {
         Ok((read(LogKind::Access), read(LogKind::Error)))
     }
 
-    /// 站点 vhost 的落盘路径：运行中读 `.conf`，已停止读 `.conf.disabled`。
-    fn site_vhost_path(&self, domain: &str) -> Result<(PathBuf, bool), SiteError> {
-        let s = self.site_settings();
-        let site = self
-            .db()
-            .site_by_domain(domain)
-            .map_err(|e| SiteError::Internal(e.to_string()))?
-            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let site_dir = PathBuf::from(&site.root_dir);
-        let active = s.vhost_file(&site_dir, domain);
-        if active.exists() {
-            return Ok((active, true));
-        }
-        let disabled = s.vhost_disabled(&site_dir, domain);
-        if disabled.exists() {
-            return Ok((disabled, false));
-        }
-        Err(SiteError::BadRequest(format!(
-            "站点 vhost 文件不存在：{}",
-            active.display()
-        )))
-    }
-
-    /// 读取当前 vhost 内容（用于配置文件页编辑）。
-    pub fn read_site_vhost(&self, domain: &str) -> Result<(String, String, bool), SiteError> {
-        let (path, active) = self.site_vhost_path(domain)?;
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| SiteError::Internal(format!("读取 {} 失败：{e}", path.display())))?;
-        Ok((path.display().to_string(), content, active))
-    }
-
-    /// 用候选内容做隔离校验：临时 main 只 include 候选文件，不触碰线上 include。
-    async fn validate_site_vhost_content(
-        &self,
-        s: &SiteSettings,
-        domain: &str,
-        original: &str,
-        content: &str,
-    ) -> Result<(), SiteError> {
-        let rows = self
-            .docker()
-            .list_containers()
-            .await
-            .map_err(|e| SiteError::Unavailable(format!("读取容器列表失败：{e}")))?;
-        if !nginx_container_running(&rows) {
-            return Err(SiteError::Unavailable(
-                "Web 服务（OpenResty）未运行，无法校验配置".into(),
-            ));
-        }
-        let dir = s.web_root.join("skiff").join("vhost-check");
-        self.admin_fs()
-            .ensure_dir_kernel(&dir)
-            .map_err(|e| SiteError::Internal(format!("创建校验目录失败：{e}")))?;
-        let stamp = chrono::Local::now()
-            .timestamp_nanos_opt()
-            .unwrap_or_default();
-        let candidate = dir.join(format!("{domain}-{stamp}.conf.candidate"));
-        let main = dir.join(format!("{domain}-{stamp}.check-main.candidate"));
-        let container_candidate = s.container_path(&candidate);
-        let container_main = s.container_path(&main);
-        self.admin_fs()
-            .write_kernel(&candidate, content.as_bytes())
-            .map_err(|e| SiteError::Internal(format!("写入候选配置失败：{e}")))?;
-        self.admin_fs()
-            .write_kernel(&main, vhost_check_main(&container_candidate).as_bytes())
-            .map_err(|e| SiteError::Internal(format!("写入校验主配置失败：{e}")))?;
-        let result = self.nginx_test_candidate(&container_main).await;
-        remove_quietly(self.admin_fs(), &candidate);
-        remove_quietly(self.admin_fs(), &main);
-        let (code, out) = result?;
-        if code == 0 {
-            Ok(())
-        } else {
-            Err(SiteError::Conflict(format!(
-                "站点配置校验未通过：{}；差异：{}",
-                crate::nginx::error_line(&out),
-                crate::nginx::diff_summary(original, content, 6)
-            )))
-        }
-    }
-
-    /// 保存 vhost：先隔离校验候选内容，通过后才落盘；运行中的站点再让 nginx 生效
-    /// （优先平滑 reload），停止的站点只落盘不重载（`.conf.disabled` 不在线上 include 内）。
-    pub async fn save_site_vhost(
-        &self,
-        domain: &str,
-        content: &str,
-    ) -> Result<VhostSaveOutcome, SiteError> {
-        if content.trim().is_empty() {
-            return Err(SiteError::BadRequest("配置内容不能为空".into()));
-        }
-        if !content.contains("server") {
-            return Err(SiteError::BadRequest(
-                "配置至少需要包含一个 server 块".into(),
-            ));
-        }
-        let s = self.site_settings();
-        let (path, active) = self.site_vhost_path(domain)?;
-        let original = std::fs::read(&path)
-            .map_err(|e| SiteError::Internal(format!("读取原配置失败：{e}")))?;
-        let original_text = String::from_utf8_lossy(&original).to_string();
-        // 无论启停都先校验：停止态的文件不在 include 内，直接 reload 等于没测。
-        self.validate_site_vhost_content(&s, domain, &original_text, content)
-            .await?;
-        // 写入与生效在同一把锁内：并发保存同一站点不会互相吃半套配置，也不会
-        // 与本模块的证书成对写入（`upload_cert` / `generate_self_signed`）交错。
-        let _guard = super::nginx_write_lock().lock().await;
-        // 先写临时文件再 rename，避免半截文件被 nginx 加载；临时名进程内唯一，
-        // 并发保存同一站点时不会出现「后写者删掉先写者临时文件」。
-        self.admin_fs()
-            .write_kernel_mode(&path, content.as_bytes(), 0o644)
-            .map_err(|e| SiteError::Internal(format!("替换配置失败：{e}")))?;
-        if !active {
-            return Ok(VhostSaveOutcome { reloaded: false });
-        }
-        match self.activate_nginx_locked().await {
-            // reload 已由 worker 换代自证生效：服务不中断，也不必再等启动窗口。
-            Ok(NginxActivation::Reloaded) => Ok(VhostSaveOutcome { reloaded: true }),
-            Ok(NginxActivation::Restarted) => {
-                // 回退重启：返回成功不代表 nginx 配置有效，容器仍可能在启动后立即退出。
-                // 留出极短启动窗口再核对状态，失败则回滚并尽量把旧配置重新拉起。
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                let env = self.site_env_status().await;
-                if env.installed && env.nginx_state != "running" {
-                    if let Err(re) = self.admin_fs().write_kernel_mode(&path, &original, 0o644) {
-                        tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
-                    }
-                    if let Err(re) = self.restart_nginx_locked().await {
-                        tracing::error!(error = %re, "回滚后重载 nginx 失败");
-                    }
-                    return Err(SiteError::Unavailable(format!(
-                        "配置已回滚到保存前内容：nginx 未能保持运行（当前状态 {}）",
-                        env.nginx_state
-                    )));
-                }
-                Ok(VhostSaveOutcome { reloaded: true })
-            }
-            Err(e) => {
-                // 回滚文件内容，保证磁盘与正在运行的 nginx 保持一致。
-                if let Err(re) = self.admin_fs().write_kernel_mode(&path, &original, 0o644) {
-                    tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
-                }
-                Err(SiteError::Unavailable(format!(
-                    "配置已回滚到保存前内容：重载 nginx 失败：{e}"
-                )))
-            }
-        }
-    }
-
-    /// 站点根目录只读浏览；`rel` 为空表示根。拒绝 `..` 与越界路径。
     pub fn site_dir_listing(&self, domain: &str, rel: &str) -> Result<SiteDirListing, SiteError> {
         let site = self
             .db()
@@ -2822,7 +1704,6 @@ impl AppState {
         })
     }
 
-    /// 站点访问探针：用 Host 头访问本机 nginx 端口，返回状态码与响应开头。
     pub async fn probe_site(&self, domain: &str) -> Result<(u16, String), String> {
         let s = self.site_settings();
         let host = domain.to_string();

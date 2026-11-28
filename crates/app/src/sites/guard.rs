@@ -14,7 +14,7 @@ use skiff_store::{Runtime, KIND_NODE, KIND_PHP, KIND_RUST, TYPE_RUNTIME};
 
 use super::health::{check_runtime_ready, readiness_message};
 use super::{nginx_container_running, runtime_container_name, SiteSettings};
-use crate::runtime_catalog;
+use crate::sites::runtime_catalog;
 use crate::AppState;
 
 /// 巡检周期：秒级发现窗口，远小于用户感知的「站点一直转给陌生进程」。

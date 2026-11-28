@@ -111,7 +111,7 @@ pub fn summary(
         .map(|r| {
             format!(
                 "{} {}",
-                crate::runtime_catalog::kind_label(&r.kind),
+                crate::sites::runtime_catalog::kind_label(&r.kind),
                 r.version
             )
         })

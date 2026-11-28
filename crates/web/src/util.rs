@@ -57,16 +57,31 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// 人类可读体积：1024 进制；大于等于 10 时只留整数位（`15 KB` 而不是 `15.0 KB`），
+/// 小于 10 时留一位小数（`1.5 KB`）。
+///
+/// 全 crate 唯一的一份：文件页/配额页/镜像页/备份列表共用。此前 `files_page.rs`
+/// 另有一份同名同签名、舍入口径不同的实现（2026-11-28 合并），两处对同一字节数
+/// 给出不同字符串，属于「同名不同义」的隐患。
 pub fn human_size(bytes: i64) -> String {
-    let b = bytes as f64;
-    if b >= 1024.0 * 1024.0 * 1024.0 {
-        format!("{:.1} GB", b / 1024.0 / 1024.0 / 1024.0)
-    } else if b >= 1024.0 * 1024.0 {
-        format!("{:.1} MB", b / 1024.0 / 1024.0)
-    } else if b >= 1024.0 {
-        format!("{:.1} KB", b / 1024.0)
+    let bytes = bytes.max(0);
+    let mut n = bytes as f64;
+    if n < 1024.0 {
+        return format!("{bytes} B");
+    }
+    let units = ["KB", "MB", "GB", "TB"];
+    let mut idx = 0usize;
+    loop {
+        n /= 1024.0;
+        if n < 1024.0 || idx + 1 >= units.len() {
+            break;
+        }
+        idx += 1;
+    }
+    if n >= 10.0 {
+        format!("{} {}", n.round() as i64, units[idx])
     } else {
-        format!("{bytes} B")
+        format!("{} {}", (n * 10.0).round() / 10.0, units[idx])
     }
 }
 
@@ -109,6 +124,19 @@ mod tests {
         assert_eq!(escape_html("<script>"), "&lt;script&gt;");
         assert_eq!(truncate("abcdef", 3), "abc…");
         assert_eq!(human_size(1536), "1.5 KB");
+    }
+
+    /// 同一字节数全 crate 只有一个字符串口径：≥10 取整、<10 留一位小数、负数按 0。
+    #[test]
+    fn human_size_rounding_is_uniform() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(-1), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1024), "1 KB");
+        assert_eq!(human_size(15_360), "15 KB");
+        assert_eq!(human_size(1024 * 1024), "1 MB");
+        assert_eq!(human_size(1024 * 1024 * 1024), "1 GB");
+        assert_eq!(human_size(1024i64 * 1024 * 1024 * 1024 * 3), "3 TB");
     }
 
     /// Location / query 组件必须走百分号编码：`&` 不能被转成 `&amp;`

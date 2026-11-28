@@ -1083,10 +1083,21 @@ fn web_install_progress_has_single_persisted_source() {
         ("web handler", include_str!("../../src/handlers/ui/web.rs")),
         ("nginx handler", include_str!("../../src/handlers/nginx.rs")),
         ("app state", include_str!("../../../app/src/lib.rs")),
-        ("sites crud", include_str!("../../../app/src/sites/crud.rs")),
+        (
+            "sites crud",
+            concat!(
+                include_str!("../../../app/src/sites/crud/mod.rs"),
+                include_str!("../../../app/src/sites/crud/vhost.rs"),
+                include_str!("../../../app/src/sites/crud/tls.rs"),
+            ),
+        ),
         (
             "sites runtime",
-            include_str!("../../../app/src/sites/runtime.rs"),
+            concat!(
+                include_str!("../../../app/src/sites/runtime/mod.rs"),
+                include_str!("../../../app/src/sites/runtime/jobs.rs"),
+                include_str!("../../../app/src/sites/runtime/php.rs"),
+            ),
         ),
     ];
     for (name, src) in sources {
@@ -1100,7 +1111,11 @@ fn web_install_progress_has_single_persisted_source() {
         state.contains("pub fn web_install_progress") && state.contains("TARGET_WEB_ENV"),
         "安装进度必须从任务中心最新 web.install 作业构建"
     );
-    let crud = include_str!("../../../app/src/sites/crud.rs");
+    let crud = concat!(
+        include_str!("../../../app/src/sites/crud/mod.rs"),
+        include_str!("../../../app/src/sites/crud/vhost.rs"),
+        include_str!("../../../app/src/sites/crud/tls.rs"),
+    );
     assert!(
         crud.contains("KIND_WEB_INSTALL") && crud.contains("set_steps"),
         "安装步骤必须写入作业快照"

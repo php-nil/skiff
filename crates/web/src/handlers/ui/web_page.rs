@@ -1,15 +1,7 @@
 //! Web 服务页 Schema：状态 / 配置 / 日志 / 模块四个子视图。
 
-use super::schema_kit::{self as kit, API_BASE};
+use super::schema_kit::{self as kit, flag, metric_card, text, API_BASE};
 use serde_json::{json, Value};
-
-fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
-    v.pointer(pointer).and_then(Value::as_str).unwrap_or("")
-}
-
-fn flag(v: &Value, pointer: &str) -> bool {
-    v.pointer(pointer).and_then(Value::as_bool).unwrap_or(false)
-}
 
 fn num_text(v: &Value, pointer: &str) -> String {
     match v.pointer(pointer) {
@@ -17,18 +9,6 @@ fn num_text(v: &Value, pointer: &str) -> String {
         Some(Value::String(s)) => s.clone(),
         Some(other) => other.to_string(),
     }
-}
-
-fn metric_card(title: &str, value: &str, caption: &str, color: &str) -> Value {
-    let mut stat = json!({ "value": value, "label": caption, "suffix": "" });
-    if !color.is_empty() {
-        stat["color"] = json!(color);
-    }
-    json!({
-        "type": "card",
-        "props": { "title": title, "variant": "outlined" },
-        "content": { "body": [ { "type": "statistic", "props": stat } ] }
-    })
 }
 
 /// `query`：日志筛选的当前值（type / lines / level / status / q）。
@@ -83,19 +63,21 @@ fn build_status(data: &Value, status: &Value, body: &mut Vec<Value>, actions: &m
             metric_card(
                 "容器",
                 if container_state.is_empty() { "未运行" } else { container_state },
+                "",
                 "OpenResty",
-                if container_state == "running" { "success" } else { "" }
+                (container_state == "running").then_some("success")
             ),
             metric_card("版本", {
                 let v = text(status, "/version");
                 if v.is_empty() { "—" } else { v }
-            }, "镜像版本", ""),
+            }, "", "镜像版本", None),
             metric_card(
                 "运行时长",
                 {
                     let v = text(status, "/uptime");
                     if v.is_empty() { "—" } else { v }
                 },
+                "",
                 &format!(
                     "最近 reload：{}",
                     {
@@ -103,13 +85,14 @@ fn build_status(data: &Value, status: &Value, body: &mut Vec<Value>, actions: &m
                         if v.is_empty() { "—" } else { v }
                     }
                 ),
-                ""
+                None
             ),
             metric_card(
                 "累计请求",
-                &num_text(status, "/requests"),
+                num_text(status, "/requests"),
+                "",
                 &format!("active {}", num_text(status, "/active")),
-                ""
+                None
             )
         ] }
     }));
@@ -228,7 +211,7 @@ fn build_status(data: &Value, status: &Value, body: &mut Vec<Value>, actions: &m
                     "重新安装会按当前配置重建 OpenResty 容器；删除容器后所有站点立即不可访问。两者都保留配置与站点目录。语言运行环境在「运行环境」页单独管理。",
                 ),
                 kit::flex(
-                    8,
+                    json!({ "gap": 8 }),
                     vec![
                         web_button("重新安装", "rebuild", "", "tonal"),
                         web_button("删除容器", "delete", "danger", "tonal"),
@@ -463,7 +446,7 @@ fn build_config(data: &Value, body: &mut Vec<Value>) {
 
     let include_path = text(&config, "/include_path");
     let mut include_body = vec![kit::flex(
-        8,
+        json!({ "gap": 8 }),
         vec![kit::text_line(format!(
             "include：{}",
             if include_path.is_empty() {
